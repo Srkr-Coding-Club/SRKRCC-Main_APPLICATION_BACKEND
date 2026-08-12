@@ -18,7 +18,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'first_name', 'last_name', 'roll_number', 'branch', 'year']
+        fields = ['username', 'email', 'password', 'first_name', 'last_name', 'role', 'roll_number', 'branch', 'year']
 
     def create(self, validated_data):
         user = User.objects.create_user(
@@ -31,4 +31,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             branch=validated_data.get('branch', ''),
             year=validated_data.get('year', None),
         )
+        if 'role' in validated_data and validated_data['role']:
+            user.role = validated_data['role']
+            user.save()
         return user

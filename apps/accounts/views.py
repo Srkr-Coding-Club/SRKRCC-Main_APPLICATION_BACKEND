@@ -6,6 +6,11 @@ from .serializers import UserSerializer, RegisterSerializer
 
 User = get_user_model()
 
+class UserListView(generics.ListCreateAPIView):
+    queryset = User.objects.all().order_by('-created_at')
+    serializer_class = UserSerializer
+    permission_classes = [permissions.AllowAny]
+
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = [permissions.AllowAny]
