@@ -12,13 +12,21 @@ class FieldType(models.TextChoices):
     PARAGRAPH = 'PARAGRAPH', 'Paragraph'
     EMAIL = 'EMAIL', 'Email'
     NUMBER = 'NUMBER', 'Number'
+    PHONE = 'PHONE', 'Phone'
+    URL = 'URL', 'URL'
     DROPDOWN = 'DROPDOWN', 'Dropdown'
     RADIO = 'RADIO', 'Radio Button'
     CHECKBOX = 'CHECKBOX', 'Checkbox'
     FILE = 'FILE', 'File Upload'
     MULTI_FILE = 'MULTI_FILE', 'Multi File Upload'
     DATE = 'DATE', 'Date'
+    TIME = 'TIME', 'Time'
     SECTION = 'SECTION', 'Section Header'
+    RATING = 'RATING', 'Star Rating'
+    LINEAR_SCALE = 'LINEAR_SCALE', 'Linear Scale'
+    MATRIX_RADIO = 'MATRIX_RADIO', 'Matrix Radio Grid'
+    MATRIX_CHECKBOX = 'MATRIX_CHECKBOX', 'Matrix Checkbox Grid'
+    SIGNATURE = 'SIGNATURE', 'Signature Capture'
 
 class Form(TimeStampedModel):
     title = models.CharField(max_length=200)
@@ -47,7 +55,16 @@ class FormField(TimeStampedModel):
     placeholder = models.CharField(max_length=255, blank=True)
     is_required = models.BooleanField(default=False)
     options = models.JSONField(default=list, blank=True, help_text="Choices for dropdown/radio/checkbox")
-    conditional_logic = models.JSONField(default=dict, blank=True, help_text="Visibility rules e.g. {'if': 'field_id', 'equals': 'val'}")
+    rows = models.JSONField(default=list, blank=True, help_text="Row labels for MATRIX field types")
+    min_value = models.IntegerField(blank=True, null=True, help_text="Minimum value for RATING / LINEAR_SCALE")
+    max_value = models.IntegerField(blank=True, null=True, help_text="Maximum value for RATING / LINEAR_SCALE")
+    conditional_logic = models.JSONField(
+        default=dict, blank=True,
+        help_text=(
+            "Multi-rule visibility: {'logic': 'AND', 'rules': [{'if': field_id, 'operator': 'equals', 'value': 'x'}]}. "
+            "Legacy single-rule format {'if': field_id, 'equals': 'x'} is also supported for backward compatibility."
+        )
+    )
     validation_rules = models.JSONField(default=dict, blank=True, help_text="Validation rules e.g. {'max_size_mb': 10, 'allowed_extensions': ['pdf']}")
     order = models.IntegerField(default=0)
     is_deleted = models.BooleanField(default=False, help_text="Soft-deleted fields preserved for historical response export")
@@ -81,3 +98,60 @@ class Answer(TimeStampedModel):
 
     def __str__(self):
         return f"Answer to {self.field.label}: {self.value}"
+
+
+class BulkIngestSession(models.Model):
+    STATUS_COMPLETED = 'COMPLETED'
+    STATUS_PARTIAL = 'PARTIAL'
+    STATUS_FAILED = 'FAILED'
+    STATUS_CHOICES = [
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_PARTIAL, 'Partial'),
+        (STATUS_FAILED, 'Failed'),
+    ]
+
+    form = models.ForeignKey(Form, on_delete=models.CASCADE, related_name='ingest_sessions')
+    idempotency_key = models.CharField(max_length=64, unique=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ingest_sessions',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    imported_count = models.PositiveIntegerField(default=0)
+    skipped_count = models.PositiveIntegerField(default=0)
+    duplicate_count = models.PositiveIntegerField(default=0)
+    error_log = models.JSONField(default=list)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_COMPLETED)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"BulkIngestSession #{self.id} for {self.form.title} ({self.status})"
+
+
+class MemberNote(models.Model):
+    """Admin notes attached to a user/member profile."""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='admin_notes',
+    )
+    note = models.TextField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='authored_notes',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Note for {self.user.email} by {self.created_by}"
