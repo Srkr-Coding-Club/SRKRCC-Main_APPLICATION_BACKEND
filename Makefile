@@ -1,9 +1,8 @@
-.PHONY: setup dev run migrations migrate superuser shell check clean
+.PHONY: setup dev run migrations migrate superuser seed-users admin-user shell check clean
 
 # Virtual environment python binary
 VENV = venv
 UV = uv
-
 
 setup:
 	@echo "Creating virtual environment with uv..."
@@ -25,6 +24,16 @@ migrate:
 
 superuser:
 	$(UV) run python manage.py createsuperuser
+
+seed-users:
+	$(UV) run python scripts/seed_default_users.py
+
+seed-db: seed-full
+
+seed-full:
+	$(UV) run python scripts/seed_full_database.py
+
+admin-user: seed-users
 
 shell:
 	$(UV) run python manage.py shell

@@ -2,9 +2,20 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import get_user_model
-from .serializers import UserSerializer, RegisterSerializer
+from .serializers import (
+    UserSerializer,
+    UserProfileDetailSerializer,
+    RegisterSerializer,
+    CustomTokenObtainPairSerializer,
+)
 
 User = get_user_model()
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    """
+    Custom login view returning access token, refresh token, and user profile data.
+    """
+    serializer_class = CustomTokenObtainPairSerializer
 
 class UserListView(generics.ListCreateAPIView):
     queryset = User.objects.all().order_by('-created_at')
@@ -17,7 +28,7 @@ class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
 
 class ProfileView(generics.RetrieveUpdateAPIView):
-    serializer_class = UserSerializer
+    serializer_class = UserProfileDetailSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):

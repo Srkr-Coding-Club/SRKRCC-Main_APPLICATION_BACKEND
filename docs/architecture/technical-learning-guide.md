@@ -1,6 +1,6 @@
 # Under the Hood: Backend Technical Learning Guide
 
-This guide explains **how Django, DRF, PostgreSQL, Redis, Celery, and the Dynamic Form Builder engine work under the hood** in the SRKR Coding Club Backend. It is written to flatten the technical learning curve for developers and AI agents alike.
+This guide explains **how Django, DRF, PostgreSQL, Redis, Celery, Centralized RBAC, and the Dynamic Form Builder engine work under the hood** in the SRKR Coding Club Backend.
 
 ---
 
@@ -13,81 +13,67 @@ HTTP Request ──► WSGI / ASGI Middleware ──► URL Dispatcher (urls.py)
 ```
 
 1. **WSGI/ASGI Entrypoint** (`config/wsgi.py`):
-   - Accepts raw socket requests from Gunicorn/uWSGI or Django's dev server.
-   - Instantiates `WSGIHandler` which converts the HTTP request environment into a Django `HttpRequest` object.
+   - Accepts raw socket requests and converts the HTTP environment into a Django `HttpRequest` object.
 2. **Middleware Pipeline** (`config/settings.py -> MIDDLEWARE`):
    - **`SecurityMiddleware`**: Enforces SSL, HSTS, and X-Content-Type security headers.
-   - **`CorsMiddleware`**: Validates cross-origin headers against `CORS_ALLOWED_ORIGINS` (`http://localhost:3000`).
+   - **`CorsMiddleware`**: Validates cross-origin headers against `CORS_ALLOWED_ORIGINS` (`http://localhost:3000`) and allows credentials (`CORS_ALLOW_CREDENTIALS = True`).
    - **`SessionMiddleware` & `AuthenticationMiddleware`**: Reads headers/cookies, inspects SimpleJWT tokens, and populates `request.user` with either an instance of `apps.accounts.models.User` or `AnonymousUser`.
 3. **URL Routing** (`config/urls.py`):
-   - Resolves the requested path (e.g. `/api/feature-flags/`) against registered URL patterns using regex/path matchers and routes to the matching `ViewSet`.
+   - Resolves the requested path (e.g. `/api/feature-flags/`) against registered URL patterns and routes to the matching `ViewSet`.
 
 ---
 
-## 2. How Django REST Framework (DRF) Works Under the Hood
+## 2. Centralized Role-Based Access Control (RBAC) Under the Hood
 
-DRF wraps standard Django views with powerful API abstractions:
+Permissions are declared centrally in [apps/core/permissions.py](file:///c:/Users/chall/OneDrive/Desktop/SRKRCC-Main_APPLICATION_BACKEND/apps/core/permissions.py):
 
-* **`APIView` / `ViewSet` Pipeline**:
-  ```python
-  request -> initial() -> check_permissions() -> check_throttles() -> dispatch method (GET/POST/PUT/DELETE)
-  ```
-  - `initial()` executes permission checks (`permissions.IsAuthenticatedOrReadOnly`). If a permission check fails, DRF immediately raises an `APIException` resulting in an HTTP 401 or 403 response without executing business logic.
-* **Serializers (`serializers.ModelSerializer`)**:
-  - Convert complex Python model instances into native Python primitives (`.data`), which are then rendered into JSON strings by `JSONRenderer`.
-  - Validate incoming JSON payloads (`.is_valid()`), running field-level validators (`validate_<fieldname>()`) and object-level validators (`validate()`).
-  - Perform ORM mutations (`.save()` -> calls `.create()` or `.update()`).
+```python
+class IsAdminOrClubLead(permissions.BasePermission):
+    """
+    Evaluated by DRF during check_permissions():
+    - Permits Django staff or superusers
+    - Permits authenticated users whose User.role is 'ADMIN' or 'CLUB_LEAD'
+    - Rejects unauthenticated requests with 401 Unauthorized
+    - Rejects other roles (MEMBER, JUDGE) with 403 Forbidden
+    """
+    def has_permission(self, request, view):
+        if not (request.user and request.user.is_authenticated):
+            return False
+        if request.user.is_staff or request.user.is_superuser:
+            return True
+        return getattr(request.user, 'role', None) in ['ADMIN', 'CLUB_LEAD']
+```
 
 ---
 
-## 3. How Django ORM & PostgreSQL Work Under the Hood
+## 3. Dynamic Database Profile Calculations Under the Hood
 
-Django ORM bridges Python code with PostgreSQL SQL queries via an Abstract Syntax Tree (AST):
+When `GET /api/auth/me/` is requested, `UserProfileDetailSerializer` in [apps/accounts/serializers.py](file:///c:/Users/chall/OneDrive/Desktop/SRKRCC-Main_APPLICATION_BACKEND/apps/accounts/serializers.py) evaluates real-time database relationships:
+- **`streak`**: Fetches `user.streak.current_streak` from `apps.codequest.models.UserStreak`.
+- **`points`**: Computes total XP dynamically from correct algorithm submissions (`Submission.is_correct=True`) and verified form registrations.
+- **`events_count`**: Aggregates verified `Response` records submitted by this user.
+- **`registered_events`**: Queries `Response.objects.filter(user=user).select_related('form')` and returns live submission dates, status, and direct form slugs (`/forms/[slug]`).
+- **`badges`**: Generates dynamic achievement objects based on user activity thresholds.
 
-* **QuerySets are Lazy**:
-  ```python
-  # Does NOT hit PostgreSQL yet:
-  queryset = Event.objects.filter(category='Workshop')
-  
-  # Hits PostgreSQL only when evaluated (iterated, sliced, len(), bool()):
-  events = list(queryset)
-  ```
+---
+
+## 4. Automated Audit Logging Pipeline Under the Hood
+
+Platform mutations (form publishing, unpublishing, closing, scheduling, offline entries, and feature flag toggles) invoke the non-blocking helper in [apps/audit/utils.py](file:///c:/Users/chall/OneDrive/Desktop/SRKRCC-Main_APPLICATION_BACKEND/apps/audit/utils.py):
+
+```python
+def log_audit_event(actor=None, action="", target_model="", target_id="", details=None, request=None):
+    # Extracts IP address, resolves authenticated actor, and creates AuditLog record
+```
+
+---
+
+## 5. How Django ORM & PostgreSQL Work Under the Hood
+
+Django ORM bridges Python code with PostgreSQL SQL queries:
+
 * **Avoiding N+1 Queries**:
-  - `select_related(*fields)`: Performs a SQL `INNER JOIN` or `LEFT OUTER JOIN` for foreign keys (1-to-1 or Many-to-1).
-  - `prefetch_related(*fields)`: Executes a separate SQL query for Many-to-Many or reverse foreign key lookups and joins them in Python memory.
-* **Transactions & Consistency**:
-  - Mutations across multiple models (e.g. submitting a dynamic form response + answers) are wrapped in `transaction.atomic()` to guarantee ACID compliance (if an error occurs, PostgreSQL rolls back all partial writes).
-
----
-
-## 4. How the Dynamic Form Engine Works Under the Hood
-
-Unlike traditional platforms that demand a new PostgreSQL table per form, our dynamic form builder relies on a **Metadata Entity-Attribute-Value (EAV) variant model**:
-
-```
-[Form] ──1:N──► [FormField] (label, type, validation_rules JSON, order)
-  │                    ▲
-1:N                  1:N
-  ▼                    │
-[Response] ──1:N──► [Answer] (value JSON)
-```
-
-* **No DB Migrations per Form**: Adding a new form or question inserts metadata rows into `forms_formfield`.
-* **JSON Validation Rules**: Complex constraints (e.g. `{"min_length": 5, "regex": "^[0-9]+$"}`) are evaluated dynamically in Python during response submission via `AnswerSerializer`.
-
----
-
-## 5. How Redis & Celery Work Under the Hood
-
-* **Celery Worker & Scheduler**:
-  - Celery reads scheduled tasks from Redis (e.g. auto-publishing Codequest daily problems at midnight or sending bulk reminder emails).
-  - Tasks execute in background worker processes isolated from the main HTTP thread, preventing request blocking.
-
----
-
-## 6. Maintenance & Gap Update Protocol
-
-Whenever you update backend logic:
-1. Update existing models/serializers/views.
-2. Run `python manage.py check` and `python manage.py makemigrations`.
-3. Check for documentation gaps in `docs/` and update `docs/architecture/` and `docs/modules/` accordingly.
+  - `select_related(*fields)`: Performs a SQL `INNER JOIN` or `LEFT OUTER JOIN` for foreign keys (1-to-1 or Many-to-1). Used extensively in `ResponseViewSet` and `AuditLogViewSet`.
+  - `prefetch_related(*fields)`: Executes batch lookups for reverse foreign keys and Many-to-Many relationships (`answers__field`).
+* **Transactions & ACID Consistency**:
+  - Multi-step operations (e.g. form submission with answers in `ResponseViewSet.create`, CSV bulk ingest in `bulk_ingest`) are wrapped in `with transaction.atomic():` so partial failures are rolled back cleanly.

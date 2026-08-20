@@ -6,6 +6,8 @@ class FormStatus(models.TextChoices):
     DRAFT = 'DRAFT', 'Draft'
     PUBLISHED = 'PUBLISHED', 'Published'
     CLOSED = 'CLOSED', 'Closed'
+    SCHEDULED = 'SCHEDULED', 'Scheduled'
+    ARCHIVED = 'ARCHIVED', 'Archived'
 
 class FieldType(models.TextChoices):
     TEXT = 'TEXT', 'Text'
@@ -40,6 +42,12 @@ class Form(TimeStampedModel):
     allow_edits_until = models.DateTimeField(blank=True, null=True, help_text="Deadline after which responses are locked")
     open_at = models.DateTimeField(blank=True, null=True)
     close_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['status', 'open_at']),
+            models.Index(fields=['created_at']),
+        ]
 
     def __str__(self):
         return f"{self.title} (v{self.version} - {self.get_status_display()})"
@@ -87,6 +95,12 @@ class Response(TimeStampedModel):
     is_manual_entry = models.BooleanField(default=False, help_text="Flagged if added via Admin Manual Override on closed form")
     created_by_admin = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='admin_manual_responses')
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['form', 'submitted_at']),
+            models.Index(fields=['user', 'submitted_at']),
+        ]
+
     def __str__(self):
         user_str = self.user.email if self.user else ("Admin Entry" if self.is_manual_entry else "Anonymous")
         return f"Response #{self.id} for {self.form.title} (v{self.form_version}) by {user_str}"
@@ -95,6 +109,11 @@ class Answer(TimeStampedModel):
     response = models.ForeignKey(Response, on_delete=models.CASCADE, related_name='answers')
     field = models.ForeignKey(FormField, on_delete=models.CASCADE)
     value = models.JSONField(blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['response', 'field']),
+        ]
 
     def __str__(self):
         return f"Answer to {self.field.label}: {self.value}"

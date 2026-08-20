@@ -266,12 +266,18 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
     """Full response serializer with enriched answers and user details, used by the responses viewer."""
     answers = AnswerDetailSerializer(many=True, read_only=True)
     user = serializers.SerializerMethodField()
+    form_id = serializers.IntegerField(source='form.id', read_only=True)
+    form_title = serializers.CharField(source='form.title', read_only=True)
+    form_slug = serializers.CharField(source='form.slug', read_only=True)
+    user_name = serializers.SerializerMethodField()
+    user_email = serializers.SerializerMethodField()
 
     class Meta:
         model = Response
         fields = [
-            'id', 'submitted_at', 'is_manual_entry', 'is_test_submission',
-            'form_version', 'user', 'answers',
+            'id', 'form_id', 'form_title', 'form_slug', 'submitted_at',
+            'is_manual_entry', 'is_test_submission', 'form_version',
+            'user', 'user_name', 'user_email', 'answers',
         ]
 
     def get_user(self, obj):
@@ -288,6 +294,14 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
                 'email': obj.created_by_admin.email,
             }
         return None
+
+    def get_user_name(self, obj):
+        u = self.get_user(obj)
+        return u['name'] if u else 'Anonymous Student'
+
+    def get_user_email(self, obj):
+        u = self.get_user(obj)
+        return u['email'] if u else 'offline@srkr.ac.in'
 
 
 class BulkIngestSessionSerializer(serializers.ModelSerializer):

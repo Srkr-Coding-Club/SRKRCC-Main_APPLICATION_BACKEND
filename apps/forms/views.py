@@ -18,6 +18,8 @@ from .serializers import (
     evaluate_visible_fields,
     enforce_field_validation,
 )
+from apps.audit.utils import log_audit_event
+from apps.core.permissions import IsAdminOrClubLead
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -92,11 +94,161 @@ class FormViewSet(viewsets.ModelViewSet):
         return DRFResponse({"status": "deleted", "id": field.id}, status=status.HTTP_200_OK)
 
     # -----------------------------------------------------------------------
+    # Form Lifecycle Management Actions
+    # -----------------------------------------------------------------------
+
+    @action(detail=True, methods=['post'], url_path='publish')
+    def publish(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/publish/
+        Publish the form, making it live for public responses.
+        """
+        form = self.get_object()
+        form.status = 'PUBLISHED'
+        form.version += 1
+        form.save(update_fields=['status', 'version', 'updated_at'])
+        log_audit_event(
+            actor=request.user,
+            action="Published Dynamic Form",
+            target_model="Form",
+            target_id=form.slug,
+            details={"title": form.title, "status": "PUBLISHED", "version": form.version}
+        )
+        serializer = self.get_serializer(form)
+        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='unpublish')
+    def unpublish(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/unpublish/
+        Reverts a published or scheduled form back to DRAFT mode (Undo publish).
+        """
+        form = self.get_object()
+        form.status = 'DRAFT'
+        form.save(update_fields=['status', 'updated_at'])
+        log_audit_event(
+            actor=request.user,
+            action="Unpublished Form to Draft",
+            target_model="Form",
+            target_id=form.slug,
+            details={"title": form.title, "status": "DRAFT"}
+        )
+        serializer = self.get_serializer(form)
+        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='close')
+    def close(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/close/
+        Closes the form to public submissions.
+        """
+        form = self.get_object()
+        form.status = 'CLOSED'
+        form.save(update_fields=['status', 'updated_at'])
+        log_audit_event(
+            actor=request.user,
+            action="Closed Form Submissions",
+            target_model="Form",
+            target_id=form.slug,
+            details={"title": form.title, "status": "CLOSED"}
+        )
+        serializer = self.get_serializer(form)
+        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='schedule')
+    def schedule(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/schedule/
+        Sets form to SCHEDULED with open_at and close_at windows.
+        """
+        form = self.get_object()
+        open_at = request.data.get('open_at')
+        close_at = request.data.get('close_at')
+        form.status = 'SCHEDULED'
+        if open_at is not None:
+            form.open_at = open_at or None
+        if close_at is not None:
+            form.close_at = close_at or None
+        form.save(update_fields=['status', 'open_at', 'close_at', 'updated_at'])
+        log_audit_event(
+            actor=request.user,
+            action="Scheduled Form Window",
+            target_model="Form",
+            target_id=form.slug,
+            details={"title": form.title, "open_at": str(form.open_at), "close_at": str(form.close_at)}
+        )
+        serializer = self.get_serializer(form)
+        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='reopen')
+    def reopen(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/reopen/
+        Re-opens a closed form as DRAFT or PUBLISHED.
+        """
+        form = self.get_object()
+        target_status = request.data.get('status', 'DRAFT')
+        if target_status not in ['DRAFT', 'PUBLISHED', 'SCHEDULED']:
+            target_status = 'DRAFT'
+        form.status = target_status
+        form.save(update_fields=['status', 'updated_at'])
+        log_audit_event(
+            actor=request.user,
+            action=f"Re-opened Form as {target_status}",
+            target_model="Form",
+            target_id=form.slug,
+            details={"title": form.title, "status": target_status}
+        )
+        serializer = self.get_serializer(form)
+        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='manual-entry')
+    def manual_entry(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/manual-entry/
+        Records an administrative manual submission for ANY form (Live, Draft, or Closed).
+        """
+        form = self.get_object()
+        answers_data = request.data.get('answers', [])
+        
+        response_obj = Response.objects.create(
+            form=form,
+            user=None,
+            is_manual_entry=True,
+            created_by_admin=request.user if (request.user and request.user.is_authenticated) else None,
+            form_version=form.version,
+        )
+
+        for ans in answers_data:
+            field_id = ans.get('field')
+            value = ans.get('value')
+            try:
+                field_obj = FormField.all_objects.get(id=field_id, form=form)
+                Answer.objects.create(
+                    response=response_obj,
+                    field=field_obj,
+                    value=value,
+                )
+            except FormField.DoesNotExist:
+                continue
+
+        log_audit_event(
+            actor=request.user,
+            action="Submitted Offline Manual Entry",
+            target_model="Form",
+            target_id=form.slug,
+            details={"title": form.title, "response_id": response_obj.id, "is_manual_entry": True}
+        )
+
+        serializer = ResponseDetailSerializer(response_obj)
+        return DRFResponse(serializer.data, status=status.HTTP_201_CREATED)
+
+    # -----------------------------------------------------------------------
     # New: bulk CSV ingest
     # -----------------------------------------------------------------------
 
     @action(detail=True, methods=['post'], url_path='bulk-ingest',
-            permission_classes=[permissions.IsAdminUser])
+            permission_classes=[IsAdminOrClubLead])
     def bulk_ingest(self, request, slug=None):
         """
         POST /api/forms/{slug}/bulk-ingest/
@@ -105,9 +257,6 @@ class FormViewSet(viewsets.ModelViewSet):
         Supports idempotency via idempotency_key.
         Uses per-row savepoints so skip_errors=true works correctly.
         """
-        if not request.user.is_staff:
-            return DRFResponse({"error": "Staff access required."}, status=status.HTTP_403_FORBIDDEN)
-
         form = self.get_object()
         rows = request.data.get('rows', [])
         idempotency_key = request.data.get('idempotency_key', '')
@@ -285,7 +434,7 @@ class FormViewSet(viewsets.ModelViewSet):
     # -----------------------------------------------------------------------
 
     @action(detail=True, methods=['post'], url_path='check-duplicates',
-            permission_classes=[permissions.IsAdminUser])
+            permission_classes=[IsAdminOrClubLead])
     def check_duplicates(self, request, slug=None):
         """
         POST /api/forms/{slug}/check-duplicates/
@@ -293,9 +442,6 @@ class FormViewSet(viewsets.ModelViewSet):
 
         Returns existing responses matched by email (JSONField-safe cast).
         """
-        if not request.user.is_staff:
-            return DRFResponse({"error": "Staff access required."}, status=status.HTTP_403_FORBIDDEN)
-
         form = self.get_object()
         emails = request.data.get('emails', [])
 
@@ -330,16 +476,13 @@ class FormViewSet(viewsets.ModelViewSet):
     # -----------------------------------------------------------------------
 
     @action(detail=False, methods=['get'], url_path='data-health',
-            permission_classes=[permissions.IsAdminUser])
+            permission_classes=[IsAdminOrClubLead])
     def data_health(self, request):
         """
         GET /api/forms/data-health/
 
         Returns aggregated stats, active warnings, and recent activity feed.
         """
-        if not request.user.is_staff:
-            return DRFResponse({"error": "Staff access required."}, status=status.HTTP_403_FORBIDDEN)
-
         all_forms = Form.objects.all()
         total_forms = all_forms.count()
         published_forms = all_forms.filter(status='PUBLISHED').count()
@@ -494,15 +637,12 @@ class FormViewSet(viewsets.ModelViewSet):
     # -----------------------------------------------------------------------
 
     @action(detail=True, methods=['get'], url_path='responses',
-            permission_classes=[permissions.IsAdminUser])
+            permission_classes=[IsAdminOrClubLead])
     def responses(self, request, slug=None):
         """
         GET /api/forms/{slug}/responses/
         Params: page, page_size, search, date_from, date_to, manual_only, test_only
         """
-        if not request.user.is_staff:
-            return DRFResponse({"error": "Staff access required."}, status=status.HTTP_403_FORBIDDEN)
-
         form = self.get_object()
         qs = Response.objects.filter(form=form).select_related(
             'user', 'created_by_admin'
@@ -541,10 +681,15 @@ class FormViewSet(viewsets.ModelViewSet):
 
 
 class ResponseViewSet(viewsets.ModelViewSet):
-    queryset = Response.objects.all().order_by('-submitted_at')
+    queryset = Response.objects.select_related('form', 'user', 'created_by_admin').prefetch_related('answers__field').all().order_by('-submitted_at')
     serializer_class = ResponseSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     pagination_class = StandardResultsSetPagination
+
+    def get_serializer_class(self):
+        if self.action in ['list', 'retrieve']:
+            return ResponseDetailSerializer
+        return ResponseSerializer
 
     def create(self, request, *args, **kwargs):
         is_test = request.query_params.get('test') == 'true'
@@ -572,32 +717,33 @@ class ResponseViewSet(viewsets.ModelViewSet):
         except Form.DoesNotExist:
             return DRFResponse({"error": "Form not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Check existing user response & edit window vs deduplication
-        if request.user and request.user.is_authenticated:
-            existing = Response.objects.filter(
-                form=form_obj, user=request.user, is_test_submission=False
-            ).first()
-            if existing:
-                if form_obj.allow_edits_until and timezone.now() <= form_obj.allow_edits_until:
-                    serializer = ResponseSerializer(
-                        existing, data=request.data, partial=True,
-                        context={'form': form_obj, 'request': request},
-                    )
-                    serializer.is_valid(raise_exception=True)
-                    serializer.save()
-                    return DRFResponse(serializer.data, status=status.HTTP_200_OK)
-                elif not form_obj.allow_multiple_responses:
-                    return DRFResponse(
-                        {"error": "You have already submitted a response for this form."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+        with transaction.atomic():
+            # Check existing user response & edit window vs deduplication
+            if request.user and request.user.is_authenticated:
+                existing = Response.objects.filter(
+                    form=form_obj, user=request.user, is_test_submission=False
+                ).first()
+                if existing:
+                    if form_obj.allow_edits_until and timezone.now() <= form_obj.allow_edits_until:
+                        serializer = ResponseSerializer(
+                            existing, data=request.data, partial=True,
+                            context={'form': form_obj, 'request': request},
+                        )
+                        serializer.is_valid(raise_exception=True)
+                        serializer.save()
+                        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+                    elif not form_obj.allow_multiple_responses:
+                        return DRFResponse(
+                            {"error": "You have already submitted a response for this form."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
-        serializer = ResponseSerializer(
-            data=request.data, context={'form': form_obj, 'request': request}
-        )
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return DRFResponse(serializer.data, status=status.HTTP_201_CREATED)
+            serializer = ResponseSerializer(
+                data=request.data, context={'form': form_obj, 'request': request}
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return DRFResponse(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class MemberViewSet(viewsets.ReadOnlyModelViewSet):
@@ -606,12 +752,10 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
     Aggregates responses by user (excludes anonymous/null-user responses).
     Supports ?search=, ?form_id=, ?page=, ?page_size=
     """
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdminOrClubLead]
     pagination_class = StandardResultsSetPagination
 
     def list(self, request, *args, **kwargs):
-        if not request.user.is_staff:
-            return DRFResponse({"error": "Staff access required."}, status=status.HTTP_403_FORBIDDEN)
 
         # Only users who have submitted at least one response
         # Exclude anonymous (null user) responses

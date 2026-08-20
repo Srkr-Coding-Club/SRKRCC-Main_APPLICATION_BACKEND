@@ -18,5 +18,10 @@ class Event(TimeStampedModel):
     
     registration_form = models.ForeignKey(Form, on_delete=models.SET_NULL, null=True, blank=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['start_time', 'visible_from']),
+        ]
+
     def __str__(self):
         return self.title

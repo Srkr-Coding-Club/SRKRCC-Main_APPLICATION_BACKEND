@@ -28,6 +28,11 @@ class Submission(TimeStampedModel):
     language = models.CharField(max_length=50, default='python')
     is_correct = models.BooleanField(default=False)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'is_correct']),
+        ]
+
     def __str__(self):
         return f"{self.user.email} - {self.problem.title} ({'PASS' if self.is_correct else 'FAIL'})"
 
