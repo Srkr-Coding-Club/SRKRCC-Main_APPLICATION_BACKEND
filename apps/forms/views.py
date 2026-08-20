@@ -20,6 +20,11 @@ from .serializers import (
 )
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead
+from apps.core.idempotency import (
+    get_idempotency_key,
+    check_idempotent_response,
+    store_idempotent_response,
+)
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -41,6 +46,37 @@ class FormViewSet(viewsets.ModelViewSet):
                 filter=Q(responses__is_test_submission=False),
             )
         ).order_by('-created_at')
+
+    def create(self, request, *args, **kwargs):
+        key = get_idempotency_key(request)
+        cached = check_idempotent_response(key, request)
+        if cached:
+            return cached
+
+        resp = super().create(request, *args, **kwargs)
+        if resp.status_code in [200, 201]:
+            store_idempotent_response(key, request, resp.status_code, resp.data)
+        return resp
+
+    def perform_create(self, serializer):
+        form = serializer.save()
+        log_audit_event(
+            actor=self.request.user,
+            action=f"Created Dynamic Form ({form.status})",
+            target_model="Form",
+            target_id=form.slug,
+            details={"title": form.title, "status": form.status, "fields_count": form.fields.count()}
+        )
+
+    def perform_update(self, serializer):
+        form = serializer.save()
+        log_audit_event(
+            actor=self.request.user,
+            action=f"Updated Form Schema (v{form.version})",
+            target_model="Form",
+            target_id=form.slug,
+            details={"title": form.title, "status": form.status, "version": form.version}
+        )
 
     # -----------------------------------------------------------------------
     # Existing: soft-delete a field
@@ -692,6 +728,11 @@ class ResponseViewSet(viewsets.ModelViewSet):
         return ResponseSerializer
 
     def create(self, request, *args, **kwargs):
+        key = get_idempotency_key(request)
+        cached = check_idempotent_response(key, request)
+        if cached:
+            return cached
+
         is_test = request.query_params.get('test') == 'true'
         if is_test:
             if not request.user.is_staff:
@@ -731,7 +772,9 @@ class ResponseViewSet(viewsets.ModelViewSet):
                         )
                         serializer.is_valid(raise_exception=True)
                         serializer.save()
-                        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+                        resp_data = serializer.data
+                        store_idempotent_response(key, request, 200, resp_data)
+                        return DRFResponse(resp_data, status=status.HTTP_200_OK)
                     elif not form_obj.allow_multiple_responses:
                         return DRFResponse(
                             {"error": "You have already submitted a response for this form."},
@@ -743,7 +786,9 @@ class ResponseViewSet(viewsets.ModelViewSet):
             )
             serializer.is_valid(raise_exception=True)
             serializer.save()
-            return DRFResponse(serializer.data, status=status.HTTP_201_CREATED)
+            resp_data = serializer.data
+            store_idempotent_response(key, request, 201, resp_data)
+            return DRFResponse(resp_data, status=status.HTTP_201_CREATED)
 
 
 class MemberViewSet(viewsets.ReadOnlyModelViewSet):
