@@ -1,5 +1,7 @@
 from django.db import models
+from django.db.models import Q
 from django.conf import settings
+from django.utils import timezone
 from apps.core.models import TimeStampedModel
 
 class FormStatus(models.TextChoices):
@@ -34,11 +36,14 @@ class Form(TimeStampedModel):
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
     description = models.TextField(blank=True)
-    image_url = models.URLField(blank=True, null=True)
+    image_url = models.TextField(blank=True, null=True)
     category = models.CharField(max_length=100, default='General')
     status = models.CharField(max_length=20, choices=FormStatus.choices, default=FormStatus.DRAFT)
     version = models.PositiveIntegerField(default=1, help_text="Schema version incremented on form updates")
     allow_multiple_responses = models.BooleanField(default=False, help_text="Allow a user to submit multiple times")
+    allow_response_editing = models.BooleanField(default=True, help_text="Allow users to view and update their previously submitted response")
+    enable_prefill = models.BooleanField(default=True, help_text="Automatically pre-fill student profile details when limit is 1")
+    max_responses_per_user = models.PositiveIntegerField(default=1, help_text="Maximum allowed submissions per user (1 for single submission)")
     allow_edits_until = models.DateTimeField(blank=True, null=True, help_text="Deadline after which responses are locked")
     open_at = models.DateTimeField(blank=True, null=True)
     close_at = models.DateTimeField(blank=True, null=True)
@@ -51,6 +56,70 @@ class Form(TimeStampedModel):
 
     def __str__(self):
         return f"{self.title} (v{self.version} - {self.get_status_display()})"
+
+    def evaluate_schedule_status(self, now=None):
+        """
+        Evaluates and transitions schedule status automatically based on current time:
+        - If SCHEDULED:
+            - If close_at and now >= close_at: transition to CLOSED
+            - Else if open_at and now >= open_at: transition to PUBLISHED
+        - If PUBLISHED:
+            - If close_at and now >= close_at: transition to CLOSED (deadline passed)
+        Returns True if status was changed and saved.
+        """
+        if not now:
+            now = timezone.now()
+        changed = False
+
+        if self.status == FormStatus.SCHEDULED:
+            if self.close_at and now >= self.close_at:
+                self.status = FormStatus.CLOSED
+                changed = True
+            elif self.open_at and now >= self.open_at:
+                self.status = FormStatus.PUBLISHED
+                changed = True
+        elif self.status == FormStatus.PUBLISHED:
+            if self.close_at and now >= self.close_at:
+                self.status = FormStatus.CLOSED
+                changed = True
+
+        if changed:
+            self.save(update_fields=['status', 'updated_at'])
+        return changed
+
+
+def sync_all_scheduled_form_statuses(now=None):
+    """
+    Bulk updates all scheduled and published forms whose start or end timestamps have passed:
+    1. SCHEDULED forms with now >= close_at -> CLOSED
+    2. SCHEDULED forms with now >= open_at and (close_at is None or now < close_at) -> PUBLISHED
+    3. PUBLISHED forms with close_at is not None and now >= close_at -> CLOSED
+    """
+    if not now:
+        now = timezone.now()
+
+    # 1. SCHEDULED forms past close_at -> CLOSED
+    Form.objects.filter(
+        status=FormStatus.SCHEDULED,
+        close_at__isnull=False,
+        close_at__lte=now,
+    ).update(status=FormStatus.CLOSED, updated_at=now)
+
+    # 2. SCHEDULED forms past open_at (and not past close_at) -> PUBLISHED
+    Form.objects.filter(
+        status=FormStatus.SCHEDULED,
+        open_at__isnull=False,
+        open_at__lte=now,
+    ).filter(
+        Q(close_at__isnull=True) | Q(close_at__gt=now)
+    ).update(status=FormStatus.PUBLISHED, updated_at=now)
+
+    # 3. PUBLISHED forms past close_at -> CLOSED
+    Form.objects.filter(
+        status=FormStatus.PUBLISHED,
+        close_at__isnull=False,
+        close_at__lte=now,
+    ).update(status=FormStatus.CLOSED, updated_at=now)
 
 class ActiveFieldManager(models.Manager):
     def get_queryset(self):

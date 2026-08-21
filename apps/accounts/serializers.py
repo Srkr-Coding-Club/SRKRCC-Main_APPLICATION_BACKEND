@@ -31,6 +31,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'roll_number': self.user.roll_number,
             'branch': self.user.branch,
             'year': self.user.year,
+            'phone_number': self.user.phone_number,
+            'github_profile': self.user.github_profile,
+            'linkedin_profile': self.user.linkedin_profile,
         }
         return data
 

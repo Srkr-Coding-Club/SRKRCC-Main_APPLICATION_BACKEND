@@ -6,6 +6,7 @@ import logging
 from rest_framework import serializers
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.utils import timezone
 
 from .models import Form, FormField, FieldType, Response, Answer, BulkIngestSession
 
@@ -198,6 +199,7 @@ class FormFieldSerializer(serializers.ModelSerializer):
 
 class FormSerializer(serializers.ModelSerializer):
     fields = FormFieldSerializer(many=True, required=False)
+    image_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     # Populated via annotation in get_queryset; safe to omit in write operations
     response_count = serializers.IntegerField(read_only=True, default=0)
 
@@ -205,16 +207,23 @@ class FormSerializer(serializers.ModelSerializer):
         model = Form
         fields = [
             'id', 'title', 'slug', 'description', 'image_url', 'category', 'status',
-            'version', 'allow_multiple_responses', 'allow_edits_until', 'open_at', 'close_at',
+            'version', 'allow_multiple_responses', 'allow_response_editing', 'enable_prefill', 'max_responses_per_user',
+            'allow_edits_until', 'open_at', 'close_at',
             'fields', 'created_at', 'response_count',
         ]
+
+    def validate_image_url(self, value):
+        if not value or not str(value).strip():
+            return None
+        return str(value).strip()
 
     def create(self, validated_data):
         fields_data = validated_data.pop('fields', [])
         form = Form.objects.create(**validated_data)
         for order, field_data in enumerate(fields_data, start=1):
             field_data.pop('id', None)
-            FormField.objects.create(form=form, order=field_data.get('order', order), **field_data)
+            field_order = field_data.pop('order', order)
+            FormField.objects.create(form=form, order=field_order, **field_data)
         return form
 
     def update(self, instance, validated_data):
@@ -225,23 +234,36 @@ class FormSerializer(serializers.ModelSerializer):
         instance.save()
 
         if fields_data is not None:
-            incoming_field_ids = {f.get('id') for f in fields_data if f.get('id')}
+            incoming_field_ids = {
+                f['id'] for f in fields_data
+                if f.get('id') and isinstance(f['id'], int) and 0 < f['id'] < 2147483647
+            }
             # Soft delete fields that are no longer present in the incoming payload
-            instance.fields.filter(is_deleted=False).exclude(id__in=incoming_field_ids).update(is_deleted=True)
+            if incoming_field_ids:
+                instance.fields.filter(is_deleted=False).exclude(id__in=incoming_field_ids).update(is_deleted=True)
+            else:
+                instance.fields.filter(is_deleted=False).update(is_deleted=True)
 
             for order, field_data in enumerate(fields_data, start=1):
                 f_id = field_data.get('id')
-                if f_id and FormField.all_objects.filter(id=f_id, form=instance).exists():
+                if (
+                    f_id
+                    and isinstance(f_id, int)
+                    and 0 < f_id < 2147483647
+                    and FormField.all_objects.filter(id=f_id, form=instance).exists()
+                ):
                     field_obj = FormField.all_objects.get(id=f_id, form=instance)
                     field_obj.is_deleted = False
-                    field_obj.order = field_data.get('order', order)
+                    field_order = field_data.pop('order', order)
+                    field_obj.order = field_order
                     for key, val in field_data.items():
                         if key != 'id':
                             setattr(field_obj, key, val)
                     field_obj.save()
                 else:
                     field_data.pop('id', None)
-                    FormField.objects.create(form=instance, order=field_data.get('order', order), **field_data)
+                    field_order = field_data.pop('order', order)
+                    FormField.objects.create(form=instance, order=field_order, **field_data)
         return instance
 
 
@@ -282,9 +304,10 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
 
     def get_user(self, obj):
         if obj.user:
+            name = f'{obj.user.first_name} {obj.user.last_name}'.strip() or obj.user.username or obj.user.email
             return {
                 'id': obj.user.id,
-                'name': f'{obj.user.first_name} {obj.user.last_name}'.strip() or obj.user.username,
+                'name': name,
                 'email': obj.user.email,
             }
         if obj.is_manual_entry and obj.created_by_admin:
@@ -297,11 +320,23 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
 
     def get_user_name(self, obj):
         u = self.get_user(obj)
-        return u['name'] if u else 'Anonymous Student'
+        if u and u.get('name') and u['name'] != 'Anonymous':
+            return u['name']
+        for ans in obj.answers.all():
+            if ans.field and any(k in ans.field.label.lower() for k in ['name', 'student', 'candidate', 'applicant']):
+                if ans.value and str(ans.value).strip():
+                    return str(ans.value).strip()
+        return 'Anonymous Student'
 
     def get_user_email(self, obj):
         u = self.get_user(obj)
-        return u['email'] if u else 'offline@srkr.ac.in'
+        if u and u.get('email'):
+            return u['email']
+        for ans in obj.answers.all():
+            if ans.field and (ans.field.type == 'EMAIL' or 'email' in ans.field.label.lower()):
+                if ans.value and str(ans.value).strip():
+                    return str(ans.value).strip()
+        return 'offline@srkr.ac.in'
 
 
 class BulkIngestSessionSerializer(serializers.ModelSerializer):
@@ -335,6 +370,8 @@ class ResponseSerializer(serializers.ModelSerializer):
             visible_ids = evaluate_visible_fields(active_fields, submitted_map)
 
             for field in active_fields:
+                if field.type in (FieldType.SECTION, 'SECTION'):
+                    continue
                 if field.id not in visible_ids:
                     continue
                 if field.is_required:
@@ -362,6 +399,18 @@ class ResponseSerializer(serializers.ModelSerializer):
         if form:
             validated_data['form_version'] = form.version
 
+        request = self.context.get('request')
+        if 'user' not in validated_data or validated_data['user'] is None:
+            if request and request.user and request.user.is_authenticated:
+                validated_data['user'] = request.user
+            elif request and request.data.get('user'):
+                try:
+                    from django.contrib.auth import get_user_model
+                    User = get_user_model()
+                    validated_data['user'] = User.objects.get(id=request.data.get('user'))
+                except Exception:
+                    pass
+
         answers_data = validated_data.pop('answers', [])
         response = Response.objects.create(**validated_data)
 
@@ -369,14 +418,29 @@ class ResponseSerializer(serializers.ModelSerializer):
             field = answer_data.get('field')
             value = answer_data.get('value')
 
-            # Handle SIGNATURE: decode base64 and persist via storage backend
-            if field and field.type == FieldType.SIGNATURE and isinstance(value, str) and value:
-                value = save_signature_to_storage(value)
-                answer_data['value'] = value
-
             Answer.objects.create(response=response, **answer_data)
 
         return response
+
+    def update(self, instance, validated_data):
+        answers_data = validated_data.pop('answers', None)
+        form = validated_data.get('form', instance.form)
+        if form:
+            instance.form_version = form.version
+        instance.submitted_at = timezone.now()
+        instance.save()
+
+        if answers_data is not None:
+            for answer_data in answers_data:
+                field = answer_data.get('field')
+                value = answer_data.get('value')
+                if field:
+                    Answer.objects.update_or_create(
+                        response=instance,
+                        field=field,
+                        defaults={'value': value}
+                    )
+        return instance
 
 
 # ---------------------------------------------------------------------------

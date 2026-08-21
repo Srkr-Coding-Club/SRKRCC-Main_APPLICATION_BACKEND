@@ -8,7 +8,7 @@ from django.db.models import Count, Max, Q
 from django.db.models.functions import Cast
 from django.db.models import TextField
 
-from .models import Form, FormField, Response, Answer, BulkIngestSession, MemberNote
+from .models import Form, FormField, Response, Answer, BulkIngestSession, MemberNote, sync_all_scheduled_form_statuses
 from .serializers import (
     FormSerializer,
     ResponseSerializer,
@@ -40,6 +40,12 @@ class FormViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Annotate forms with real response count (excluding test submissions)."""
+        # Auto-sync and transition schedule states (SCHEDULED -> PUBLISHED on open_at, PUBLISHED/SCHEDULED -> CLOSED on close_at)
+        try:
+            sync_all_scheduled_form_statuses()
+        except Exception:
+            pass
+
         return Form.objects.annotate(
             response_count=Count(
                 'responses',
@@ -172,6 +178,61 @@ class FormViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(form)
         return DRFResponse(serializer.data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['get'], url_path='my-response')
+    def my_response(self, request, slug=None):
+        """
+        GET /api/forms/{slug}/my-response/
+        Returns the logged in user's most recent response for this form (if any),
+        along with whether response editing is permitted.
+        """
+        form = self.get_object()
+        user = request.user if request.user and request.user.is_authenticated else None
+        if not user and request.query_params.get('user_id'):
+            try:
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                user = User.objects.get(id=request.query_params.get('user_id'))
+            except Exception:
+                user = None
+
+        if not user:
+            return DRFResponse({
+                "has_submitted": False,
+                "can_edit": True,
+                "allow_multiple_responses": form.allow_multiple_responses,
+                "allow_response_editing": form.allow_response_editing,
+                "response": None,
+            }, status=status.HTTP_200_OK)
+
+        response_obj = Response.objects.filter(
+            form=form, user=user, is_test_submission=False
+        ).order_by('-submitted_at').first()
+
+        if not response_obj:
+            return DRFResponse({
+                "has_submitted": False,
+                "can_edit": True,
+                "allow_multiple_responses": form.allow_multiple_responses,
+                "allow_response_editing": form.allow_response_editing,
+                "response": None,
+            }, status=status.HTTP_200_OK)
+
+        now = timezone.now()
+        can_edit = form.allow_response_editing
+        if form.allow_edits_until and now > form.allow_edits_until:
+            can_edit = False
+        if form.status == 'CLOSED':
+            can_edit = False
+
+        serializer = ResponseDetailSerializer(response_obj)
+        return DRFResponse({
+            "has_submitted": True,
+            "can_edit": can_edit,
+            "allow_multiple_responses": form.allow_multiple_responses,
+            "allow_response_editing": form.allow_response_editing,
+            "response": serializer.data,
+        }, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['post'], url_path='close')
     def close(self, request, slug=None):
         """
@@ -197,24 +258,60 @@ class FormViewSet(viewsets.ModelViewSet):
         POST /api/forms/{slug}/schedule/
         Sets form to SCHEDULED with open_at and close_at windows.
         """
+        from django.utils.dateparse import parse_datetime
+        from datetime import datetime
+
         form = self.get_object()
-        open_at = request.data.get('open_at')
-        close_at = request.data.get('close_at')
-        form.status = 'SCHEDULED'
-        if open_at is not None:
-            form.open_at = open_at or None
-        if close_at is not None:
-            form.close_at = close_at or None
-        form.save(update_fields=['status', 'open_at', 'close_at', 'updated_at'])
-        log_audit_event(
-            actor=request.user,
-            action="Scheduled Form Window",
-            target_model="Form",
-            target_id=form.slug,
-            details={"title": form.title, "open_at": str(form.open_at), "close_at": str(form.close_at)}
-        )
-        serializer = self.get_serializer(form)
-        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+        open_at_raw = request.data.get('open_at')
+        close_at_raw = request.data.get('close_at')
+
+        def _parse_dt(val):
+            if not val or not str(val).strip():
+                return None
+            val_str = str(val).strip()
+            dt = parse_datetime(val_str)
+            if not dt:
+                try:
+                    dt = datetime.fromisoformat(val_str)
+                except Exception:
+                    pass
+            if dt and timezone.is_naive(dt):
+                dt = timezone.make_aware(dt)
+            return dt
+
+        try:
+            parsed_open = _parse_dt(open_at_raw) if open_at_raw is not None else form.open_at
+            parsed_close = _parse_dt(close_at_raw) if close_at_raw is not None else form.close_at
+
+            if parsed_open and parsed_close and parsed_open > parsed_close:
+                return DRFResponse(
+                    {"error": "Opening date/time cannot be later than closing date/time."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            form.status = 'SCHEDULED'
+            form.open_at = parsed_open
+            form.close_at = parsed_close
+            form.save(update_fields=['status', 'open_at', 'close_at', 'updated_at'])
+
+            log_audit_event(
+                actor=request.user,
+                action="Scheduled Form Window",
+                target_model="Form",
+                target_id=form.slug,
+                details={
+                    "title": form.title,
+                    "open_at": form.open_at.isoformat() if form.open_at else None,
+                    "close_at": form.close_at.isoformat() if form.close_at else None,
+                },
+            )
+            serializer = self.get_serializer(form)
+            return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return DRFResponse(
+                {"error": f"Failed to schedule form: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     @action(detail=True, methods=['post'], url_path='reopen')
     def reopen(self, request, slug=None):
@@ -758,34 +855,64 @@ class ResponseViewSet(viewsets.ModelViewSet):
         except Form.DoesNotExist:
             return DRFResponse({"error": "Form not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        now = timezone.now()
+        form_obj.evaluate_schedule_status(now)
+
+        if form_obj.status == 'CLOSED':
+            return DRFResponse({"error": "This form has closed to public submissions."}, status=status.HTTP_400_BAD_REQUEST)
+        if form_obj.status == 'DRAFT':
+            return DRFResponse({"error": "This form is in draft mode and not yet open for responses."}, status=status.HTTP_400_BAD_REQUEST)
+        if form_obj.status == 'SCHEDULED':
+            if form_obj.open_at and now < form_obj.open_at:
+                return DRFResponse({"error": f"Submissions for this form will open on {form_obj.open_at.isoformat()}."}, status=status.HTTP_400_BAD_REQUEST)
+        if form_obj.close_at and now > form_obj.close_at:
+            return DRFResponse({"error": f"Submissions for this form closed on {form_obj.close_at.isoformat()}."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_to_assign = request.user if request.user and request.user.is_authenticated else None
+        if not user_to_assign and request.data.get('user'):
+            try:
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                user_to_assign = User.objects.get(id=request.data.get('user'))
+            except Exception:
+                user_to_assign = None
+
         with transaction.atomic():
             # Check existing user response & edit window vs deduplication
-            if request.user and request.user.is_authenticated:
+            if user_to_assign:
                 existing = Response.objects.filter(
-                    form=form_obj, user=request.user, is_test_submission=False
+                    form=form_obj, user=user_to_assign, is_test_submission=False
                 ).first()
                 if existing:
-                    if form_obj.allow_edits_until and timezone.now() <= form_obj.allow_edits_until:
+                    now = timezone.now()
+                    is_edit_locked = (
+                        not form_obj.allow_response_editing
+                        or (form_obj.allow_edits_until and now > form_obj.allow_edits_until)
+                        or form_obj.status == 'CLOSED'
+                    )
+
+                    if not form_obj.allow_multiple_responses:
+                        if is_edit_locked:
+                            return DRFResponse(
+                                {"error": "You have already submitted a response for this form and edits are not permitted."},
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+                        # Auto-update existing response when single submission is configured and edit is allowed
                         serializer = ResponseSerializer(
                             existing, data=request.data, partial=True,
                             context={'form': form_obj, 'request': request},
                         )
                         serializer.is_valid(raise_exception=True)
-                        serializer.save()
+                        serializer.save(user=user_to_assign)
                         resp_data = serializer.data
                         store_idempotent_response(key, request, 200, resp_data)
                         return DRFResponse(resp_data, status=status.HTTP_200_OK)
-                    elif not form_obj.allow_multiple_responses:
-                        return DRFResponse(
-                            {"error": "You have already submitted a response for this form."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
 
             serializer = ResponseSerializer(
                 data=request.data, context={'form': form_obj, 'request': request}
             )
             serializer.is_valid(raise_exception=True)
-            serializer.save()
+            serializer.save(user=user_to_assign)
             resp_data = serializer.data
             store_idempotent_response(key, request, 201, resp_data)
             return DRFResponse(resp_data, status=status.HTTP_201_CREATED)

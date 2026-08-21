@@ -8,7 +8,11 @@ The Forms & Data Management module powers dynamic registration forms, complex mu
 ## Data Models
 
 ### 1. `Form`
-- **Fields**: `title`, `slug`, `description`, `image_url`, `category`, `status` (`DRAFT`, `PUBLISHED`, `CLOSED`), `version`, `allow_multiple_responses`, `allow_edits_until`, `open_at`, `close_at`.
+- **Fields**: `title`, `slug`, `description`, `image_url`, `category`, `status` (`DRAFT`, `PUBLISHED`, `CLOSED`), `version`, `allow_multiple_responses`, `allow_response_editing`, `enable_prefill`, `allow_edits_until`, `open_at`, `close_at`.
+- **Policy Controls**:
+  - `allow_multiple_responses` (bool): When `False` (default for registrations), students can only submit once. If a student returns, they enter response review/edit mode.
+  - `allow_response_editing` (bool): When `True`, students who previously submitted can update their answers.
+  - `enable_prefill` (bool): When `True` (and `allow_multiple_responses=False`), the form submission engine automatically matches and pre-fills student profile details (Full Name, Email, Phone, Roll Number, Branch, Year, GitHub, LinkedIn).
 
 ### 2. `FormField`
 - **Fields**: `form` (FK), `label`, `type` (TEXT, EMAIL, NUMBER, DROPDOWN, RADIO, CHECKBOX, MATRIX_*, SIGNATURE, RATING, etc.), `placeholder`, `is_required`, `options`, `rows`, `min_value`, `max_value`, `conditional_logic`, `validation_rules`, `order`, `is_deleted`.
