@@ -158,7 +158,40 @@ Whenever an agent creates a new feature, updates an API endpoint, modifies a dat
 2. **Update Documentation**: Automatically update the corresponding documentation files to reflect the code changes.
 3. **Maintain Learning Guides**: Ensure the technical learning guides explaining *how things work under the hood* (Django ORM, DRF execution pipeline, Celery background workers, Dynamic Form Builder metadata model) are up to date.
 
-### 11. Agent Decision Rule
+### 11. Universal Backup Engine & Raw Vault Architectural Invariants
+
+Whenever handling file backups, bulk ingestion, or spreadsheet restoration:
+
+1. **Universal Backup ≠ Universal Import**: Every uploaded file begins life strictly as an immutable `BackupJob` artifact (SHA-256 hash, raw row extraction, disk storage).
+2. **No Implicit Domain Mutation**: Uploading a backup file alone **never** creates, updates, or deletes application-domain records (`User`, `Event`, `Hackathon`, `FormSubmission`).
+3. **Decoupled Statuses**: `BackupJob` and `ImportAttempt` are separate entities. A single backup job may undergo multiple import attempts without re-uploading.
+4. **Strict 50% Rule & Required Fields**:
+   - Structured domain import is prohibited unless `Required Fields Satisfied = True` AND `Schema Match Confidence >= 50%`.
+   - Confidence = `(Unique Canonical Fields Matched / Total Expected Canonical Fields) * 100`. Canonical fields are counted at most once regardless of duplicate aliases.
+5. **Zero Legacy Data Loss**: Unmapped source columns must always be preserved in `ImportRow.raw_data` provenance.
+6. **Schemaless Raw Vault**: `UNKNOWN_RAW` backups enforce zero schema constraints and save raw rows into `RawBackupArchive` + `RawBackupRow`.
+### 12. Credential Safety & Password Setup Lifecycle Invariants
+
+Whenever handling member authentication, account restoration, or spreadsheet ingestion:
+
+1. **Credential Safety Invariant**: Backup restoration may restore account identity, permanent Club IDs, and profile data, but it must **NEVER** silently grant, forge, or overwrite authentication credentials.
+2. **Account Existence vs. Password Readiness**:
+   - New members created via backup import receive `set_unusable_password()` and `password_status = 'NEEDS_SETUP'`.
+   - Existing active members keep their existing passwords **byte-for-byte untouched**; never call `set_unusable_password()` on existing members during imports.
+   - Forbidden credential columns (`password`, `pwd`, `pass`, `password_hash`, etc.) are systematically purged by `UserBackupImporter` and `UserAccountService`.
+3. **Consistency Invariant**:
+   - `password_status == 'ACTIVE'` $\iff$ stored password is a valid, usable hash.
+   - `password_status == 'NEEDS_SETUP'` $\iff$ stored password is an unusable password (`!`).
+4. **Zero Raw Token Logging Invariant**:
+   - Raw setup tokens, setup URLs, passwords, or password hashes must **NEVER** appear in application logs, audit logs, exception messages, or frontend telemetry.
+5. **Anti-Enumeration & Rate Limiting**:
+   - Setup link requests are rate-limited (5/hr/email, 20/hr/IP) and return generic non-enumerating responses.
+   - Login responses intentionally return `PASSWORD_SETUP_REQUIRED` without the email to provide immediate actionable UX.
+6. **Atomic Concurrency Protection**:
+   - Password confirmation MUST execute inside `transaction.atomic()` using `PasswordSetupToken.objects.select_for_update().select_related('user')`.
+   - On confirmation, invalidate all remaining unused setup tokens for that user.
+
+### 13. Agent Decision Rule
 
 Before implementing a non-trivial change, the agent should be able to answer:
 

@@ -19,6 +19,11 @@ class MembershipStatus(models.TextChoices):
     PENDING = 'PENDING', 'Pending'
 
 
+class PasswordStatus(models.TextChoices):
+    ACTIVE = 'ACTIVE', 'Password Active'
+    NEEDS_SETUP = 'NEEDS_SETUP', 'Password Setup Required'
+
+
 class User(AbstractUser, TimeStampedModel):
     # Canonical Login Identity
     email = models.EmailField(unique=True)
@@ -43,6 +48,13 @@ class User(AbstractUser, TimeStampedModel):
         choices=MembershipStatus.choices,
         default=MembershipStatus.ACTIVE,
         db_index=True
+    )
+    password_status = models.CharField(
+        max_length=20,
+        choices=PasswordStatus.choices,
+        default=PasswordStatus.ACTIVE,
+        db_index=True,
+        help_text="Tracks credential readiness: ACTIVE for normal users, NEEDS_SETUP for backup-imported accounts"
     )
 
     # Profile & Academic Details
@@ -88,6 +100,11 @@ class User(AbstractUser, TimeStampedModel):
 
     class Meta:
         ordering = ['-created_at']
+
+    @property
+    def full_name(self) -> str:
+        name = f"{self.first_name} {self.last_name}".strip()
+        return name if name else self.username
 
     def __str__(self):
         club_tag = f" [{self.club_id}]" if self.club_id else ""
@@ -146,3 +163,27 @@ class ImportJob(TimeStampedModel):
 
     def __str__(self):
         return f"ImportJob({self.id} | {self.source_filename} | {self.status} | {self.valid_rows}/{self.total_rows} valid)"
+
+
+class PasswordSetupToken(TimeStampedModel):
+    """
+    Cryptographic single-use setup token for members restored or imported from backups.
+    Stores SHA-256 token hash (never plain text) with a strict 24-hour expiration window.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_setup_tokens')
+    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    is_used = models.BooleanField(default=False, db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token_hash', 'is_used']),
+            models.Index(fields=['user', 'is_used']),
+        ]
+
+    def __str__(self):
+        return f"PasswordSetupToken(user_id={self.user_id}, used={self.is_used}, expires={self.expires_at})"

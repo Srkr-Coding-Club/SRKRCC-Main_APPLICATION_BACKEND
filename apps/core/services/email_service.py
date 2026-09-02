@@ -121,6 +121,32 @@ class EmailNotificationService:
             return False
 
     @classmethod
+    def send_email(
+        cls,
+        recipient_email: str,
+        subject: str,
+        plain_content: str,
+        html_content: str | None = None,
+        from_email: str | None = None,
+    ) -> bool:
+        """Sends a plaintext or multipart email synchronously."""
+        sender = from_email or getattr(settings, "DEFAULT_FROM_EMAIL", "SRKR Coding Club <noreply@srkrcc.in>")
+        msg = EmailMultiAlternatives(
+            subject=subject,
+            body=plain_content,
+            from_email=sender,
+            to=[recipient_email],
+        )
+        if html_content:
+            msg.attach_alternative(html_content, "text/html")
+        try:
+            msg.send(fail_silently=False)
+            return True
+        except Exception as e:
+            print(f"[Email Notification Error] Failed sending direct email to {recipient_email}: {e}")
+            return False
+
+    @classmethod
     def create_email_job(
         cls,
         template: EmailTemplate,

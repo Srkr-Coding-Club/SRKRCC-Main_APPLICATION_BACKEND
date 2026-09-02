@@ -20,6 +20,19 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
+        username_val = attrs.get(self.username_field)
+        if username_val:
+            user = User.objects.filter(
+                models.Q(email__iexact=str(username_val).strip()) | models.Q(username__iexact=str(username_val).strip())
+            ).first()
+            if user:
+                from apps.accounts.models import PasswordStatus
+                if user.password_status == PasswordStatus.NEEDS_SETUP or not user.has_usable_password():
+                    raise serializers.ValidationError({
+                        "code": "PASSWORD_SETUP_REQUIRED",
+                        "detail": "Password setup is required for this account before logging in.",
+                    })
+
         data = super().validate(attrs)
         data['user'] = {
             'id': self.user.id,

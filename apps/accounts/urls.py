@@ -1,6 +1,11 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import RegisterView, ProfileView, UserListView, CustomTokenObtainPairView
+from .views_password_setup import (
+    PasswordSetupRequestView,
+    PasswordSetupVerifyView,
+    PasswordSetupConfirmView,
+)
 from .views_import import (
     MemberImportPreviewView,
     MemberImportCommitView,
@@ -20,6 +25,11 @@ urlpatterns = [
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('me/', ProfileView.as_view(), name='auth_me'),
     path('users/', UserListView.as_view(), name='auth_users_list'),
+
+    # One-Time Cryptographic Password Setup Lifecycle (For Backup Restored Members)
+    path('setup-password/request/', PasswordSetupRequestView.as_view(), name='password_setup_request'),
+    path('setup-password/verify/', PasswordSetupVerifyView.as_view(), name='password_setup_verify'),
+    path('setup-password/confirm/', PasswordSetupConfirmView.as_view(), name='password_setup_confirm'),
 
     # Member Directory Backup Import Pipeline
     path('members/import/preview/', MemberImportPreviewView.as_view(), name='member_import_preview'),

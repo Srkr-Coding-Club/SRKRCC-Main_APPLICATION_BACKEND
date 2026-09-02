@@ -148,5 +148,162 @@ class EmailDelivery(TimeStampedModel):
         return f"EmailDelivery({self.recipient_email} | {self.status} | Job={self.job_id})"
 
 
+# =============================================================================
+# Universal Backup Engine & Schemaless Raw Vault Models
+# =============================================================================
+
+class BackupJobStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Pending Intake'
+    PARSED = 'PARSED', 'Parsed & Preserved'
+    AWAITING_DOMAIN_SELECTION = 'AWAITING_DOMAIN_SELECTION', 'Awaiting Domain Selection'
+    READY = 'READY', 'Ready for Import'
+    PARTIALLY_IMPORTED = 'PARTIALLY_IMPORTED', 'Partially Imported'
+    ARCHIVED_RAW = 'ARCHIVED_RAW', 'Archived in Raw Vault'
+    FAILED = 'FAILED', 'Failed'
+    EXPIRED = 'EXPIRED', 'Expired'
+
+
+class BackupJob(TimeStampedModel):
+    """
+    Immutable snapshot artifact of any uploaded backup file (.csv or .xlsx).
+    Preserves original file, computes SHA-256 hash, and detects column headers.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    original_filename = models.CharField(max_length=255)
+    file_sha256 = models.CharField(max_length=64, db_index=True)
+    file_size_bytes = models.PositiveIntegerField()
+    file_storage_path = models.CharField(max_length=500, blank=True)
+    mime_type = models.CharField(max_length=100, default='application/octet-stream')
+    file_format = models.CharField(max_length=10)  # 'CSV' or 'XLSX'
+
+    headers = models.JSONField(default=list)
+    total_rows = models.PositiveIntegerField(default=0)
+    suggested_domain = models.CharField(max_length=50, blank=True)
+    suggestion_confidence = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+
+    status = models.CharField(
+        max_length=30,
+        choices=BackupJobStatus.choices,
+        default=BackupJobStatus.PENDING,
+        db_index=True
+    )
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"BackupJob({self.id} | {self.original_filename} | {self.status} | {self.total_rows} rows)"
+
+
+class ImportAttemptStatus(models.TextChoices):
+    PREVIEWED = 'PREVIEWED', 'Previewed'
+    COMMITTED = 'COMMITTED', 'Committed'
+    REJECTED = 'REJECTED', 'Rejected'
+    FAILED = 'FAILED', 'Failed'
+
+
+class ImportAttempt(TimeStampedModel):
+    """
+    Interpretation of a BackupJob into a specific target domain (USERS, EVENTS, FORMS, etc.).
+    Supports multiple attempts per backup artifact.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    backup_job = models.ForeignKey(BackupJob, on_delete=models.CASCADE, related_name='import_attempts')
+    idempotency_key = models.CharField(max_length=128, unique=True, null=True, blank=True, db_index=True)
+    target_domain = models.CharField(max_length=50)  # USERS, FORMS, EVENTS, HACKATHONS, UNKNOWN_RAW
+    target_form = models.ForeignKey('forms.Form', null=True, blank=True, on_delete=models.PROTECT)
+
+    column_mapping = models.JSONField(default=dict)
+    unmapped_columns = models.JSONField(default=list)
+
+    required_fields_satisfied = models.BooleanField(default=False)
+    schema_confidence_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+
+    total_records = models.IntegerField(default=0)
+    valid_records = models.IntegerField(default=0)
+    conflict_records = models.IntegerField(default=0)
+    inserted_records = models.IntegerField(default=0)
+    updated_records = models.IntegerField(default=0)
+
+    validation_summary = models.JSONField(default=dict)
+    status = models.CharField(max_length=20, choices=ImportAttemptStatus.choices, default=ImportAttemptStatus.PREVIEWED)
+    committed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    committed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"ImportAttempt({self.id} | {self.target_domain} | {self.status} | {self.valid_records}/{self.total_records})"
+
+
+class ImportRowAction(models.TextChoices):
+    CREATE = 'CREATE', 'Create'
+    UPDATE = 'UPDATE', 'Update'
+    SKIP = 'SKIP', 'Skip'
+    CONFLICT = 'CONFLICT', 'Conflict'
+
+
+class ImportRow(TimeStampedModel):
+    """
+    Row-level provenance preserving all raw source columns (including unmapped ones)
+    alongside normalized domain payloads.
+    """
+    import_attempt = models.ForeignKey(ImportAttempt, on_delete=models.CASCADE, related_name='rows')
+    source_row_number = models.PositiveIntegerField()
+    raw_data = models.JSONField(default=dict, help_text="Includes all unmapped legacy columns")
+    normalized_data = models.JSONField(default=dict)
+    action = models.CharField(max_length=20, choices=ImportRowAction.choices)
+    is_valid = models.BooleanField(default=True)
+    error_code = models.CharField(max_length=50, blank=True, default='')
+    error_message = models.TextField(blank=True, default='')
+    target_object_id = models.CharField(max_length=100, blank=True, default='')
+
+    class Meta:
+        ordering = ['source_row_number']
+        indexes = [models.Index(fields=['import_attempt', 'source_row_number'])]
+
+    def __str__(self):
+        return f"ImportRow({self.import_attempt_id} | Row #{self.source_row_number} | {self.action} | valid={self.is_valid})"
+
+
+class RawBackupArchive(TimeStampedModel):
+    """
+    Schemaless Raw Vault archive preserving arbitrary tabular spreadsheets with zero schema restrictions.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    backup_job = models.OneToOneField(BackupJob, on_delete=models.CASCADE, related_name='raw_archive')
+    title = models.CharField(max_length=255)
+    category = models.CharField(max_length=50, default='UNKNOWN_RAW')
+    headers = models.JSONField(default=list)
+    total_rows = models.PositiveIntegerField(default=0)
+    metadata = models.JSONField(default=dict)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"RawBackupArchive({self.id} | {self.title} | {self.total_rows} rows)"
+
+
+class RawBackupRow(TimeStampedModel):
+    """
+    Individual row in a schemaless RawBackupArchive.
+    """
+    archive = models.ForeignKey(RawBackupArchive, on_delete=models.CASCADE, related_name='rows')
+    row_number = models.PositiveIntegerField()
+    row_data = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ['row_number']
+        indexes = [models.Index(fields=['archive', 'row_number'])]
+
+    def __str__(self):
+        return f"RawBackupRow({self.archive_id} | Row #{self.row_number})"
+
+
 # Import DMC models so they are discovered by Django's migration framework
 from apps.core.dmc.models import ExportJob  # noqa: F401, E402

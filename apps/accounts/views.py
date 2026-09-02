@@ -17,6 +17,26 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     """
     serializer_class = CustomTokenObtainPairSerializer
 
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception as ex:
+            detail = getattr(ex, 'detail', None)
+            if isinstance(detail, dict) and detail.get('code'):
+                code_val = detail['code']
+                if isinstance(code_val, list):
+                    code_val = code_val[0]
+                detail_val = detail.get('detail', 'Password setup is required.')
+                if isinstance(detail_val, list):
+                    detail_val = detail_val[0]
+                return Response(
+                    {"code": str(code_val), "detail": str(detail_val)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            raise
+        return Response(serializer.validated_data, status=status.HTTP_200_OK)
+
 class UserListView(generics.ListCreateAPIView):
     queryset = User.objects.all().order_by('-created_at')
     serializer_class = UserSerializer

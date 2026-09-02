@@ -4,11 +4,16 @@ from datetime import datetime, date
 from django.db import transaction, models
 from django.utils import timezone
 from django.contrib.auth import get_user_model
-from apps.accounts.models import MembershipStatus, UserRole
+from apps.accounts.models import MembershipStatus, UserRole, PasswordStatus
 from apps.accounts.services.club_id_service import ClubIDService, InvalidClubIdError
 from apps.accounts.services.referral_service import ReferralService
 
 User = get_user_model()
+
+FORBIDDEN_CREDENTIAL_FIELDS = {
+    'password', 'pwd', 'pass', 'password_hash', 'passwd', 'credential',
+    'secret', 'hash', 'passwordhash'
+}
 
 BRANCH_NORMALIZATION_MAP = {
     "cse": "CSE",
@@ -181,6 +186,11 @@ class UserAccountService:
         Returns: (user, created_boolean, list_of_changed_field_names)
         Raises: ClubIdImmutableError, ClubIdConflictError, AccountError
         """
+        # Purge any forbidden credential columns
+        for k in list(payload.keys()):
+            if str(k).strip().lower().replace(" ", "_") in FORBIDDEN_CREDENTIAL_FIELDS:
+                payload.pop(k, None)
+
         raw_email = payload.get("email") or payload.get("Email")
         if not raw_email:
             raise AccountError("Email is required to create or update a member record.")
@@ -267,7 +277,6 @@ class UserAccountService:
                     except InvalidClubIdError:
                         pass
 
-                random_password = secrets.token_urlsafe(16)
                 user = User(
                     username=unique_username,
                     email=email,
@@ -284,8 +293,13 @@ class UserAccountService:
                     referred_by_raw=ref_raw or None,
                     created_from=source_origin,
                     role=UserRole.MEMBER,
+                    password_status=PasswordStatus.NEEDS_SETUP if is_backup_import else PasswordStatus.ACTIVE,
                 )
-                user.set_password(random_password)
+                if is_backup_import:
+                    user.set_unusable_password()
+                else:
+                    random_password = secrets.token_urlsafe(16)
+                    user.set_password(random_password)
                 user.save()
                 changed_fields.append("created_account")
 
@@ -357,6 +371,18 @@ class UserAccountService:
 
                 if "club_id" in changed_fields:
                     update_field_list.append("club_id")
+
+                # Authoritative Password Reconciliation Invariant:
+                # Never call set_unusable_password() on an existing user during import updates!
+                # Stored password hash is kept byte-for-byte identical.
+                if user.has_usable_password():
+                    if user.password_status != PasswordStatus.ACTIVE:
+                        user.password_status = PasswordStatus.ACTIVE
+                        update_field_list.append("password_status")
+                else:
+                    if user.password_status != PasswordStatus.NEEDS_SETUP:
+                        user.password_status = PasswordStatus.NEEDS_SETUP
+                        update_field_list.append("password_status")
 
                 if update_field_list:
                     update_field_list.append("updated_at")
