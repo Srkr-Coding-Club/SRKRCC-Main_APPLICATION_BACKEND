@@ -16,6 +16,7 @@ urlpatterns = [
     path('api/career/', include('apps.career.urls')),
     path('api/blogs/', include('apps.blogs.urls')),
     path('api/audit/', include('apps.audit.urls')),
+    path('api/admin/dmc/', include('apps.core.dmc.urls')),
 ]
 
 if settings.DEBUG:

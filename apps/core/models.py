@@ -34,3 +34,7 @@ class IdempotencyRecord(TimeStampedModel):
 
     def __str__(self):
         return f"IdempotencyRecord({self.key} -> {self.path} [{self.response_status}])"
+
+
+# Import DMC models so they are discovered by Django's migration framework
+from apps.core.dmc.models import ExportJob  # noqa: F401, E402
