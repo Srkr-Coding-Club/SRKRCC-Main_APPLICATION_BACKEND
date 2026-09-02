@@ -1,4 +1,4 @@
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, filters
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import get_user_model
@@ -20,7 +20,19 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 class UserListView(generics.ListCreateAPIView):
     queryset = User.objects.all().order_by('-created_at')
     serializer_class = UserSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = [
+        'club_id',
+        'email',
+        'first_name',
+        'last_name',
+        'branch',
+        'phone_number',
+        'roll_number',
+        'referred_by_raw',
+    ]
+    ordering_fields = ['created_at', 'registered_at', 'club_id', 'first_name', 'email']
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()

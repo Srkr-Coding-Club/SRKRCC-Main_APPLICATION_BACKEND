@@ -31,23 +31,34 @@ User = get_user_model()
 # ---------------------------------------------------------------------------
 
 COLUMNS: list[ColumnDefinition] = [
-    ColumnDefinition(key="id",              label="ID",              type="number",   category="meta",     sortable=True,  filterable=False, visible_by_default=False, renderer="text",  source="accounts.User.id"),
-    ColumnDefinition(key="name",            label="Full Name",       type="text",     category="common",   sortable=True,  filterable=False, visible_by_default=True,  renderer="text",  source="accounts.User.first_name+last_name"),
-    ColumnDefinition(key="email",           label="Email",           type="email",    category="common",   sortable=True,  filterable=False, visible_by_default=True,  renderer="email", source="accounts.User.email"),
-    ColumnDefinition(key="phone_number",    label="Phone",           type="text",     category="common",   sortable=False, filterable=False, visible_by_default=False, renderer="text",  source="accounts.User.phone_number"),
-    ColumnDefinition(key="role",            label="Role",            type="badge",    category="common",   sortable=True,  filterable=True,  visible_by_default=True,  renderer="badge", source="accounts.User.role"),
-    ColumnDefinition(key="roll_number",     label="Roll Number",     type="text",     category="academic", sortable=True,  filterable=False, visible_by_default=True,  renderer="text",  source="accounts.User.roll_number"),
-    ColumnDefinition(key="branch",          label="Branch",          type="badge",    category="academic", sortable=True,  filterable=True,  visible_by_default=True,  renderer="badge", source="accounts.User.branch"),
-    ColumnDefinition(key="year",            label="Year",            type="number",   category="academic", sortable=True,  filterable=True,  visible_by_default=True,  renderer="text",  source="accounts.User.year"),
-    ColumnDefinition(key="github_profile",  label="GitHub",          type="url",      category="common",   sortable=False, filterable=False, visible_by_default=False, renderer="link",  source="accounts.User.github_profile"),
-    ColumnDefinition(key="linkedin_profile",label="LinkedIn",        type="url",      category="common",   sortable=False, filterable=False, visible_by_default=False, renderer="link",  source="accounts.User.linkedin_profile"),
-    ColumnDefinition(key="is_active",       label="Active",          type="boolean",  category="meta",     sortable=True,  filterable=True,  visible_by_default=True,  renderer="boolean", source="accounts.User.is_active"),
-    ColumnDefinition(key="created_at",      label="Joined Date",     type="datetime", category="meta",     sortable=True,  filterable=False, visible_by_default=True,  renderer="date",  source="accounts.User.created_at"),
+    ColumnDefinition(key="id",                label="ID",                type="number",   category="meta",     sortable=True,  filterable=False, visible_by_default=False, renderer="text",    source="accounts.User.id"),
+    ColumnDefinition(key="club_id",           label="Club ID",           type="badge",    category="common",   sortable=True,  filterable=False, visible_by_default=True,  renderer="badge",   source="accounts.User.club_id"),
+    ColumnDefinition(key="name",              label="Full Name",         type="text",     category="common",   sortable=True,  filterable=False, visible_by_default=True,  renderer="text",    source="accounts.User.first_name+last_name"),
+    ColumnDefinition(key="email",             label="Email",             type="email",    category="common",   sortable=True,  filterable=False, visible_by_default=True,  renderer="email",   source="accounts.User.email"),
+    ColumnDefinition(key="phone_number",      label="Phone",             type="text",     category="common",   sortable=False, filterable=False, visible_by_default=True,  renderer="text",    source="accounts.User.phone_number"),
+    ColumnDefinition(key="membership_status", label="Status",            type="badge",    category="common",   sortable=True,  filterable=True,  visible_by_default=True,  renderer="badge",   source="accounts.User.membership_status"),
+    ColumnDefinition(key="role",              label="Role",              type="badge",    category="common",   sortable=True,  filterable=True,  visible_by_default=True,  renderer="badge",   source="accounts.User.role"),
+    ColumnDefinition(key="branch",            label="Branch",            type="badge",    category="academic", sortable=True,  filterable=True,  visible_by_default=True,  renderer="badge",   source="accounts.User.branch"),
+    ColumnDefinition(key="roll_number",       label="Roll Number",       type="text",     category="academic", sortable=True,  filterable=False, visible_by_default=False, renderer="text",    source="accounts.User.roll_number"),
+    ColumnDefinition(key="year",              label="Year",              type="number",   category="academic", sortable=True,  filterable=True,  visible_by_default=False, renderer="text",    source="accounts.User.year"),
+    ColumnDefinition(key="referred_by",       label="Referred By",       type="text",     category="common",   sortable=False, filterable=False, visible_by_default=True,  renderer="text",    source="accounts.User.referred_by_user+raw"),
+    ColumnDefinition(key="registered_at",     label="Registration Date", type="datetime", category="meta",     sortable=True,  filterable=False, visible_by_default=True,  renderer="date",    source="accounts.User.registered_at"),
+    ColumnDefinition(key="created_from",      label="Source Origin",     type="badge",    category="meta",     sortable=True,  filterable=True,  visible_by_default=False, renderer="badge",   source="accounts.User.created_from"),
+    ColumnDefinition(key="created_at",        label="System Joined",     type="datetime", category="meta",     sortable=True,  filterable=False, visible_by_default=False, renderer="date",    source="accounts.User.created_at"),
 ]
 
-ALLOWED_SORT_FIELDS = {"id", "email", "first_name", "last_name", "role", "branch", "year", "roll_number", "is_active", "created_at"}
+ALLOWED_SORT_FIELDS = {"id", "club_id", "email", "first_name", "last_name", "role", "membership_status", "branch", "year", "roll_number", "registered_at", "created_at"}
 
 FILTERS: list[FilterDefinition] = [
+    FilterDefinition(
+        key="membership_status", label="Membership Status", type="select", operators=["eq", "neq"],
+        options=[
+            FilterOption("Active", "ACTIVE"),
+            FilterOption("Inactive", "INACTIVE"),
+            FilterOption("Alumni", "ALUMNI"),
+            FilterOption("Suspended", "SUSPENDED"),
+        ],
+    ),
     FilterDefinition(
         key="role", label="Role", type="select", operators=["eq", "neq"],
         options=[
@@ -61,14 +72,20 @@ FILTERS: list[FilterDefinition] = [
     FilterDefinition(
         key="branch", label="Branch", type="select", operators=["eq", "neq"],
         options=[
-            FilterOption("CSE", "CSE"), FilterOption("IT", "IT"), FilterOption("ECE", "ECE"),
-            FilterOption("EEE", "EEE"), FilterOption("MECH", "MECH"), FilterOption("CIVIL", "CIVIL"),
+            FilterOption("CSE", "CSE"), FilterOption("IT", "IT"), FilterOption("AIDS", "AIDS"),
+            FilterOption("AIML", "AIML"), FilterOption("ECE", "ECE"), FilterOption("EEE", "EEE"),
+            FilterOption("MECH", "MECH"), FilterOption("CIVIL", "CIVIL"), FilterOption("CSBS", "CSBS"),
         ],
     ),
-    FilterDefinition(key="year",      label="Year",   type="select", operators=["eq", "neq"],
-        options=[FilterOption("1st Year", "1"), FilterOption("2nd Year", "2"), FilterOption("3rd Year", "3"), FilterOption("4th Year", "4")],
+    FilterDefinition(
+        key="created_from", label="Source Origin", type="select", operators=["eq", "neq"],
+        options=[
+            FilterOption("Legacy Backup Import", "LEGACY_IMPORT"),
+            FilterOption("Self Registration", "SELF_REGISTRATION"),
+            FilterOption("Admin Created", "ADMIN"),
+            FilterOption("Form Submission", "FORM"),
+        ],
     ),
-    FilterDefinition(key="is_active", label="Status", type="boolean", operators=["eq"]),
 ]
 
 
@@ -82,15 +99,17 @@ class UsersAdapter(BaseDatasetAdapter):
         return COLUMNS, FILTERS
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
-        qs = User.objects.all()
+        qs = User.objects.all().select_related('referred_by_user')
 
-        # Search: name, email, roll_number
+        # Search: name, email, roll_number, club_id, phone_number
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(
                 Q(first_name__icontains=q) |
                 Q(last_name__icontains=q) |
                 Q(email__icontains=q) |
+                Q(club_id__icontains=q) |
+                Q(phone_number__icontains=q) |
                 Q(roll_number__icontains=q)
             )
 
@@ -100,14 +119,14 @@ class UsersAdapter(BaseDatasetAdapter):
                 qs = qs.filter(role=f.value)
             elif f.field == "role" and f.operator == "neq":
                 qs = qs.exclude(role=f.value)
+            elif f.field == "membership_status" and f.operator == "eq":
+                qs = qs.filter(membership_status=f.value)
             elif f.field == "branch" and f.operator == "eq":
                 qs = qs.filter(branch=f.value)
             elif f.field == "branch" and f.operator == "neq":
                 qs = qs.exclude(branch=f.value)
-            elif f.field == "year" and f.operator == "eq":
-                qs = qs.filter(year=f.value)
-            elif f.field == "is_active" and f.operator == "eq":
-                qs = qs.filter(is_active=bool(f.value))
+            elif f.field == "created_from" and f.operator == "eq":
+                qs = qs.filter(created_from=f.value)
 
         # Sort (allowlisted)
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_FIELDS else "created_at"
@@ -130,7 +149,7 @@ class UsersAdapter(BaseDatasetAdapter):
 
     def get_record(self, record_id: str, user: Any) -> dict[str, CanonicalValue] | None:
         try:
-            u = User.objects.get(pk=record_id)
+            u = User.objects.select_related('referred_by_user').get(pk=record_id)
         except (User.DoesNotExist, ValueError):
             return None
         return self._normalize(u)
@@ -141,7 +160,7 @@ class UsersAdapter(BaseDatasetAdapter):
         user: Any,
         selected_ids: list[str] | None = None,
     ) -> Generator[dict[str, CanonicalValue], None, None]:
-        qs = User.objects.all()
+        qs = User.objects.all().select_related('referred_by_user')
 
         if selected_ids is not None:
             qs = qs.filter(pk__in=selected_ids)
@@ -150,17 +169,18 @@ class UsersAdapter(BaseDatasetAdapter):
                 q = query_req.search.strip()
                 qs = qs.filter(
                     Q(first_name__icontains=q) | Q(last_name__icontains=q) |
-                    Q(email__icontains=q) | Q(roll_number__icontains=q)
+                    Q(email__icontains=q) | Q(club_id__icontains=q) |
+                    Q(phone_number__icontains=q) | Q(roll_number__icontains=q)
                 )
             for f in query_req.filters:
                 if f.field == "role" and f.operator == "eq":
                     qs = qs.filter(role=f.value)
+                elif f.field == "membership_status" and f.operator == "eq":
+                    qs = qs.filter(membership_status=f.value)
                 elif f.field == "branch" and f.operator == "eq":
                     qs = qs.filter(branch=f.value)
-                elif f.field == "year" and f.operator == "eq":
-                    qs = qs.filter(year=f.value)
-                elif f.field == "is_active" and f.operator == "eq":
-                    qs = qs.filter(is_active=bool(f.value))
+                elif f.field == "created_from" and f.operator == "eq":
+                    qs = qs.filter(created_from=f.value)
 
         for u in qs.iterator(chunk_size=500):
             yield self._normalize(u)
@@ -169,17 +189,27 @@ class UsersAdapter(BaseDatasetAdapter):
 
     def _normalize(self, u: Any) -> dict[str, CanonicalValue]:
         name = f"{u.first_name} {u.last_name}".strip()
+        ref_display = ""
+        if u.referred_by_user:
+            ref_display = f"{u.referred_by_user.first_name} {u.referred_by_user.last_name}".strip() or u.referred_by_user.email
+        elif u.referred_by_raw:
+            ref_display = u.referred_by_raw
+
+        reg_date_str = u.registered_at.isoformat() if u.registered_at else (u.created_at.isoformat() if u.created_at else None)
+
         return {
-            "id":               self._val(str(u.pk),          "number",   "accounts.User.id"),
-            "name":             self._val(name or None,        "text",     "accounts.User.first_name+last_name"),
-            "email":            self._val(u.email,             "email",    "accounts.User.email"),
-            "phone_number":     self._val(u.phone_number,      "text",     "accounts.User.phone_number"),
-            "role":             self._val(u.role,              "badge",    "accounts.User.role"),
-            "roll_number":      self._val(u.roll_number,       "text",     "accounts.User.roll_number"),
-            "branch":           self._val(u.branch,            "badge",    "accounts.User.branch"),
-            "year":             self._val(u.year,              "number",   "accounts.User.year"),
-            "github_profile":   self._val(u.github_profile,    "url",      "accounts.User.github_profile"),
-            "linkedin_profile": self._val(u.linkedin_profile,  "url",      "accounts.User.linkedin_profile"),
-            "is_active":        self._val(u.is_active,         "boolean",  "accounts.User.is_active"),
-            "created_at":       self._val(u.created_at.isoformat() if u.created_at else None, "datetime", "accounts.User.created_at"),
+            "id":                self._val(str(u.pk),          "number",   "accounts.User.id"),
+            "club_id":           self._val(u.club_id,          "badge",    "accounts.User.club_id"),
+            "name":              self._val(name or None,       "text",     "accounts.User.first_name+last_name"),
+            "email":             self._val(u.email,            "email",    "accounts.User.email"),
+            "phone_number":      self._val(u.phone_number,     "text",     "accounts.User.phone_number"),
+            "membership_status": self._val(u.membership_status,"badge",    "accounts.User.membership_status"),
+            "role":              self._val(u.role,             "badge",    "accounts.User.role"),
+            "branch":            self._val(u.branch,           "badge",    "accounts.User.branch"),
+            "roll_number":       self._val(u.roll_number,      "text",     "accounts.User.roll_number"),
+            "year":              self._val(u.year,             "number",   "accounts.User.year"),
+            "referred_by":       self._val(ref_display or None,"text",     "accounts.User.referred_by"),
+            "registered_at":     self._val(reg_date_str,       "datetime", "accounts.User.registered_at"),
+            "created_from":      self._val(u.created_from,     "badge",    "accounts.User.created_from"),
+            "created_at":        self._val(u.created_at.isoformat() if u.created_at else None, "datetime", "accounts.User.created_at"),
         }

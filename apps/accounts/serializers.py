@@ -28,24 +28,34 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'first_name': self.user.first_name,
             'last_name': self.user.last_name,
             'role': self.user.role,
+            'club_id': self.user.club_id,
+            'membership_status': self.user.membership_status,
             'roll_number': self.user.roll_number,
             'branch': self.user.branch,
             'year': self.user.year,
             'phone_number': self.user.phone_number,
             'github_profile': self.user.github_profile,
             'linkedin_profile': self.user.linkedin_profile,
+            'registered_at': self.user.registered_at,
         }
         return data
 
 class UserSerializer(serializers.ModelSerializer):
+    referred_by_display = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 
-            'role', 'roll_number', 'branch', 'year', 'phone_number',
-            'github_profile', 'linkedin_profile', 'created_at'
+            'role', 'club_id', 'membership_status', 'roll_number', 'branch', 'year', 'phone_number',
+            'github_profile', 'linkedin_profile', 'registered_at', 'referred_by_raw', 'referred_by_display', 'created_at'
         ]
-        read_only_fields = ['id', 'role', 'created_at']
+        read_only_fields = ['id', 'role', 'created_at', 'club_id']
+
+    def get_referred_by_display(self, obj):
+        if obj.referred_by_user:
+            return f"{obj.referred_by_user.first_name} {obj.referred_by_user.last_name}".strip() or obj.referred_by_user.email
+        return obj.referred_by_raw or ""
 
 class UserProfileDetailSerializer(serializers.ModelSerializer):
     """
@@ -58,17 +68,23 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
     projects_count = serializers.SerializerMethodField()
     registered_events = serializers.SerializerMethodField()
     badges = serializers.SerializerMethodField()
+    referred_by_display = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 
-            'role', 'roll_number', 'branch', 'year', 'phone_number',
-            'github_profile', 'linkedin_profile', 'created_at',
+            'role', 'club_id', 'membership_status', 'roll_number', 'branch', 'year', 'phone_number',
+            'github_profile', 'linkedin_profile', 'registered_at', 'referred_by_raw', 'referred_by_display', 'created_at',
             'streak', 'points', 'events_count', 'projects_count',
             'registered_events', 'badges'
         ]
-        read_only_fields = ['id', 'role', 'created_at']
+        read_only_fields = ['id', 'role', 'created_at', 'club_id']
+
+    def get_referred_by_display(self, obj):
+        if obj.referred_by_user:
+            return f"{obj.referred_by_user.first_name} {obj.referred_by_user.last_name}".strip() or obj.referred_by_user.email
+        return obj.referred_by_raw or ""
 
     def get_streak(self, obj):
         try:
