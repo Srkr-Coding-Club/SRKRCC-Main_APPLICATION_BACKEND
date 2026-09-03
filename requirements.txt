@@ -9,3 +9,4 @@ python-dotenv>=1.0.1
 celery>=5.3.6
 redis>=5.0.3
 pillow>=10.2.0
+openpyxl>=3.1.5

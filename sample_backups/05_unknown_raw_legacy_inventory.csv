@@ -1,0 +1,7 @@
+Asset ID,Item Description,Category,Quantity,Assigned Room,Last Serviced Date,Custodian,Notes
+SRKR-HW-001,Arduino Mega 2560 Development Boards,Microcontrollers,15,Robotics Lab 1,2026-01-10,Dr. Prasad,Stored in Cabinet A
+SRKR-HW-002,Raspberry Pi 4 Model B (4GB RAM),Single Board Computers,8,IoT Innovation Lab,2026-02-15,Prof. Sunitha,Used for edge AI projects
+SRKR-HW-003,ESP32 Wi-Fi + BLE Dev Modules,Wireless SoC,25,Robotics Lab 1,2026-03-01,Dr. Prasad,Includes breadboards and jumper wires
+SRKR-HW-004,Logitech C920 Pro HD Webcams,Peripherals,6,Seminar Hall A,2026-04-12,Srikanth,Used for hackathon streaming
+SRKR-HW-005,SanDisk 64GB High Speed MicroSD Cards,Storage,20,IoT Innovation Lab,2026-02-15,Prof. Sunitha,Flashed with Raspberry Pi OS
+SRKR-HW-006,Ender-3 V2 3D Printer,Rapid Prototyping,2,Makerspace,2026-05-20,Ramesh Babu,PLA filament stock in storage rack 3

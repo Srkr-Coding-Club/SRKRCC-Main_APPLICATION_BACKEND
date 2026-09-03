@@ -157,3 +157,57 @@ class UniversalBackupEngineTests(TestCase):
 
         response = member_client.get("/api/admin/backups/")
         self.assertEqual(response.status_code, 403)
+
+    def test_xlsx_excel_spreadsheet_parsing(self):
+        """
+        Verifies openpyxl parses .xlsx Excel files properly and extracts headers and total rows.
+        """
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Members"
+        ws.append(["Full Name", "Email", "Phone", "Branch"])
+        ws.append(["Bob Rao", "bob@srkr.ac.in", "9876543210", "ECE"])
+        ws.append(["Charlie Verma", "charlie@srkr.ac.in", "9876543211", "CSE"])
+
+        xlsx_buf = io.BytesIO()
+        wb.save(xlsx_buf)
+        xlsx_buf.seek(0)
+
+        backup_job, meta = UniversalBackupService.intake_backup_file(
+            file_obj=xlsx_buf,
+            filename="annual_members.xlsx",
+            user=self.admin,
+        )
+
+        self.assertIsNotNone(backup_job.id)
+        self.assertEqual(backup_job.file_format, "XLSX")
+        self.assertEqual(backup_job.total_rows, 2)
+        self.assertEqual(backup_job.headers, ["Full Name", "Email", "Phone", "Branch"])
+        self.assertEqual(backup_job.suggested_domain, "USERS")
+
+    def test_backup_domain_analysis_api_endpoint(self):
+        """
+        Verifies POST /api/admin/backups/<id>/analyze/ executes cleanly without Decimal NameError.
+        """
+        csv_content = b"Full Name,Email,Phone,Branch\nTest User,test@srkr.ac.in,9999999999,CSE\n"
+        backup_job, _ = UniversalBackupService.intake_backup_file(
+            file_obj=io.BytesIO(csv_content),
+            filename="users_analysis_test.csv",
+            user=self.admin,
+        )
+
+        # 1. Test direct service call
+        analysis_res = UniversalBackupService.analyze_domain(backup_job, "USERS")
+        self.assertTrue(analysis_res["required_fields_satisfied"])
+        self.assertTrue(analysis_res["is_eligible_for_structured_import"])
+        self.assertEqual(analysis_res["target_domain"], "USERS")
+
+        # 2. Test API endpoint
+        api_res = self.client.post(
+            f"/api/admin/backups/{backup_job.id}/analyze/",
+            {"target_domain": "USERS"},
+            format="json",
+        )
+        self.assertEqual(api_res.status_code, 200)
+        self.assertTrue(api_res.json()["is_eligible_for_structured_import"])

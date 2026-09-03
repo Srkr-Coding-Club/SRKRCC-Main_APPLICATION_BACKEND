@@ -1,0 +1,6 @@
+Event Name,Event Type,Status,Start Time,End Time,Venue,Description,Registration Fee
+Full-Stack Web Sprint,WORKSHOP,PUBLISHED,2026-10-15 09:30:00,2026-10-15 17:00:00,CS Lab 4,Hands-on workshop building Next.js 15 App Router web apps and Django REST APIs.,0.00
+AI & Machine Learning BootCamp,BOOTCAMP,PUBLISHED,2026-11-01 10:00:00,2026-11-03 16:30:00,Seminar Hall A,"Three-day intensive training in Python data science, PyTorch, and NLP models.",150.00
+Competitive Programming Crash Course,SEMINAR,PUBLISHED,2026-11-20 14:00:00,2026-11-20 18:00:00,Online (Google Meet),Mastering dynamic programming and graph algorithms for coding placements.,0.00
+Cloud Computing & Docker 101,WORKSHOP,DRAFT,2026-12-05 09:00:00,2026-12-05 13:00:00,Server Room 2,"Introduction to containerization, microservices, and AWS EC2 deployments.",50.00
+Alumni Tech Talk: Scalable Backend Systems,TECH_TALK,PUBLISHED,2026-12-18 16:00:00,2026-12-18 18:00:00,Main Auditorium,Senior engineers from top tech firms discuss designing fault-tolerant distributed systems.,0.00

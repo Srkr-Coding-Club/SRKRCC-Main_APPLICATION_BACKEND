@@ -3,6 +3,7 @@ import io
 import os
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 from django.conf import settings
 from django.utils import timezone
