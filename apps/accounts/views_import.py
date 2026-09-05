@@ -10,16 +10,8 @@ from apps.accounts.services.club_id_service import ClubIDService, InvalidClubIdE
 from apps.accounts.services.referral_service import ReferralService
 from apps.core.models import EmailTemplate, EmailJob
 from apps.core.services.email_service import EmailNotificationService, TemplateSecurityError, MemberEmailContext
-
-
-class IsAdminOrClubLead(permissions.BasePermission):
-    """Allows access only to authenticated users with ADMIN or CLUB_LEAD roles."""
-    def has_permission(self, request, view):
-        return bool(
-            request.user and
-            request.user.is_authenticated and
-            (request.user.role in {'ADMIN', 'CLUB_LEAD'} or request.user.is_staff or request.user.is_superuser)
-        )
+from apps.audit.utils import log_audit_event
+from apps.core.permissions import IsAdminOrClubLead
 
 
 class MemberImportPreviewView(APIView):
@@ -81,6 +73,13 @@ class MemberImportCommitView(APIView):
                 user=request.user,
                 send_welcome_email=send_welcome_email,
                 email_template_id=email_template_id,
+            )
+            log_audit_event(
+                actor=request.user,
+                action="Committed Member Directory Import",
+                target_model="ImportJob",
+                target_id=str(job_id),
+                details={k: v for k, v in result.items() if isinstance(v, (str, int, float, bool))},
             )
             return Response(result, status=status.HTTP_200_OK)
         except MemberImportError as mie:
@@ -274,7 +273,18 @@ class EmailDispatchView(APIView):
                 campaign_name=campaign_name,
                 created_by=request.user,
             )
-            EmailNotificationService.process_email_job(job)
+
+            # Dispatch off the request/response cycle so a large campaign doesn't hold a
+            # web worker for the full SMTP send duration; fall back to sync if Celery
+            # isn't reachable (mirrors apps/core/dmc/export_service.py's async pattern).
+            # try_dispatch_with_timeout bounds the wait even if the broker connection
+            # itself hangs rather than failing fast (see its docstring).
+            from apps.core.tasks import process_email_job_task, try_dispatch_with_timeout
+            queued = try_dispatch_with_timeout(lambda: process_email_job_task.delay(job.id))
+            if queued:
+                job.refresh_from_db()
+            else:
+                EmailNotificationService.process_email_job(job)
 
             return Response({
                 "success": True,

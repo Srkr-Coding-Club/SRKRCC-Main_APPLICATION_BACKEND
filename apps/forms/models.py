@@ -48,6 +48,31 @@ class Form(TimeStampedModel):
     open_at = models.DateTimeField(blank=True, null=True)
     close_at = models.DateTimeField(blank=True, null=True)
 
+    # --- Club Member ID automation -----------------------------------------
+    club_id_enabled = models.BooleanField(
+        default=False,
+        help_text="On each completed submission, find-or-create a club member (by the mapped email field) and allocate a permanent Club ID if they don't already have one.",
+    )
+    club_id_prefix = models.CharField(
+        max_length=10, default='SCC',
+        help_text="2-6 uppercase letters, e.g. 'SCC'. Combined with the submission year: '25SCC278'.",
+    )
+    club_id_field_mapping = models.JSONField(
+        default=dict, blank=True,
+        help_text="Maps profile attributes to this form's own field IDs, e.g. {'email': 12, 'full_name': 13, 'phone_number': 14, 'branch': 15, 'roll_number': 16}. 'email' is required when club_id_enabled is True.",
+    )
+
+    # --- Submission confirmation email automation ---------------------------
+    confirmation_email_enabled = models.BooleanField(
+        default=False,
+        help_text="Send an EmailTemplate-based confirmation email to the submitter when their response completes.",
+    )
+    confirmation_email_template = models.ForeignKey(
+        'core.EmailTemplate', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='confirmation_forms',
+        help_text="Template dispatched on submission when confirmation_email_enabled is True.",
+    )
+
     class Meta:
         indexes = [
             models.Index(fields=['status', 'open_at']),

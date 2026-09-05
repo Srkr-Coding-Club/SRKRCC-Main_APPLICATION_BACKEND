@@ -8,16 +8,8 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from apps.core.models import BackupJob, ImportAttempt, RawBackupArchive
 from apps.core.services.backup.backup_service import UniversalBackupService, BackupError
 from apps.core.services.backup.registry import BackupImporterRegistry
-
-
-class IsAdminOrClubLead(permissions.BasePermission):
-    """Allows access only to authenticated users with ADMIN or CLUB_LEAD roles."""
-    def has_permission(self, request, view):
-        return bool(
-            request.user and
-            request.user.is_authenticated and
-            (getattr(request.user, 'role', '') in {'ADMIN', 'CLUB_LEAD'} or request.user.is_staff or request.user.is_superuser)
-        )
+from apps.audit.utils import log_audit_event
+from apps.core.permissions import IsAdminOrClubLead
 
 
 class BackupDomainMetadataView(APIView):
@@ -51,6 +43,13 @@ class BackupUploadIntakeView(APIView):
                 file_obj=file_obj,
                 filename=file_obj.name,
                 user=request.user,
+            )
+            log_audit_event(
+                actor=request.user,
+                action="Uploaded Backup File",
+                target_model="BackupJob",
+                target_id=str(backup_job.id),
+                details={"filename": backup_job.original_filename, "size_bytes": backup_job.file_size_bytes},
             )
             return Response(metadata, status=status.HTTP_201_CREATED)
         except BackupError as be:
@@ -226,6 +225,13 @@ class BackupCommitImportView(APIView):
                 user=request.user,
                 options=options,
             )
+            log_audit_event(
+                actor=request.user,
+                action="Committed Backup Import",
+                target_model="ImportAttempt",
+                target_id=str(attempt_id),
+                details={"backup_job_id": str(id), **{k: v for k, v in result.items() if isinstance(v, (str, int, float, bool))}},
+            )
             return Response(result)
         except BackupError as be:
             return Response({"error": str(be)}, status=status.HTTP_400_BAD_REQUEST)
@@ -250,6 +256,13 @@ class BackupArchiveRawView(APIView):
                 backup_job=backup_job,
                 user=request.user,
             )
+            log_audit_event(
+                actor=request.user,
+                action="Archived Backup to Raw Vault",
+                target_model="BackupJob",
+                target_id=str(id),
+                details={"filename": backup_job.original_filename},
+            )
             return Response(result)
         except BackupError as be:
             return Response({"error": str(be)}, status=status.HTTP_400_BAD_REQUEST)
@@ -269,6 +282,13 @@ class BackupRawDownloadView(APIView):
         if not backup_job or not backup_job.file_storage_path or not os.path.exists(backup_job.file_storage_path):
             raise Http404("Backup file not found on disk.")
 
+        log_audit_event(
+            actor=request.user,
+            action="Downloaded Raw Backup File",
+            target_model="BackupJob",
+            target_id=str(id),
+            details={"filename": backup_job.original_filename},
+        )
         response = FileResponse(open(backup_job.file_storage_path, 'rb'), content_type=backup_job.mime_type)
         response['Content-Disposition'] = f'attachment; filename="{backup_job.original_filename}"'
         return response

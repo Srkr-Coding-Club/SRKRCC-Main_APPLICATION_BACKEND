@@ -35,6 +35,11 @@ erDiagram
         string title
         string slug
         string status
+        bool club_id_enabled
+        string club_id_prefix
+        json club_id_field_mapping
+        bool confirmation_email_enabled
+        id confirmation_email_template
     }
     FORM_FIELDS {
         id id
@@ -70,6 +75,34 @@ A new registration form (say, for a brand-new hackathon) is just new rows in `Fo
 Text · Email · Phone · Number · Dropdown · Radio Button · Checkbox · Date · Time · File Upload · Multi File Upload · Paragraph · URL · Section · Conditional Logic
 
 "Conditional Logic" lets a field appear only if a previous answer matches a condition (e.g. "If team size > 1, show teammate details").
+
+## Submission-time automation (Club ID + confirmation email)
+
+A `Form` can optionally carry two automations, both configured entirely through
+metadata — no code or migration per form, same principle as the rest of this design:
+
+- `club_id_enabled` / `club_id_prefix` / `club_id_field_mapping` — when enabled,
+  `club_id_field_mapping` points at this form's own `FormField` IDs (e.g.
+  `{"email": 42, "full_name": 43}`). On each completed submission,
+  `apps/forms/services.py::FormAutomationService.resolve_club_member` reads the
+  submitted `Answer` for the mapped email field and calls
+  `UserAccountService.upsert_member` — the same find-or-create-by-email operation
+  the CSV member-import pipeline already uses. A new email gets a fresh, permanent
+  Club ID (`ClubIDService.allocate_next_club_id`, race-safe via a row-locked
+  sequence counter); an email that already has one keeps it. This is why the `User`
+  table doubles as the club member directory rather than a separate table existing
+  alongside it — one source of truth for "does this email already have a Club ID."
+- `confirmation_email_enabled` / `confirmation_email_template` — a `ForeignKey` to
+  `core.EmailTemplate`. When set, the submitter receives that template (rendered
+  with their own submitted details) once the response is fully saved. See
+  [../features/email-notifications.md](../features/email-notifications.md).
+
+Both run inside `ResponseViewSet.create()` (`apps/forms/views.py`): Club ID
+resolution happens **inside** the same DB transaction as the response save (a
+conflict rolls the whole submission back, so a Club ID is only ever persisted once
+the response itself is fully persisted); the confirmation email dispatches **after**
+that transaction commits, so a slow or failed send can never affect an otherwise
+successful submission.
 
 ## Benefits
 

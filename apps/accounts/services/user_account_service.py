@@ -1,7 +1,7 @@
 import re
 import secrets
 from datetime import datetime, date
-from django.db import transaction, models
+from django.db import transaction, models, IntegrityError
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from apps.accounts.models import MembershipStatus, UserRole, PasswordStatus
@@ -255,55 +255,70 @@ class UserAccountService:
             changed_fields = []
 
             if not user:
-                # Create New User
+                # Create New User. The whole create attempt is wrapped in a savepoint:
+                # two concurrent requests for the *same* new email can both pass the
+                # find_by_email() check above before either commits (read-committed
+                # isolation), and both then race to INSERT. The DB's unique constraint
+                # on email lets only one succeed; we catch the other's IntegrityError
+                # and fall through to the update path below against the winner's row,
+                # instead of letting a raw 500 escape.
                 created = True
-                username_base = email.split("@")[0][:140]
-                unique_username = username_base
-                counter = 1
-                while User.objects.filter(username=unique_username).exists():
-                    unique_username = f"{username_base[:135]}_{counter}"
-                    counter += 1
+                try:
+                    with transaction.atomic():
+                        username_base = email.split("@")[0][:140]
+                        unique_username = username_base
+                        counter = 1
+                        while User.objects.filter(username=unique_username).exists():
+                            unique_username = f"{username_base[:135]}_{counter}"
+                            counter += 1
 
-                # If incoming club_id is provided, use it; otherwise allocate new
-                final_club_id = incoming_club_id
-                if not final_club_id:
-                    target_year = registered_at.year if registered_at else timezone.now().year
-                    final_club_id = ClubIDService.allocate_next_club_id(year=target_year)
-                else:
-                    # Sync sequence watermark so future allocations know about this imported sequence
-                    try:
-                        parsed = ClubIDService.parse_club_id(final_club_id)
-                        ClubIDService.sync_sequence_watermark(parsed["full_year"], parsed["sequence"], parsed["prefix"])
-                    except InvalidClubIdError:
-                        pass
+                        # If incoming club_id is provided, use it; otherwise allocate new
+                        final_club_id = incoming_club_id
+                        if not final_club_id:
+                            target_year = registered_at.year if registered_at else timezone.now().year
+                            final_club_id = ClubIDService.allocate_next_club_id(year=target_year)
+                        else:
+                            # Sync sequence watermark so future allocations know about this imported sequence
+                            try:
+                                parsed = ClubIDService.parse_club_id(final_club_id)
+                                ClubIDService.sync_sequence_watermark(parsed["full_year"], parsed["sequence"], parsed["prefix"])
+                            except InvalidClubIdError:
+                                pass
 
-                user = User(
-                    username=unique_username,
-                    email=email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    club_id=final_club_id,
-                    branch=branch,
-                    phone_number=phone,
-                    roll_number=roll_num,
-                    year=year_int,
-                    registered_at=registered_at or timezone.now(),
-                    membership_status=status,
-                    referred_by_user=ref_user,
-                    referred_by_raw=ref_raw or None,
-                    created_from=source_origin,
-                    role=UserRole.MEMBER,
-                    password_status=PasswordStatus.NEEDS_SETUP if is_backup_import else PasswordStatus.ACTIVE,
-                )
-                if is_backup_import:
-                    user.set_unusable_password()
-                else:
-                    random_password = secrets.token_urlsafe(16)
-                    user.set_password(random_password)
-                user.save()
-                changed_fields.append("created_account")
+                        user = User(
+                            username=unique_username,
+                            email=email,
+                            first_name=first_name,
+                            last_name=last_name,
+                            club_id=final_club_id,
+                            branch=branch,
+                            phone_number=phone,
+                            roll_number=roll_num,
+                            year=year_int,
+                            registered_at=registered_at or timezone.now(),
+                            membership_status=status,
+                            referred_by_user=ref_user,
+                            referred_by_raw=ref_raw or None,
+                            created_from=source_origin,
+                            role=UserRole.MEMBER,
+                            password_status=PasswordStatus.NEEDS_SETUP if is_backup_import else PasswordStatus.ACTIVE,
+                        )
+                        if is_backup_import:
+                            user.set_unusable_password()
+                        else:
+                            random_password = secrets.token_urlsafe(16)
+                            user.set_password(random_password)
+                        user.save()
+                    changed_fields.append("created_account")
+                except IntegrityError:
+                    created = False
+                    user = cls.find_by_email(email)
+                    if not user:
+                        # Not an email collision after all (e.g. username or club_id
+                        # unique constraint) — re-raise the original failure shape.
+                        raise
 
-            else:
+            if not created:
                 # Update Existing User
                 # IMMUTABILITY INVARIANT: Check if incoming Club ID conflicts with existing Club ID
                 if incoming_club_id and user.club_id and user.club_id.upper() != incoming_club_id.upper():

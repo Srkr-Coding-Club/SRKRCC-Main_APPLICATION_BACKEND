@@ -187,11 +187,25 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
         return badges
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
+    password = serializers.CharField(write_only=True, min_length=8)
+    # Self-registration may only pick from these two low-privilege roles (the signup
+    # page's "Register As: Member / Volunteer" choice). ADMIN/CLUB_LEAD/JUDGE can only
+    # be granted by an existing admin — role was previously unrestricted, letting an
+    # anonymous POST with {"role": "ADMIN"} create a full admin account.
+    SELF_REGISTERABLE_ROLES = {'MEMBER', 'VOLUNTEER'}
+    role = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = User
         fields = ['username', 'email', 'password', 'first_name', 'last_name', 'role', 'roll_number', 'branch', 'year']
+
+    def validate_password(self, value):
+        from django.contrib.auth.password_validation import validate_password
+        validate_password(value)
+        return value
+
+    def validate_role(self, value):
+        return value if value in self.SELF_REGISTERABLE_ROLES else 'MEMBER'
 
     def create(self, validated_data):
         user = User.objects.create_user(
@@ -203,8 +217,6 @@ class RegisterSerializer(serializers.ModelSerializer):
             roll_number=validated_data.get('roll_number', ''),
             branch=validated_data.get('branch', ''),
             year=validated_data.get('year', None),
+            role=validated_data.get('role') or 'MEMBER',
         )
-        if 'role' in validated_data and validated_data['role']:
-            user.role = validated_data['role']
-            user.save()
         return user

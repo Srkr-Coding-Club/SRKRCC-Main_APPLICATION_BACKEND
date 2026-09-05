@@ -19,7 +19,9 @@ from .serializers import (
     enforce_field_validation,
 )
 from apps.audit.utils import log_audit_event
-from apps.core.permissions import IsAdminOrClubLead
+from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead
+from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError
+from .services import FormAutomationService
 from apps.core.idempotency import (
     get_idempotency_key,
     check_idempotent_response,
@@ -35,7 +37,7 @@ class StandardResultsSetPagination(PageNumberPagination):
 
 class FormViewSet(viewsets.ModelViewSet):
     serializer_class = FormSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'
 
     def get_queryset(self):
@@ -814,10 +816,23 @@ class FormViewSet(viewsets.ModelViewSet):
 
 
 class ResponseViewSet(viewsets.ModelViewSet):
+    """
+    Response records may contain sensitive PII from any form (phone numbers,
+    addresses, etc). create() stays open to anonymous callers because public
+    form submission (including by logged-out visitors) is a supported flow,
+    but listing/reading/editing another user's response is admin-only or
+    restricted to the response's own owner.
+    """
     queryset = Response.objects.select_related('form', 'user', 'created_by_admin').prefetch_related('answers__field').all().order_by('-submitted_at')
     serializer_class = ResponseSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     pagination_class = StandardResultsSetPagination
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [permissions.AllowAny()]
+        if self.action in ['list', 'retrieve']:
+            return [IsAdminOrClubLead()]
+        return [permissions.IsAuthenticated(), IsOwnerOrAdminOrClubLead()]
 
     def get_serializer_class(self):
         if self.action in ['list', 'retrieve']:
@@ -877,45 +892,84 @@ class ResponseViewSet(viewsets.ModelViewSet):
             except Exception:
                 user_to_assign = None
 
-        with transaction.atomic():
-            # Check existing user response & edit window vs deduplication
-            if user_to_assign:
-                existing = Response.objects.filter(
-                    form=form_obj, user=user_to_assign, is_test_submission=False
-                ).first()
-                if existing:
-                    now = timezone.now()
-                    is_edit_locked = (
-                        not form_obj.allow_response_editing
-                        or (form_obj.allow_edits_until and now > form_obj.allow_edits_until)
-                        or form_obj.status == 'CLOSED'
-                    )
+        resp_status = status.HTTP_201_CREATED
+        resolved_user = None
+        response_obj = None
 
-                    if not form_obj.allow_multiple_responses:
-                        if is_edit_locked:
-                            return DRFResponse(
-                                {"error": "You have already submitted a response for this form and edits are not permitted."},
-                                status=status.HTTP_400_BAD_REQUEST,
-                            )
-                        # Auto-update existing response when single submission is configured and edit is allowed
-                        serializer = ResponseSerializer(
-                            existing, data=request.data, partial=True,
-                            context={'form': form_obj, 'request': request},
+        # Note: a plain `return` from inside `transaction.atomic()` COMMITS (Django
+        # only rolls back on a propagating exception) — so the Club ID conflict
+        # exceptions below are deliberately left to propagate out of this block
+        # instead of being caught-and-returned from inside it, and are only turned
+        # into an HTTP response in the `except` after the block (and its automatic
+        # rollback) has finished.
+        try:
+            with transaction.atomic():
+                # Check existing user response & edit window vs deduplication
+                if user_to_assign:
+                    existing = Response.objects.filter(
+                        form=form_obj, user=user_to_assign, is_test_submission=False
+                    ).first()
+                    if existing:
+                        now = timezone.now()
+                        is_edit_locked = (
+                            not form_obj.allow_response_editing
+                            or (form_obj.allow_edits_until and now > form_obj.allow_edits_until)
+                            or form_obj.status == 'CLOSED'
                         )
-                        serializer.is_valid(raise_exception=True)
-                        serializer.save(user=user_to_assign)
-                        resp_data = serializer.data
-                        store_idempotent_response(key, request, 200, resp_data)
-                        return DRFResponse(resp_data, status=status.HTTP_200_OK)
 
-            serializer = ResponseSerializer(
-                data=request.data, context={'form': form_obj, 'request': request}
-            )
-            serializer.is_valid(raise_exception=True)
-            serializer.save(user=user_to_assign)
-            resp_data = serializer.data
-            store_idempotent_response(key, request, 201, resp_data)
-            return DRFResponse(resp_data, status=status.HTTP_201_CREATED)
+                        if not form_obj.allow_multiple_responses:
+                            if is_edit_locked:
+                                return DRFResponse(
+                                    {"error": "You have already submitted a response for this form and edits are not permitted."},
+                                    status=status.HTTP_400_BAD_REQUEST,
+                                )
+                            # Auto-update existing response when single submission is configured and edit is allowed
+                            serializer = ResponseSerializer(
+                                existing, data=request.data, partial=True,
+                                context={'form': form_obj, 'request': request},
+                            )
+                            serializer.is_valid(raise_exception=True)
+                            serializer.save(user=user_to_assign)
+                            response_obj = serializer.instance
+                            resp_status = status.HTTP_200_OK
+
+                if response_obj is None:
+                    serializer = ResponseSerializer(
+                        data=request.data, context={'form': form_obj, 'request': request}
+                    )
+                    serializer.is_valid(raise_exception=True)
+                    serializer.save(user=user_to_assign)
+                    response_obj = serializer.instance
+                    resp_status = status.HTTP_201_CREATED
+
+                # Club Member ID automation: find-or-create the club member by the
+                # form's mapped email field and allocate a permanent Club ID if they
+                # don't already have one. Runs inside this same atomic block so a
+                # conflict (e.g. ClubIdImmutableError) rolls back the response with it
+                # — "all or nothing," matching the requirement that a Club ID is only
+                # ever persisted once the response itself is fully completed.
+                if form_obj.club_id_enabled:
+                    answers_by_field_id = {
+                        a.field_id: a.value for a in response_obj.answers.all()
+                    }
+                    resolved_user = FormAutomationService.resolve_club_member(form_obj, answers_by_field_id)
+                    if resolved_user and response_obj.user_id != resolved_user.id:
+                        response_obj.user = resolved_user
+                        response_obj.save(update_fields=['user'])
+
+                resp_data = ResponseSerializer(response_obj, context={'form': form_obj, 'request': request}).data
+        except (ClubIdImmutableError, ClubIdConflictError) as ex:
+            return DRFResponse({"error": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Confirmation email dispatch happens AFTER the transaction commits — never
+        # from inside an open transaction, so a slow/failed send can't hold a DB lock
+        # or roll back an otherwise-successful submission.
+        if form_obj.confirmation_email_enabled:
+            answers_by_field_id = {a.field_id: a.value for a in response_obj.answers.all()}
+            FormAutomationService.dispatch_confirmation_email(form_obj, resolved_user, answers_by_field_id)
+
+        store_idempotent_response(key, request, resp_status, resp_data)
+        return DRFResponse(resp_data, status=resp_status)
 
 
 class MemberViewSet(viewsets.ReadOnlyModelViewSet):

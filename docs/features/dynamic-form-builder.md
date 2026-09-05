@@ -26,6 +26,31 @@ flowchart LR
 5. **Store & Persist** — Every submission is saved as a "Response," with each answer linked to its field in PostgreSQL.
 6. **View/Export/Email** — Admin can view responses in a table, export to CSV/Excel (see [data-export.md](data-export.md)), or trigger emails to everyone who responded (see [email-notifications.md](email-notifications.md)).
 
+## Automation (Club ID + Confirmation Email)
+
+Every form has an **Automation** section (in the builder, right under the title/description card) with two independent toggles:
+
+- **Generate Club Member ID on submission** — pick which of this form's own fields
+  supplies the submitter's email (required) and, optionally, name/phone/branch/roll
+  number, plus a 2–6 letter Club ID prefix (default `SCC`). On each completed
+  submission, the person is matched by that email against the club member
+  directory: a new email gets a fresh, permanent, sequential Club ID (e.g.
+  `26SCC001`); an email that's submitted before — on this form or any other
+  Club-ID-enabled form — keeps the ID it already has. Safe under concurrent
+  submissions: allocation is a row-locked counter, so two people finishing at the
+  same instant can never receive the same ID. See
+  [../architecture/data-model-dynamic-forms.md](../architecture/data-model-dynamic-forms.md#submission-time-automation-club-id--confirmation-email)
+  for the technical detail.
+- **Send confirmation email on submission** — pick an existing
+  [Email Template](email-notifications.md) or draft a new one inline (subject,
+  body, and which `{{placeholders}}` like `{{full_name}}`/`{{club_id}}` to use).
+  The submitter receives it, personalized with their own answers, once their
+  response is saved.
+
+Field mapping needs a field's **permanent** ID, so a brand-new form must be saved
+once before its fields can be mapped — the builder shows a hint and hides the
+mapping controls until then.
+
 ## Supported Field Types
 Text · Email · Phone · Number · Dropdown · Radio Button · Checkbox · Date · Time · File Upload · Multi File Upload · Paragraph · URL · Section (visual grouping) · Conditional Logic (show/hide a field based on a previous answer)
 

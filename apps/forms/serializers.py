@@ -209,6 +209,8 @@ class FormSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'description', 'image_url', 'category', 'status',
             'version', 'allow_multiple_responses', 'allow_response_editing', 'enable_prefill', 'max_responses_per_user',
             'allow_edits_until', 'open_at', 'close_at',
+            'club_id_enabled', 'club_id_prefix', 'club_id_field_mapping',
+            'confirmation_email_enabled', 'confirmation_email_template',
             'fields', 'created_at', 'response_count',
         ]
 
@@ -216,6 +218,31 @@ class FormSerializer(serializers.ModelSerializer):
         if not value or not str(value).strip():
             return None
         return str(value).strip()
+
+    def validate_club_id_prefix(self, value):
+        clean = (value or '').strip().upper()
+        if not re.match(r'^[A-Z]{2,6}$', clean):
+            raise serializers.ValidationError("Club ID prefix must be 2-6 letters (e.g. 'SCC').")
+        return clean
+
+    def validate(self, data):
+        club_id_enabled = data.get('club_id_enabled', getattr(self.instance, 'club_id_enabled', False))
+        if club_id_enabled:
+            mapping = data.get('club_id_field_mapping', getattr(self.instance, 'club_id_field_mapping', None) or {})
+            if not mapping.get('email'):
+                raise serializers.ValidationError({
+                    'club_id_field_mapping': "Club ID generation requires an 'email' field mapping — pick which form field supplies the member's email.",
+                })
+
+        confirmation_email_enabled = data.get('confirmation_email_enabled', getattr(self.instance, 'confirmation_email_enabled', False))
+        if confirmation_email_enabled:
+            template = data.get('confirmation_email_template', getattr(self.instance, 'confirmation_email_template', None))
+            if not template:
+                raise serializers.ValidationError({
+                    'confirmation_email_template': "Select or create a template before enabling the confirmation email.",
+                })
+
+        return data
 
     def create(self, validated_data):
         fields_data = validated_data.pop('fields', [])

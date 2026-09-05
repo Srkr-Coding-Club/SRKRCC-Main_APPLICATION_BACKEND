@@ -78,7 +78,9 @@ class PasswordSetupLifecycleTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 400)
+        # 403 per docs/architecture/password-setup-lifecycle.md (Forbidden, not a
+        # validation error) — this account exists but isn't allowed to log in yet.
+        self.assertEqual(response.status_code, 403)
         data = response.json()
         self.assertEqual(data.get("code"), "PASSWORD_SETUP_REQUIRED")
         # Anti-enumeration invariant: email must NOT be returned in payload

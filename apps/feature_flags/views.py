@@ -1,12 +1,13 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets
 from .models import FeatureFlag
 from .serializers import FeatureFlagSerializer
 from apps.audit.utils import log_audit_event
+from apps.core.permissions import IsAdminOrClubLeadOrReadOnly
 
 class FeatureFlagViewSet(viewsets.ModelViewSet):
     queryset = FeatureFlag.objects.all()
     serializer_class = FeatureFlagSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'key'
 
     def perform_update(self, serializer):
