@@ -16,8 +16,8 @@ from .serializers import (
     BulkIngestSessionSerializer,
     check_field_conditional_dependencies,
     evaluate_visible_fields,
-    enforce_field_validation,
 )
+from .validation import validate_submission, validate_form_definition, PARTIAL
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead
 from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError
@@ -145,9 +145,20 @@ class FormViewSet(viewsets.ModelViewSet):
     def publish(self, request, slug=None):
         """
         POST /api/forms/{slug}/publish/
-        Publish the form, making it live for public responses.
+        Publish the form, making it live for public responses. Blocks on a
+        structurally-invalid definition; returns soft warnings alongside success.
         """
         form = self.get_object()
+
+        report = validate_form_definition(form)
+        if not report.publishable:
+            return DRFResponse({
+                "detail": "This form cannot be published — its definition has blocking problems.",
+                "code": "FORM_DEFINITION_INVALID",
+                "errors": [e.as_dict() for e in report.errors],
+                "warnings": [w.as_dict() for w in report.warnings],
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         form.status = 'PUBLISHED'
         form.version += 1
         form.save(update_fields=['status', 'version', 'updated_at'])
@@ -159,7 +170,19 @@ class FormViewSet(viewsets.ModelViewSet):
             details={"title": form.title, "status": "PUBLISHED", "version": form.version}
         )
         serializer = self.get_serializer(form)
-        return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+        payload = dict(serializer.data)
+        payload["warnings"] = [w.as_dict() for w in report.warnings]
+        return DRFResponse(payload, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], url_path='validate')
+    def validate_definition(self, request, slug=None):
+        """
+        GET /api/forms/{slug}/validate/
+        Returns the form-definition report (blocking errors + soft warnings +
+        publishable flag) so the builder can show pre-publish diagnostics.
+        """
+        report = validate_form_definition(self.get_object())
+        return DRFResponse(report.as_dict(), status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='unpublish')
     def unpublish(self, request, slug=None):
@@ -342,41 +365,54 @@ class FormViewSet(viewsets.ModelViewSet):
         """
         POST /api/forms/{slug}/manual-entry/
         Records an administrative manual submission for ANY form (Live, Draft, or Closed).
+
+        Runs the validation engine in PARTIAL mode: structural / type / option
+        errors block, but required + constraint failures are returned as
+        ``warnings`` and the entry is still stored (admins routinely capture
+        incomplete legacy data). Pass ``?force=true`` to also store rows that
+        have blocking errors (recorded in the audit log).
         """
         form = self.get_object()
         answers_data = request.data.get('answers', [])
-        
-        response_obj = Response.objects.create(
-            form=form,
-            user=None,
-            is_manual_entry=True,
-            created_by_admin=request.user if (request.user and request.user.is_authenticated) else None,
-            form_version=form.version,
-        )
+        force = request.query_params.get('force') == 'true'
 
-        for ans in answers_data:
-            field_id = ans.get('field')
-            value = ans.get('value')
-            try:
-                field_obj = FormField.all_objects.get(id=field_id, form=form)
-                Answer.objects.create(
-                    response=response_obj,
-                    field=field_obj,
-                    value=value,
-                )
-            except FormField.DoesNotExist:
-                continue
+        report = validate_submission(form, answers_data, mode=PARTIAL)
+        if report.errors and not force:
+            return DRFResponse({
+                "detail": "This manual entry has blocking problems.",
+                "code": "VALIDATION_FAILED",
+                "errors": [e.as_dict() for e in report.errors],
+                "warnings": [w.as_dict() for w in report.warnings],
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            response_obj = Response.objects.create(
+                form=form,
+                user=None,
+                is_manual_entry=True,
+                created_by_admin=request.user if (request.user and request.user.is_authenticated) else None,
+                form_version=form.version,
+            )
+            for field_id, value in report.cleaned_answers.items():
+                Answer.objects.create(response=response_obj, field_id=field_id, value=value)
 
         log_audit_event(
             actor=request.user,
             action="Submitted Offline Manual Entry",
             target_model="Form",
             target_id=form.slug,
-            details={"title": form.title, "response_id": response_obj.id, "is_manual_entry": True}
+            details={
+                "title": form.title, "response_id": response_obj.id, "is_manual_entry": True,
+                "forced": bool(report.errors and force),
+                "warning_count": len(report.warnings),
+            }
         )
 
-        serializer = ResponseDetailSerializer(response_obj)
-        return DRFResponse(serializer.data, status=status.HTTP_201_CREATED)
+        payload = dict(ResponseDetailSerializer(response_obj).data)
+        payload["warnings"] = [w.as_dict() for w in report.warnings]
+        if report.errors:
+            payload["errors"] = [e.as_dict() for e in report.errors]
+        return DRFResponse(payload, status=status.HTTP_201_CREATED)
 
     # -----------------------------------------------------------------------
     # New: bulk CSV ingest
@@ -434,49 +470,46 @@ class FormViewSet(viewsets.ModelViewSet):
                 for row_index, row in enumerate(rows):
                     row_number = row_index + 2  # 1-indexed + header offset
 
-                    # Build submitted_map for conditional logic evaluation
-                    submitted_map = {
-                        field_id: row.get(field_id, '')
-                        for field_id in fields_by_id
-                    }
-                    visible_field_ids = evaluate_visible_fields(active_fields, submitted_map)
+                    # Convert the {str(field_id): value} row into the engine's
+                    # answer wire shape, then validate in PARTIAL mode.
+                    raw_answers = [
+                        {"field": fid, "value": row.get(fid)}
+                        for fid in fields_by_id
+                        if row.get(fid) not in (None, "")
+                    ]
+                    report = validate_submission(form, raw_answers, mode=PARTIAL)
 
-                    row_errors = []
-
-                    # Validate each visible field
-                    for field_id_str, field in fields_by_id.items():
-                        if field.id not in visible_field_ids:
-                            continue
-                        value = row.get(field_id_str, None)
-                        field_errors = enforce_field_validation(field, value)
-                        for err in field_errors:
-                            row_errors.append({
-                                "row": row_number,
-                                "field": field.label,
-                                "value": str(value) if value is not None else '',
-                                "error": err,
-                            })
-
-                    if row_errors:
+                    if report.errors:
+                        row_errors = [{
+                            "row": row_number,
+                            "field": e.label or (str(e.field_id) if e.field_id else "__row__"),
+                            "value": "",
+                            "error": e.message,
+                        } for e in report.errors]
                         if not skip_errors:
-                            # Hard fail: roll back everything
                             raise Exception(f"Validation error at row {row_number}: {row_errors}")
                         error_log.extend(row_errors)
                         skipped_count += 1
                         continue
 
-                    # Duplicate check: if form doesn't allow multiple responses,
-                    # check for an existing response from the same user
-                    email_field = next(
-                        (f for f in active_fields if f.type == 'EMAIL' and f.id in visible_field_ids),
-                        None
-                    )
+                    # Partial-mode warnings (missing required, constraint misses) are
+                    # recorded but do not block the row.
+                    for w in report.warnings:
+                        error_log.append({
+                            "row": row_number,
+                            "field": w.label or "__row__",
+                            "value": "",
+                            "error": f"[warning] {w.message}",
+                        })
+
+                    # Duplicate check by the form's email field.
+                    email_field = next((f for f in active_fields if f.type == 'EMAIL'), None)
                     email_value = None
                     if email_field:
-                        email_value = str(row.get(str(email_field.id), '') or '').strip()
+                        cleaned_email = report.cleaned_answers.get(email_field.id)
+                        email_value = str(cleaned_email).strip() if cleaned_email else None
 
                     if not form.allow_multiple_responses and email_value:
-                        # Check using JSONField-compatible Cast lookup
                         quoted_email = f'"{email_value}"'
                         existing_answer = (
                             Answer.objects
@@ -500,16 +533,10 @@ class FormViewSet(viewsets.ModelViewSet):
                                 created_by_admin=request.user,
                                 form_version=form.version,
                             )
-                            for field_id_str, field in fields_by_id.items():
-                                if field.id not in visible_field_ids:
-                                    continue
-                                value = row.get(field_id_str, None)
-                                if value is not None:
-                                    Answer.objects.create(
-                                        response=response_obj,
-                                        field=field,
-                                        value=value,
-                                    )
+                            for field_id, value in report.cleaned_answers.items():
+                                Answer.objects.create(
+                                    response=response_obj, field_id=field_id, value=value,
+                                )
                             imported_count += 1
                     except Exception as row_exc:
                         if not skip_errors:
@@ -834,6 +861,23 @@ class ResponseViewSet(viewsets.ModelViewSet):
             return [IsAdminOrClubLead()]
         return [permissions.IsAuthenticated(), IsOwnerOrAdminOrClubLead()]
 
+    def get_throttles(self):
+        # Public form submission is anonymous-writable; scope-limit it beyond the
+        # global anon rate so a form can't be flooded.
+        if self.action == 'create':
+            from rest_framework.throttling import ScopedRateThrottle
+            self.throttle_scope = 'form_submit'
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
+
+    @staticmethod
+    def _effective_max_responses(form_obj):
+        """None == unlimited. A single-submission form is handled elsewhere."""
+        if not form_obj.allow_multiple_responses:
+            return 1
+        m = form_obj.max_responses_per_user or 0
+        return m if m > 1 else None
+
     def get_serializer_class(self):
         if self.action in ['list', 'retrieve']:
             return ResponseDetailSerializer
@@ -906,9 +950,10 @@ class ResponseViewSet(viewsets.ModelViewSet):
             with transaction.atomic():
                 # Check existing user response & edit window vs deduplication
                 if user_to_assign:
-                    existing = Response.objects.filter(
+                    user_responses = Response.objects.filter(
                         form=form_obj, user=user_to_assign, is_test_submission=False
-                    ).first()
+                    )
+                    existing = user_responses.first()
                     if existing:
                         now = timezone.now()
                         is_edit_locked = (
@@ -932,6 +977,15 @@ class ResponseViewSet(viewsets.ModelViewSet):
                             serializer.save(user=user_to_assign)
                             response_obj = serializer.instance
                             resp_status = status.HTTP_200_OK
+                        else:
+                            # Multiple submissions allowed — enforce max_responses_per_user.
+                            cap = self._effective_max_responses(form_obj)
+                            if cap is not None and user_responses.count() >= cap:
+                                return DRFResponse(
+                                    {"error": f"You have reached the maximum of {cap} submissions for this form.",
+                                     "code": "MAX_RESPONSES_REACHED"},
+                                    status=status.HTTP_400_BAD_REQUEST,
+                                )
 
                 if response_obj is None:
                     serializer = ResponseSerializer(
@@ -941,6 +995,8 @@ class ResponseViewSet(viewsets.ModelViewSet):
                     serializer.save(user=user_to_assign)
                     response_obj = serializer.instance
                     resp_status = status.HTTP_201_CREATED
+
+                submission_warnings = getattr(serializer, '_validation_warnings', [])
 
                 # Club Member ID automation: find-or-create the club member by the
                 # form's mapped email field and allocate a permanent Club ID if they
@@ -958,6 +1014,9 @@ class ResponseViewSet(viewsets.ModelViewSet):
                         response_obj.save(update_fields=['user'])
 
                 resp_data = ResponseSerializer(response_obj, context={'form': form_obj, 'request': request}).data
+                if submission_warnings:
+                    resp_data = dict(resp_data)
+                    resp_data['warnings'] = submission_warnings
         except (ClubIdImmutableError, ClubIdConflictError) as ex:
             return DRFResponse({"error": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -970,6 +1029,57 @@ class ResponseViewSet(viewsets.ModelViewSet):
 
         store_idempotent_response(key, request, resp_status, resp_data)
         return DRFResponse(resp_data, status=resp_status)
+
+    def update(self, request, *args, **kwargs):
+        """
+        PUT/PATCH /api/forms/submissions/{id}/ — direct response edit.
+
+        Previously this inherited path skipped validation entirely (the serializer
+        had no ``form`` in context). It now injects the form and fully
+        re-validates against the current definition, and refuses edits once the
+        form is CLOSED or past its edit window.
+        """
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        form_obj = instance.form
+        now = timezone.now()
+
+        if form_obj.status == 'CLOSED':
+            return DRFResponse({"error": "This form is closed; responses can no longer be edited.",
+                                "code": "FORM_CLOSED"}, status=status.HTTP_400_BAD_REQUEST)
+        if not form_obj.allow_response_editing:
+            return DRFResponse({"error": "Response editing is disabled for this form.",
+                                "code": "EDITING_DISABLED"}, status=status.HTTP_400_BAD_REQUEST)
+        if form_obj.allow_edits_until and now > form_obj.allow_edits_until:
+            return DRFResponse({"error": "The edit window for this form has closed.",
+                                "code": "EDIT_WINDOW_CLOSED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = self.get_serializer(
+            instance, data=request.data, partial=partial,
+            context={'form': form_obj, 'request': request, 'mode': 'strict'},
+        )
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            serializer.save()
+
+        log_audit_event(
+            actor=request.user if request.user.is_authenticated else None,
+            action="Edited Form Response",
+            target_model="Form",
+            target_id=str(form_obj.id),
+            details={"response_id": instance.id, "form_title": form_obj.title,
+                     "form_version": instance.form_version},
+        )
+
+        data = dict(ResponseDetailSerializer(instance).data)
+        warnings = getattr(serializer, '_validation_warnings', [])
+        if warnings:
+            data['warnings'] = warnings
+        return DRFResponse(data, status=status.HTTP_200_OK)
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return self.update(request, *args, **kwargs)
 
 
 class MemberViewSet(viewsets.ReadOnlyModelViewSet):

@@ -4,111 +4,25 @@ import uuid
 import logging
 
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.utils import timezone
 
-from .models import Form, FormField, FieldType, Response, Answer, BulkIngestSession
+from .models import Form, FormField, FieldType, FormStatus, Response, Answer, BulkIngestSession
+from .validation import (
+    validate_submission,
+    validate_form_definition,
+    normalize_validation_rules,
+    normalize_conditional_logic,
+    STRICT,
+    PARTIAL,
+)
+# Backward-compat: the conditional helpers now live in apps.forms.validation.
+# Re-exported here because apps.forms.views still imports them by name.
+from .validation.conditional import evaluate_condition, evaluate_visible_fields  # noqa: F401
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Conditional logic evaluation
-# ---------------------------------------------------------------------------
-
-def _evaluate_single_rule(rule: dict, submitted_map: dict) -> bool:
-    """Evaluate one rule dict against the submitted answer map."""
-    trigger_field_id = rule.get("if")
-    if not trigger_field_id:
-        return True
-
-    trigger_val = str(submitted_map.get(str(trigger_field_id), ""))
-    # Support legacy 'equals' key as well as explicit 'operator'/'value' keys
-    if "equals" in rule and "operator" not in rule:
-        return trigger_val == str(rule["equals"])
-
-    op = rule.get("operator", "equals")
-    expected = str(rule.get("value", ""))
-
-    if op == "equals":
-        return trigger_val == expected
-    elif op == "not_equals":
-        return trigger_val != expected
-    elif op == "greater_than":
-        try:
-            return float(trigger_val) > float(expected)
-        except (ValueError, TypeError):
-            return False
-    elif op == "less_than":
-        try:
-            return float(trigger_val) < float(expected)
-        except (ValueError, TypeError):
-            return False
-    elif op == "contains":
-        return expected.lower() in trigger_val.lower()
-    return True
-
-
-def evaluate_condition(conditional_logic: dict, submitted_map: dict) -> bool:
-    """
-    Evaluate conditional_logic against submitted_map.
-
-    Supports two schemas:
-    - Legacy: {"if": field_id, "equals": value}
-    - Multi-rule: {"logic": "AND"|"OR", "rules": [...]}
-    """
-    if not conditional_logic or not isinstance(conditional_logic, dict):
-        return True
-
-    # Multi-rule schema
-    if "rules" in conditional_logic:
-        rules = conditional_logic.get("rules", [])
-        if not rules:
-            return True
-        logic = conditional_logic.get("logic", "AND").upper()
-        results = [_evaluate_single_rule(r, submitted_map) for r in rules]
-        if logic == "OR":
-            return any(results)
-        return all(results)  # AND is default
-
-    # Legacy single-rule schema
-    return _evaluate_single_rule(conditional_logic, submitted_map)
-
-
-def evaluate_visible_fields(form_fields, submitted_map: dict) -> set:
-    """
-    Return set of field IDs that should be visible given submitted_map.
-
-    Includes a cycle guard: iterates at most len(fields)+1 passes so that
-    circular conditional dependencies (A shows if B, B shows if A) cannot
-    cause an infinite loop.
-    """
-    visible: set = set()
-    MAX_PASSES = len(form_fields) + 1
-    changed = True
-    passes = 0
-
-    while changed and passes < MAX_PASSES:
-        changed = False
-        passes += 1
-        for field in form_fields:
-            cl = field.conditional_logic
-            if not cl:
-                # No condition — always visible
-                if field.id not in visible:
-                    visible.add(field.id)
-                    changed = True
-            else:
-                should_show = evaluate_condition(cl, submitted_map)
-                if should_show and field.id not in visible:
-                    visible.add(field.id)
-                    changed = True
-                elif not should_show and field.id in visible:
-                    visible.discard(field.id)
-                    changed = True
-
-    return visible
 
 
 # ---------------------------------------------------------------------------
@@ -134,51 +48,24 @@ def save_signature_to_storage(base64_string: str) -> str:
         return base64_string
 
 
-# ---------------------------------------------------------------------------
-# Field-level validation helper (used by bulk_ingest view)
-# ---------------------------------------------------------------------------
-
 EMAIL_RE = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
 
 
-def enforce_field_validation(field: FormField, value) -> list:
+class FormValidationError(APIException):
     """
-    Run type-based and required validation for a single FormField value.
+    Carries the engine's structured report ({detail, code, errors[], warnings[]})
+    to the client verbatim.
 
-    Returns a list of error strings (empty list = valid).
-    FILE and SIGNATURE fields cannot be ingested via CSV — always returns an error.
+    A plain ``APIException`` (not ``serializers.ValidationError``) so it is NOT
+    caught-and-rewrapped by ``serializer.is_valid()`` — it propagates straight to
+    DRF's exception handler, which returns a dict ``detail`` as-is. Result: the
+    client gets exactly ``report.as_dict()`` with a 400.
     """
-    errors = []
+    status_code = 400
+    default_code = "VALIDATION_FAILED"
 
-    # Unsupported CSV field types
-    if field.type in (FieldType.FILE, FieldType.MULTI_FILE, FieldType.SIGNATURE):
-        errors.append(
-            f"Field '{field.label}' is of type {field.type} which cannot be imported via CSV."
-        )
-        return errors
-
-    is_empty = value is None or value == '' or value == [] or value == {}
-
-    if field.is_required and is_empty:
-        errors.append(f"Field '{field.label}' is required.")
-        return errors
-
-    if is_empty:
-        return errors  # Optional field, nothing to validate
-
-    str_value = str(value).strip()
-
-    if field.type == FieldType.EMAIL:
-        if not EMAIL_RE.match(str_value):
-            errors.append(f"Field '{field.label}': '{str_value}' is not a valid email address.")
-
-    elif field.type in (FieldType.NUMBER, FieldType.RATING, FieldType.LINEAR_SCALE):
-        try:
-            float(str_value)
-        except (ValueError, TypeError):
-            errors.append(f"Field '{field.label}': '{str_value}' is not a valid number.")
-
-    return errors
+    def __init__(self, payload: dict):
+        self.detail = payload
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +82,16 @@ class FormFieldSerializer(serializers.ModelSerializer):
             'options', 'rows', 'min_value', 'max_value',
             'conditional_logic', 'validation_rules', 'order',
         ]
+
+    def validate(self, attrs):
+        """Canonicalize the two JSON config blobs on write so submissions and
+        the publish gate always see one shape."""
+        ftype = attrs.get('type') or getattr(self.instance, 'type', FieldType.TEXT)
+        if 'validation_rules' in attrs:
+            attrs['validation_rules'] = normalize_validation_rules(ftype, attrs.get('validation_rules'))
+        if 'conditional_logic' in attrs:
+            attrs['conditional_logic'] = normalize_conditional_logic(attrs.get('conditional_logic'))
+        return attrs
 
 
 class FormSerializer(serializers.ModelSerializer):
@@ -241,6 +138,21 @@ class FormSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'confirmation_email_template': "Select or create a template before enabling the confirmation email.",
                 })
+
+        # Form-definition validation. DRAFT saves stay lenient (a form is built
+        # incrementally); PUBLISHED / SCHEDULED must have a fully valid definition
+        # so every submission against it can be validated.
+        target_status = data.get('status', getattr(self.instance, 'status', FormStatus.DRAFT))
+        if target_status in (FormStatus.PUBLISHED, FormStatus.SCHEDULED) and 'fields' in data:
+            report = validate_form_definition({'fields': data.get('fields') or []})
+            if not report.publishable:
+                raise FormValidationError({
+                    'detail': 'This form cannot be published — its definition has blocking problems.',
+                    'code': 'FORM_DEFINITION_INVALID',
+                    'errors': [e.as_dict() for e in report.errors],
+                    'warnings': [w.as_dict() for w in report.warnings],
+                })
+            self._definition_warnings = [w.as_dict() for w in report.warnings]
 
         return data
 
@@ -377,7 +289,17 @@ class BulkIngestSessionSerializer(serializers.ModelSerializer):
         ]
 
 class ResponseSerializer(serializers.ModelSerializer):
-    answers = AnswerSerializer(many=True)
+    """
+    Submission serializer. ``answers`` arrives as a raw list of ``{field, value}``
+    dicts; the full validation engine (apps.forms.validation) runs in
+    ``validate()`` and its normalized output is what actually gets persisted.
+
+    Context keys the caller may pass:
+      ``form``   — the target Form (falls back to ``instance.form`` on edit)
+      ``mode``   — "strict" (default) or "partial" (admin manual entry / import)
+      ``request``
+    """
+    answers = serializers.SerializerMethodField()
 
     class Meta:
         model = Response
@@ -387,86 +309,88 @@ class ResponseSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['form_version']
 
+    # -- read representation -------------------------------------------------
+
+    def get_answers(self, obj):
+        if not obj.pk:
+            return []
+        return [
+            {'field': a.field_id, 'value': a.value}
+            for a in obj.answers.all()
+        ]
+
+    # -- validation -------------------------------------------------------
+
+    def _resolve_form(self, data):
+        return self.context.get('form') or data.get('form') or getattr(self.instance, 'form', None)
+
     def validate(self, data):
-        form = self.context.get('form') or data.get('form')
-        answers = data.get('answers', [])
-        submitted_map = {str(a['field'].id): a.get('value') for a in answers if 'field' in a}
+        form = self._resolve_form(data)
+        if form is None:
+            raise FormValidationError({'detail': 'A target form is required.', 'code': 'FORM_REQUIRED',
+                                       'errors': [], 'warnings': []})
 
-        if form:
-            active_fields = list(form.fields.filter(is_deleted=False))
-            visible_ids = evaluate_visible_fields(active_fields, submitted_map)
+        raw_answers = self.initial_data.get('answers', []) if hasattr(self, 'initial_data') else []
+        mode = self.context.get('mode', STRICT)
+        is_edit = self.instance is not None
+        existing = None
+        if is_edit:
+            existing = {a.field_id: a.value for a in self.instance.answers.all()}
 
-            for field in active_fields:
-                if field.type in (FieldType.SECTION, 'SECTION'):
-                    continue
-                if field.id not in visible_ids:
-                    continue
-                if field.is_required:
-                    val = submitted_map.get(str(field.id))
-                    if val is None or val == "" or val == [] or val == {}:
-                        raise serializers.ValidationError({
-                            'answers': f"Field '{field.label}' is required."
-                        })
+        report = validate_submission(
+            form, raw_answers, mode=mode, is_edit=is_edit, existing_answers=existing,
+        )
+        if report.errors:
+            raise FormValidationError(report.as_dict())
 
-                # Validate matrix answer shape
-                if field.type in (FieldType.MATRIX_RADIO, FieldType.MATRIX_CHECKBOX):
-                    val = submitted_map.get(str(field.id))
-                    if val is not None and not isinstance(val, dict):
-                        raise serializers.ValidationError({
-                            'answers': (
-                                f"Field '{field.label}' expects a matrix answer "
-                                f"in the shape {{\"Row\": \"Column\"}}."
-                            )
-                        })
-
+        self._report = report
+        self._validation_warnings = [w.as_dict() for w in report.warnings]
+        data['form'] = form
         return data
 
+    # -- persistence ----------------------------------------------------
+
+    def _write_answers(self, response):
+        cleaned = getattr(self, '_report', None)
+        cleaned = cleaned.cleaned_answers if cleaned else {}
+        keep_ids = set(cleaned.keys())
+
+        # Remove answers no longer present (field hidden / cleared on edit).
+        response.answers.exclude(field_id__in=keep_ids).delete()
+        for field_id, value in cleaned.items():
+            Answer.objects.update_or_create(
+                response=response, field_id=field_id, defaults={'value': value},
+            )
+
     def create(self, validated_data):
+        validated_data.pop('answers', None)
         form = validated_data.get('form')
         if form:
             validated_data['form_version'] = form.version
 
         request = self.context.get('request')
-        if 'user' not in validated_data or validated_data['user'] is None:
+        if not validated_data.get('user'):
             if request and request.user and request.user.is_authenticated:
                 validated_data['user'] = request.user
-            elif request and request.data.get('user'):
+            elif request and isinstance(request.data, dict) and request.data.get('user'):
                 try:
                     from django.contrib.auth import get_user_model
-                    User = get_user_model()
-                    validated_data['user'] = User.objects.get(id=request.data.get('user'))
+                    validated_data['user'] = get_user_model().objects.get(id=request.data.get('user'))
                 except Exception:
                     pass
 
-        answers_data = validated_data.pop('answers', [])
         response = Response.objects.create(**validated_data)
-
-        for answer_data in answers_data:
-            field = answer_data.get('field')
-            value = answer_data.get('value')
-
-            Answer.objects.create(response=response, **answer_data)
-
+        self._write_answers(response)
         return response
 
     def update(self, instance, validated_data):
-        answers_data = validated_data.pop('answers', None)
+        validated_data.pop('answers', None)
         form = validated_data.get('form', instance.form)
         if form:
             instance.form_version = form.version
         instance.submitted_at = timezone.now()
         instance.save()
-
-        if answers_data is not None:
-            for answer_data in answers_data:
-                field = answer_data.get('field')
-                value = answer_data.get('value')
-                if field:
-                    Answer.objects.update_or_create(
-                        response=instance,
-                        field=field,
-                        defaults={'value': value}
-                    )
+        self._write_answers(instance)
         return instance
 
 
@@ -478,19 +402,18 @@ def check_field_conditional_dependencies(field_id: int, form) -> list:
     """
     Return a list of FormField instances whose conditional_logic references
     the given field_id, indicating a dependency that would break on deletion.
+    Understands the canonical shape ({"rules": [{"field": id}]}), the legacy
+    multi-rule shape ({"rules": [{"if": id}]}) and the legacy single-rule shape
+    ({"if": id}).
     """
+    from .validation.schema import normalize_conditional_logic, iter_condition_field_refs
+
     dependent = []
-    field_id_str = str(field_id)
+    target = str(field_id)
     for f in form.fields.filter(is_deleted=False).exclude(id=field_id):
-        cl = f.conditional_logic
-        if not cl:
+        norm = normalize_conditional_logic(f.conditional_logic)
+        if not norm:
             continue
-        # Multi-rule schema
-        for rule in cl.get("rules", []):
-            if str(rule.get("if", "")) == field_id_str:
-                dependent.append(f)
-                break
-        # Legacy schema
-        if not cl.get("rules") and str(cl.get("if", "")) == field_id_str:
+        if any(str(ref) == target for ref in iter_condition_field_refs(norm)):
             dependent.append(f)
     return dependent

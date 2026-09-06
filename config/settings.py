@@ -125,6 +125,12 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Dynamic-form FILE / MULTI_FILE answers are captured inline as base64 data URLs
+# (there is no binary-upload endpoint), so a submission body can carry a few MB
+# of image data. Raise the form-post ceiling from Django's 2.5 MB default.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 30 * 1024 * 1024  # 30 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 30 * 1024 * 1024
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST Framework Settings
@@ -143,6 +149,9 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/minute',
         'user': '1000/minute',
+        # Public form submission — anonymous-writable, so scope-limit it below
+        # the global anon rate to blunt flooding of a single form.
+        'form_submit': '20/minute',
     },
 }
 

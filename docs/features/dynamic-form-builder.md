@@ -52,7 +52,39 @@ once before its fields can be mapped — the builder shows a hint and hides the
 mapping controls until then.
 
 ## Supported Field Types
-Text · Email · Phone · Number · Dropdown · Radio Button · Checkbox · Date · Time · File Upload · Multi File Upload · Paragraph · URL · Section (visual grouping) · Conditional Logic (show/hide a field based on a previous answer)
+Text · Email · Phone · Number · Dropdown · Radio Button · Checkbox · Date · Time · File Upload · Multi File Upload · Paragraph · URL · Section (visual grouping) · Rating · Linear Scale · Matrix · Signature · Conditional Logic (show/hide/require a field based on a previous answer)
+
+## Validation & Rules (backend-enforced)
+
+Every rule an admin configures is validated **twice**: once when the form is
+published (a form with an invalid definition — bad regex, `minLength > maxLength`,
+a choice field with no options, a conditional rule pointing at a deleted field —
+**cannot be published**), and again on **every submission**, server-side,
+regardless of what the browser checked.
+
+- **Per-type response validation** — alphabetic/alphanumeric/numeric/email/phone/
+  URL/date formats, min/max/exact length, min/max value, regex, allowed
+  characters, starts/ends/contains, min/max selections, date ranges, file
+  type/size/count, rating range, matrix rows/columns.
+- **Conditional logic** — nested `AND`/`OR` groups, ~30 operators (equality,
+  numeric, text, selection, date), and actions `show` / `hide` / `require` /
+  `optional`. A field hidden by its condition is **not required** and any stray
+  answer for it is discarded.
+- **Cross-field rules** — compare one answer to another (confirm-password,
+  `Start Date <= End Date`, `Min Salary <= Max Salary`, "Company required if
+  Employment Status = Employed").
+- **Security** — the API rejects answers for unknown / other-form / deleted
+  fields, duplicate answers, wrong data types and attempts to bypass required or
+  conditional rules. The stored definition is the source of truth.
+
+Admin tools (**Manual Entry**, **CSV Import**, **Backup Import**) run the same
+engine in *partial mode*: structural / type / option errors still block, but
+missing-required and constraint misses are recorded as warnings so incomplete
+legacy data can still be captured (`?force=true` overrides even hard errors on
+Manual Entry, and is audit-logged).
+
+Full rule reference: [`../reference/form-validation-rules.md`](../reference/form-validation-rules.md).
+Architecture: [`../architecture/form-validation-engine.md`](../architecture/form-validation-engine.md).
 
 ## Example: Building a Hackathon Registration Form
 1. Admin adds fields: Team Name (Text), Team Size (Number), Track (Dropdown), Members' Details (Section with repeating Text fields), Resume (File Upload).
