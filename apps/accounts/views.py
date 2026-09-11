@@ -1,9 +1,11 @@
 from rest_framework import generics, permissions, status, filters
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import get_user_model
 from .serializers import (
     UserSerializer,
+    UserRoleUpdateSerializer,
     UserProfileDetailSerializer,
     RegisterSerializer,
     CustomTokenObtainPairSerializer,
@@ -68,6 +70,42 @@ class UserListView(generics.ListCreateAPIView):
         'referred_by_raw',
     ]
     ordering_fields = ['created_at', 'registered_at', 'club_id', 'first_name', 'email']
+
+class UserDetailView(generics.RetrieveUpdateAPIView):
+    """
+    PATCH /auth/users/{id}/ — backs the admin Users tab's role dropdown.
+    Only `role` is writable (see UserRoleUpdateSerializer). Elevation to
+    ADMIN/CLUB_LEAD is restricted to existing ADMINs, since IsAdminOrClubLead
+    alone would let a CLUB_LEAD promote themselves or anyone else to ADMIN.
+    """
+    queryset = User.objects.all()
+    serializer_class = UserRoleUpdateSerializer
+    permission_classes = [IsAdminOrClubLead]
+
+    ELEVATED_ROLES = {'ADMIN', 'CLUB_LEAD'}
+
+    def perform_update(self, serializer):
+        target = serializer.instance
+        requester = self.request.user
+        new_role = serializer.validated_data.get('role', target.role)
+
+        if target.id == requester.id:
+            raise PermissionDenied("You cannot change your own role.")
+
+        is_full_admin = requester.is_superuser or requester.is_staff or getattr(requester, 'role', None) == 'ADMIN'
+        if new_role in self.ELEVATED_ROLES and not is_full_admin:
+            raise PermissionDenied("Only an Admin can assign the Admin or Club Lead role.")
+
+        previous_role = target.role
+        user = serializer.save()
+        log_audit_event(
+            actor=requester,
+            action="User Role Changed",
+            target_model="User",
+            target_id=str(user.id),
+            details={"previous_role": previous_role, "new_role": user.role},
+        )
+
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()

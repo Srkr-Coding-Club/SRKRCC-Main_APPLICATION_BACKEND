@@ -70,6 +70,19 @@ class UserSerializer(serializers.ModelSerializer):
             return f"{obj.referred_by_user.first_name} {obj.referred_by_user.last_name}".strip() or obj.referred_by_user.email
         return obj.referred_by_raw or ""
 
+class UserRoleUpdateSerializer(serializers.ModelSerializer):
+    """
+    Narrow PATCH surface for the admin Users tab's role dropdown — only `role`
+    is writable here (everything else on User stays read-only). Cross-role
+    escalation rules are enforced in the view, not here, since they depend on
+    who the requester is.
+    """
+    class Meta:
+        model = User
+        fields = ['id', 'role']
+        read_only_fields = ['id']
+
+
 class UserProfileDetailSerializer(serializers.ModelSerializer):
     """
     Detailed profile serializer computing real database-driven statistics,
