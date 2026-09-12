@@ -15,6 +15,7 @@ from .validation import (
     validate_form_definition,
     normalize_validation_rules,
     normalize_conditional_logic,
+    FieldError,
     STRICT,
     PARTIAL,
 )
@@ -105,6 +106,7 @@ class FormSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'slug', 'description', 'image_url', 'category', 'status',
             'version', 'allow_multiple_responses', 'allow_response_editing', 'enable_prefill', 'max_responses_per_user',
+            'max_total_responses', 'prevent_duplicate_email_answers',
             'allow_edits_until', 'open_at', 'close_at',
             'club_id_enabled', 'club_id_prefix', 'club_id_field_mapping',
             'confirmation_email_enabled', 'confirmation_email_template',
@@ -232,6 +234,8 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
     form_slug = serializers.CharField(source='form.slug', read_only=True)
     user_name = serializers.SerializerMethodField()
     user_email = serializers.SerializerMethodField()
+    confirmation_email_enabled = serializers.BooleanField(source='form.confirmation_email_enabled', read_only=True)
+    confirmation_email = serializers.SerializerMethodField()
 
     class Meta:
         model = Response
@@ -239,6 +243,7 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
             'id', 'form_id', 'form_title', 'form_slug', 'submitted_at',
             'is_manual_entry', 'is_test_submission', 'form_version',
             'user', 'user_name', 'user_email', 'answers',
+            'confirmation_email_enabled', 'confirmation_email',
         ]
 
     def get_user(self, obj):
@@ -276,6 +281,22 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
                 if ans.value and str(ans.value).strip():
                     return str(ans.value).strip()
         return 'offline@srkr.ac.in'
+
+    def get_confirmation_email(self, obj):
+        # `.all()` here reads from the prefetch cache (Response queryset uses
+        # Prefetch(..., queryset=EmailDelivery.objects.order_by('-created_at')))
+        # rather than issuing a new query per row — do not call .order_by()/
+        # .first() on the manager directly, that would bypass the cache.
+        deliveries = list(obj.confirmation_email_deliveries.all())
+        if not deliveries:
+            return None
+        latest = deliveries[0]
+        return {
+            'status': latest.status,
+            'sent_at': latest.sent_at,
+            'error_message': latest.error_message,
+            'recipient_email': latest.recipient_email,
+        }
 
 
 class BulkIngestSessionSerializer(serializers.ModelSerializer):
@@ -324,6 +345,34 @@ class ResponseSerializer(serializers.ModelSerializer):
     def _resolve_form(self, data):
         return self.context.get('form') or data.get('form') or getattr(self.instance, 'form', None)
 
+    def _check_duplicate_emails(self, form, report):
+        """
+        Opt-in (Form.prevent_duplicate_email_answers) cross-response uniqueness
+        check for EMAIL-type fields — rejects a submission whose email value has
+        already been used to answer this same form. Off by default: some forms
+        legitimately expect one email to submit more than once (e.g. a parent
+        registering several children), so this is only enforced when an admin
+        explicitly turns it on for a given form.
+        """
+        for f in form.fields.filter(is_deleted=False, type=FieldType.EMAIL):
+            value = report.cleaned_answers.get(f.id)
+            if not value:
+                continue
+            dup_qs = Answer.objects.filter(
+                field=f, value=value,
+                response__form=form, response__is_test_submission=False,
+            )
+            if self.instance is not None:
+                dup_qs = dup_qs.exclude(response=self.instance)
+            if dup_qs.exists():
+                report.add_error(FieldError(
+                    code='DUPLICATE_EMAIL',
+                    message=f"'{value}' has already been used to respond to this form.",
+                    field_id=f.id,
+                    label=f.label,
+                    rule='uniqueEmail',
+                ))
+
     def validate(self, data):
         form = self._resolve_form(data)
         if form is None:
@@ -340,6 +389,10 @@ class ResponseSerializer(serializers.ModelSerializer):
         report = validate_submission(
             form, raw_answers, mode=mode, is_edit=is_edit, existing_answers=existing,
         )
+
+        if form.prevent_duplicate_email_answers and not report.errors:
+            self._check_duplicate_emails(form, report)
+
         if report.errors:
             raise FormValidationError(report.as_dict())
 

@@ -23,15 +23,24 @@ from apps.hackathons.models import Hackathon, Team, Submission
 # Shared hackathon columns
 # ---------------------------------------------------------------------------
 
-def _hackathon_col(key, label, type="text", cat="hackathon", renderer="text", sortable=True, visible=True, source=""):
+def _hackathon_col(key, label, type="text", cat="hackathon", renderer="text", sortable=True, visible=True, source="", filterable=False):
     return ColumnDefinition(key=key, label=label, type=type, category=cat, sortable=sortable,
-                             filterable=False, visible_by_default=visible, renderer=renderer, source=source)
+                             filterable=filterable, visible_by_default=visible, renderer=renderer, source=source)
+
+
+def _hackathon_title_filter() -> FilterDefinition:
+    """Dynamic select filter listing every hackathon that has at least one team."""
+    options = [
+        FilterOption(title, str(hid))
+        for hid, title in Hackathon.objects.filter(teams__isnull=False).distinct().order_by("title").values_list("id", "title")
+    ]
+    return FilterDefinition(key="hackathon_title", label="Hackathon", type="select", operators=["eq"], options=options)
 
 PARTICIPANT_COLS: list[ColumnDefinition] = [
     _hackathon_col("id",               "ID",            "number",   "meta",       visible=False,  source="hackathons.Team.id+member"),
     _hackathon_col("name",             "Full Name",      "text",                   renderer="text",  source="accounts.User.first_name+last_name"),
     _hackathon_col("email",            "Email",          "email",    renderer="email", source="accounts.User.email"),
-    _hackathon_col("hackathon_title",  "Hackathon",      "text",     renderer="text",  source="hackathons.Hackathon.title"),
+    _hackathon_col("hackathon_title",  "Hackathon",      "text",     renderer="text",  source="hackathons.Hackathon.title", filterable=True),
     _hackathon_col("team_name",        "Team",           "text",     renderer="text",  source="hackathons.Team.name"),
     _hackathon_col("team_role",        "Team Role",      "badge",    renderer="badge", source="derived"),
     _hackathon_col("roll_number",      "Roll Number",    "text",     "academic",   renderer="text", source="accounts.User.roll_number"),
@@ -41,7 +50,7 @@ PARTICIPANT_COLS: list[ColumnDefinition] = [
 TEAMS_COLS: list[ColumnDefinition] = [
     _hackathon_col("id",                "Team ID",           "number", "meta",     visible=False, source="hackathons.Team.id"),
     _hackathon_col("team_name",         "Team Name",         "text",               renderer="text", source="hackathons.Team.name"),
-    _hackathon_col("hackathon_title",   "Hackathon",         "text",               renderer="text", source="hackathons.Hackathon.title"),
+    _hackathon_col("hackathon_title",   "Hackathon",         "text",               renderer="text", source="hackathons.Hackathon.title", filterable=True),
     _hackathon_col("leader_name",       "Leader",            "text",               renderer="text", source="hackathons.Team.leader"),
     _hackathon_col("leader_email",      "Leader Email",      "email",              renderer="email", source="hackathons.Team.leader.email"),
     _hackathon_col("member_count",      "Members",           "number",             renderer="text", source="hackathons.Team.members.count"),
@@ -54,7 +63,7 @@ SUBMISSIONS_COLS: list[ColumnDefinition] = [
     _hackathon_col("id",              "Sub ID",       "number",  "meta",     visible=False, source="hackathons.Submission.id"),
     _hackathon_col("project_title",   "Project",      "text",               renderer="text",  source="hackathons.Submission.project_title"),
     _hackathon_col("team_name",       "Team",         "text",               renderer="text",  source="hackathons.Team.name"),
-    _hackathon_col("hackathon_title", "Hackathon",    "text",               renderer="text",  source="hackathons.Hackathon.title"),
+    _hackathon_col("hackathon_title", "Hackathon",    "text",               renderer="text",  source="hackathons.Hackathon.title", filterable=True),
     _hackathon_col("repo_url",        "Repo",         "url",                renderer="link",  source="hackathons.Submission.repo_url"),
     _hackathon_col("demo_url",        "Demo",         "url",                renderer="link",  source="hackathons.Submission.demo_url"),
     _hackathon_col("score",           "Score",        "number",             renderer="text",  source="hackathons.Submission.score"),
@@ -74,10 +83,13 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
     """1 row = 1 participant (leader or member) in a hackathon team."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(PARTICIPANT_COLS), []
+        return list(PARTICIPANT_COLS), [_hackathon_title_filter()]
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         teams = Team.objects.select_related("hackathon", "leader").prefetch_related("members")
+        for f in query_req.filters:
+            if f.field == "hackathon_title":
+                teams = teams.filter(hackathon_id=f.value)
         rows = []
         for team in teams:
             rows.extend(self._expand_team(team))
@@ -132,13 +144,16 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
     """1 row = 1 Hackathon team."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(TEAMS_COLS), []
+        return list(TEAMS_COLS), [_hackathon_title_filter()]
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = Team.objects.select_related("hackathon", "leader").prefetch_related("members", "submission")
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(name__icontains=q) | Q(leader__email__icontains=q) | Q(hackathon__title__icontains=q))
+        for f in query_req.filters:
+            if f.field == "hackathon_title":
+                qs = qs.filter(hackathon_id=f.value)
 
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_TEAMS else "created_at"
         prefix = "-" if query_req.sort.direction == "desc" else ""
@@ -187,13 +202,16 @@ class HackathonSubmissionsAdapter(BaseDatasetAdapter):
     """1 row = 1 Project submission."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(SUBMISSIONS_COLS), []
+        return list(SUBMISSIONS_COLS), [_hackathon_title_filter()]
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = Submission.objects.select_related("team__hackathon", "team__leader")
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(project_title__icontains=q) | Q(team__name__icontains=q))
+        for f in query_req.filters:
+            if f.field == "hackathon_title":
+                qs = qs.filter(team__hackathon_id=f.value)
 
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_SUBMISSIONS else "created_at"
         prefix = "-" if query_req.sort.direction == "desc" else ""

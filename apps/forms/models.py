@@ -44,6 +44,14 @@ class Form(TimeStampedModel):
     allow_response_editing = models.BooleanField(default=True, help_text="Allow users to view and update their previously submitted response")
     enable_prefill = models.BooleanField(default=True, help_text="Automatically pre-fill student profile details when limit is 1")
     max_responses_per_user = models.PositiveIntegerField(default=1, help_text="Maximum allowed submissions per user (1 for single submission)")
+    max_total_responses = models.PositiveIntegerField(
+        blank=True, null=True,
+        help_text="Auto-close the form once this many total (non-test) responses are received. Leave blank for unlimited.",
+    )
+    prevent_duplicate_email_answers = models.BooleanField(
+        default=False,
+        help_text="Reject a submission if any EMAIL-type field's value has already been used to answer this same form (excluding test submissions). Off by default — some forms legitimately expect one email to submit more than once (e.g. a parent registering several children).",
+    )
     allow_edits_until = models.DateTimeField(blank=True, null=True, help_text="Deadline after which responses are locked")
     open_at = models.DateTimeField(blank=True, null=True)
     close_at = models.DateTimeField(blank=True, null=True)

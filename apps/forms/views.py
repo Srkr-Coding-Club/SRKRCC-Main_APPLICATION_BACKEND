@@ -4,11 +4,11 @@ from rest_framework.response import Response as DRFResponse
 from rest_framework.pagination import PageNumberPagination
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Count, Max, Q
+from django.db.models import Count, Max, Prefetch, Q
 from django.db.models.functions import Cast
 from django.db.models import TextField
 
-from .models import Form, FormField, Response, Answer, BulkIngestSession, MemberNote, sync_all_scheduled_form_statuses
+from .models import Form, FormField, FormStatus, Response, Answer, BulkIngestSession, MemberNote, sync_all_scheduled_form_statuses
 from .serializers import (
     FormSerializer,
     ResponseSerializer,
@@ -22,6 +22,7 @@ from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead
 from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError
 from .services import FormAutomationService
+from apps.core.models import EmailDelivery
 from apps.core.idempotency import (
     get_idempotency_key,
     check_idempotent_response,
@@ -850,14 +851,17 @@ class ResponseViewSet(viewsets.ModelViewSet):
     but listing/reading/editing another user's response is admin-only or
     restricted to the response's own owner.
     """
-    queryset = Response.objects.select_related('form', 'user', 'created_by_admin').prefetch_related('answers__field').all().order_by('-submitted_at')
+    queryset = Response.objects.select_related('form', 'user', 'created_by_admin').prefetch_related(
+        'answers__field',
+        Prefetch('confirmation_email_deliveries', queryset=EmailDelivery.objects.order_by('-created_at')),
+    ).all().order_by('-submitted_at')
     serializer_class = ResponseSerializer
     pagination_class = StandardResultsSetPagination
 
     def get_permissions(self):
         if self.action == 'create':
             return [permissions.AllowAny()]
-        if self.action in ['list', 'retrieve']:
+        if self.action in ['list', 'retrieve', 'resend_confirmation_email']:
             return [IsAdminOrClubLead()]
         return [permissions.IsAuthenticated(), IsOwnerOrAdminOrClubLead()]
 
@@ -1013,6 +1017,16 @@ class ResponseViewSet(viewsets.ModelViewSet):
                         response_obj.user = resolved_user
                         response_obj.save(update_fields=['user'])
 
+                # Auto-close once the form-wide response cap is reached. Only a
+                # genuine new response (201) counts toward the total — editing an
+                # existing one in place (200, the `allow_multiple_responses=False`
+                # auto-update branch above) doesn't change the total response count.
+                if resp_status == status.HTTP_201_CREATED and form_obj.max_total_responses is not None:
+                    total_responses = Response.objects.filter(form=form_obj, is_test_submission=False).count()
+                    if total_responses >= form_obj.max_total_responses and form_obj.status != FormStatus.CLOSED:
+                        form_obj.status = FormStatus.CLOSED
+                        form_obj.save(update_fields=['status', 'updated_at'])
+
                 resp_data = ResponseSerializer(response_obj, context={'form': form_obj, 'request': request}).data
                 if submission_warnings:
                     resp_data = dict(resp_data)
@@ -1025,7 +1039,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
         # or roll back an otherwise-successful submission.
         if form_obj.confirmation_email_enabled:
             answers_by_field_id = {a.field_id: a.value for a in response_obj.answers.all()}
-            FormAutomationService.dispatch_confirmation_email(form_obj, resolved_user, answers_by_field_id)
+            FormAutomationService.dispatch_confirmation_email(form_obj, resolved_user, answers_by_field_id, response=response_obj)
 
         store_idempotent_response(key, request, resp_status, resp_data)
         return DRFResponse(resp_data, status=resp_status)
@@ -1080,6 +1094,42 @@ class ResponseViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         kwargs['partial'] = True
         return self.update(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='resend-confirmation-email')
+    def resend_confirmation_email(self, request, pk=None):
+        """
+        POST /api/forms/submissions/{id}/resend-confirmation-email/
+        Manually re-triggers the form's confirmation email for this response.
+        Admin/Club-Lead only (see get_permissions). Unlike the auto-fire path,
+        failures are reported back rather than swallowed, since an admin
+        explicitly asking for a resend needs to know if it didn't work.
+        """
+        response_obj = self.get_object()
+        form_obj = response_obj.form
+        answers_by_field_id = {a.field_id: a.value for a in response_obj.answers.all()}
+
+        try:
+            job = FormAutomationService.send_confirmation_email(
+                form_obj, response_obj.user, answers_by_field_id, response=response_obj,
+            )
+        except Exception as ex:
+            return DRFResponse({"error": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
+
+        log_audit_event(
+            actor=request.user,
+            action="Confirmation Email Resent",
+            target_model="Response",
+            target_id=str(response_obj.id),
+            details={"form": form_obj.title, "job_id": str(job.id)},
+        )
+
+        delivery = job.deliveries.first()
+        return DRFResponse({
+            "success": True,
+            "job_id": str(job.id),
+            "status": delivery.status if delivery else job.status,
+            "recipient_email": delivery.recipient_email if delivery else None,
+        })
 
 
 class MemberViewSet(viewsets.ReadOnlyModelViewSet):

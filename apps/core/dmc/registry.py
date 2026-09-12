@@ -59,7 +59,7 @@ def _build_registry() -> dict[str, DatasetDefinition]:
             primary_key="id",
             default_sort_field="submitted_at",
             default_sort_direction="desc",
-            allowed_sort_fields=["id", "submitted_at"],
+            allowed_sort_fields=["id", "submitted_at", "is_manual_entry"],
             capabilities=DatasetCapabilities(),
             health="OK",
             adapter_class=FormsAllAdapter,

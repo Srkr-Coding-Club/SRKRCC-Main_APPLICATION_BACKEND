@@ -136,6 +136,14 @@ class EmailDelivery(TimeStampedModel):
     rendered_subject = models.CharField(max_length=255, blank=True, default='')
     error_message = models.TextField(blank=True, default='')
     sent_at = models.DateTimeField(null=True, blank=True)
+    response = models.ForeignKey(
+        'forms.Response',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='confirmation_email_deliveries',
+        help_text="Set when this delivery is a form-submission confirmation email, linking it back to the response that triggered it.",
+    )
 
     class Meta:
         ordering = ['-created_at']

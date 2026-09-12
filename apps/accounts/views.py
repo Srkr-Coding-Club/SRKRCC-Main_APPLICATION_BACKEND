@@ -73,10 +73,13 @@ class UserListView(generics.ListCreateAPIView):
 
 class UserDetailView(generics.RetrieveUpdateAPIView):
     """
-    PATCH /auth/users/{id}/ — backs the admin Users tab's role dropdown.
-    Only `role` is writable (see UserRoleUpdateSerializer). Elevation to
-    ADMIN/CLUB_LEAD is restricted to existing ADMINs, since IsAdminOrClubLead
-    alone would let a CLUB_LEAD promote themselves or anyone else to ADMIN.
+    PATCH /auth/users/{id}/ — backs the admin Users tab's role dropdown and
+    membership-status control. `role` and `membership_status` are writable
+    (see UserRoleUpdateSerializer). Elevation to ADMIN/CLUB_LEAD via `role` is
+    restricted to existing ADMINs, since IsAdminOrClubLead alone would let a
+    CLUB_LEAD promote themselves or anyone else to ADMIN. `membership_status`
+    carries no such privilege risk, so it has no extra restriction beyond
+    IsAdminOrClubLead.
     """
     queryset = User.objects.all()
     serializer_class = UserRoleUpdateSerializer
@@ -87,24 +90,40 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
     def perform_update(self, serializer):
         target = serializer.instance
         requester = self.request.user
-        new_role = serializer.validated_data.get('role', target.role)
 
         if target.id == requester.id:
             raise PermissionDenied("You cannot change your own role.")
 
-        is_full_admin = requester.is_superuser or requester.is_staff or getattr(requester, 'role', None) == 'ADMIN'
-        if new_role in self.ELEVATED_ROLES and not is_full_admin:
-            raise PermissionDenied("Only an Admin can assign the Admin or Club Lead role.")
+        # Escalation check applies only when `role` is actually being changed —
+        # scoped to serializer.validated_data (not target.role) so that a
+        # membership_status-only PATCH on a user who already holds an elevated
+        # role doesn't get wrongly blocked as a "role escalation".
+        if 'role' in serializer.validated_data:
+            new_role = serializer.validated_data['role']
+            is_full_admin = requester.is_superuser or requester.is_staff or getattr(requester, 'role', None) == 'ADMIN'
+            if new_role in self.ELEVATED_ROLES and not is_full_admin:
+                raise PermissionDenied("Only an Admin can assign the Admin or Club Lead role.")
 
         previous_role = target.role
+        previous_membership_status = target.membership_status
         user = serializer.save()
-        log_audit_event(
-            actor=requester,
-            action="User Role Changed",
-            target_model="User",
-            target_id=str(user.id),
-            details={"previous_role": previous_role, "new_role": user.role},
-        )
+
+        details = {}
+        if 'role' in serializer.validated_data:
+            details["previous_role"] = previous_role
+            details["new_role"] = user.role
+        if 'membership_status' in serializer.validated_data:
+            details["previous_membership_status"] = previous_membership_status
+            details["new_membership_status"] = user.membership_status
+
+        if details:
+            log_audit_event(
+                actor=requester,
+                action="User Role Changed" if 'role' in serializer.validated_data else "User Membership Status Changed",
+                target_model="User",
+                target_id=str(user.id),
+                details=details,
+            )
 
 
 class RegisterView(generics.CreateAPIView):

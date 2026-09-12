@@ -10,11 +10,11 @@ from typing import Any, Generator
 from django.db.models import Q
 
 from apps.core.dmc.adapters.base import BaseDatasetAdapter
-from apps.core.dmc.contracts import CanonicalValue, ColumnDefinition, FilterDefinition, QueryRequest, QueryResult
+from apps.core.dmc.contracts import CanonicalValue, ColumnDefinition, FilterDefinition, FilterOption, QueryRequest, QueryResult
 from apps.events.models import Event
 from apps.forms.models import Response
-from apps.codequest.models import Submission as CQSubmission
-from apps.career.models import JobListing
+from apps.codequest.models import Submission as CQSubmission, Difficulty as CQDifficulty
+from apps.career.models import JobListing, JobType
 
 # ============================================================================
 # Events — EventRegistrationsAdapter
@@ -116,10 +116,17 @@ CQ_COLS: list[ColumnDefinition] = [
 ]
 
 
+CQ_FILTERS: list[FilterDefinition] = [
+    FilterDefinition(key="is_correct", label="Passed", type="boolean", operators=["eq"]),
+    FilterDefinition(key="difficulty", label="Difficulty", type="select", operators=["eq"],
+                      options=[FilterOption(label, value) for value, label in CQDifficulty.choices]),
+]
+
+
 class CodequestSubmissionsAdapter(BaseDatasetAdapter):
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(CQ_COLS), []
+        return list(CQ_COLS), list(CQ_FILTERS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = CQSubmission.objects.select_related("user", "problem")
@@ -129,6 +136,8 @@ class CodequestSubmissionsAdapter(BaseDatasetAdapter):
         for f in query_req.filters:
             if f.field == "is_correct":
                 qs = qs.filter(is_correct=bool(f.value))
+            elif f.field == "difficulty":
+                qs = qs.filter(problem__difficulty=f.value)
         sort_field = query_req.sort.field if query_req.sort.field in {"id", "is_correct", "created_at"} else "created_at"
         prefix = "-" if query_req.sort.direction == "desc" else ""
         qs = qs.order_by(f"{prefix}{sort_field}")
@@ -191,11 +200,17 @@ CAREER_JOB_COLS: list[ColumnDefinition] = [
 ]
 
 
+CAREER_FILTERS: list[FilterDefinition] = [
+    FilterDefinition(key="job_type", label="Type", type="select", operators=["eq"],
+                      options=[FilterOption(label, value) for value, label in JobType.choices]),
+]
+
+
 class CareerApplicationsAdapter(BaseDatasetAdapter):
     """1 row = 1 career application (Response linked to a JobListing's form)."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(CAREER_APP_COLS), []
+        return list(CAREER_APP_COLS), list(CAREER_FILTERS)
 
     def _base_qs(self):
         job_form_ids = JobListing.objects.exclude(application_form=None).values_list("application_form_id", flat=True)
@@ -206,6 +221,10 @@ class CareerApplicationsAdapter(BaseDatasetAdapter):
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(user__email__icontains=q) | Q(user__first_name__icontains=q)).distinct()
+        for f in query_req.filters:
+            if f.field == "job_type":
+                job_form_ids = JobListing.objects.filter(job_type=f.value, application_form__isnull=False).values_list("application_form_id", flat=True)
+                qs = qs.filter(form_id__in=job_form_ids)
         qs = qs.order_by("-submitted_at")
         total = qs.count()
         offset = (query_req.page - 1) * query_req.page_size
@@ -249,13 +268,16 @@ class CareerJobsAdapter(BaseDatasetAdapter):
     """1 row = 1 JobListing."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(CAREER_JOB_COLS), []
+        return list(CAREER_JOB_COLS), list(CAREER_FILTERS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = JobListing.objects.all()
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(title__icontains=q) | Q(company_name__icontains=q))
+        for f in query_req.filters:
+            if f.field == "job_type":
+                qs = qs.filter(job_type=f.value)
         qs = qs.order_by("-created_at")
         total = qs.count()
         offset = (query_req.page - 1) * query_req.page_size

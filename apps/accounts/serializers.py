@@ -59,11 +59,12 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'id', 'username', 'email', 'first_name', 'last_name', 
+            'id', 'username', 'email', 'first_name', 'last_name',
             'role', 'club_id', 'membership_status', 'roll_number', 'branch', 'year', 'phone_number',
-            'github_profile', 'linkedin_profile', 'registered_at', 'referred_by_raw', 'referred_by_display', 'created_at'
+            'github_profile', 'linkedin_profile', 'registered_at', 'created_from',
+            'referred_by_raw', 'referred_by_display', 'created_at'
         ]
-        read_only_fields = ['id', 'role', 'created_at', 'club_id']
+        read_only_fields = ['id', 'role', 'created_at', 'club_id', 'created_from']
 
     def get_referred_by_display(self, obj):
         if obj.referred_by_user:
@@ -72,14 +73,16 @@ class UserSerializer(serializers.ModelSerializer):
 
 class UserRoleUpdateSerializer(serializers.ModelSerializer):
     """
-    Narrow PATCH surface for the admin Users tab's role dropdown — only `role`
-    is writable here (everything else on User stays read-only). Cross-role
-    escalation rules are enforced in the view, not here, since they depend on
-    who the requester is.
+    Narrow PATCH surface for the admin Users tab — `role` and `membership_status`
+    are writable here (everything else on User stays read-only). Cross-role
+    escalation rules (ADMIN-vs-CLUB_LEAD) apply only to `role` and are enforced
+    in the view (UserDetailView.perform_update), since they depend on who the
+    requester is. `membership_status` isn't a privilege field, so any requester
+    who can already reach this endpoint (IsAdminOrClubLead) may set it.
     """
     class Meta:
         model = User
-        fields = ['id', 'role']
+        fields = ['id', 'role', 'membership_status']
         read_only_fields = ['id']
 
 
@@ -207,10 +210,16 @@ class RegisterSerializer(serializers.ModelSerializer):
     # anonymous POST with {"role": "ADMIN"} create a full admin account.
     SELF_REGISTERABLE_ROLES = {'MEMBER', 'VOLUNTEER'}
     role = serializers.CharField(required=False, allow_blank=True)
+    # Optional "Affiliate ID" on the signup form — a club representative sometimes
+    # hands a prospective member their Club ID before they ever touch the site
+    # (e.g. at an offline recruitment drive). If they have one, it's attached to
+    # the account they create here; if not, this stays blank and club_id is
+    # assigned later the normal way (admin action / CSV import), same as today.
+    club_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'first_name', 'last_name', 'role', 'roll_number', 'branch', 'year']
+        fields = ['username', 'email', 'password', 'first_name', 'last_name', 'role', 'roll_number', 'branch', 'year', 'club_id']
 
     def validate_password(self, value):
         from django.contrib.auth.password_validation import validate_password
@@ -219,6 +228,19 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate_role(self, value):
         return value if value in self.SELF_REGISTERABLE_ROLES else 'MEMBER'
+
+    def validate_club_id(self, value):
+        if not value or not value.strip():
+            return None
+        from apps.accounts.services.club_id_service import ClubIDService, InvalidClubIdError
+        try:
+            parsed = ClubIDService.parse_club_id(value)
+        except InvalidClubIdError as ex:
+            raise serializers.ValidationError(str(ex))
+        canonical = parsed['canonical_id']
+        if User.objects.filter(club_id__iexact=canonical).exists():
+            raise serializers.ValidationError(f"Club ID '{canonical}' is already assigned to another member.")
+        return canonical
 
     def create(self, validated_data):
         user = User.objects.create_user(
@@ -231,5 +253,6 @@ class RegisterSerializer(serializers.ModelSerializer):
             branch=validated_data.get('branch', ''),
             year=validated_data.get('year', None),
             role=validated_data.get('role') or 'MEMBER',
+            club_id=validated_data.get('club_id') or None,
         )
         return user

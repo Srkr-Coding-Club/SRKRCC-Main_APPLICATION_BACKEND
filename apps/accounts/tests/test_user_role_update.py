@@ -71,3 +71,31 @@ class UserRoleUpdateTests(TestCase):
     def test_unauthenticated_forbidden(self):
         resp = self.client.patch(self._url(self.member), {'role': 'VOLUNTEER'}, format='json')
         self.assertIn(resp.status_code, (401, 403))
+
+    def test_club_lead_can_change_membership_status(self):
+        # Unlike `role`, `membership_status` isn't a privilege field — a
+        # CLUB_LEAD may set it even though they can't grant elevated roles.
+        self.client.force_authenticate(self.club_lead)
+        resp = self.client.patch(self._url(self.member), {'membership_status': 'SUSPENDED'}, format='json')
+        self.assertEqual(resp.status_code, 200)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.membership_status, 'SUSPENDED')
+
+    def test_club_lead_can_change_membership_status_of_elevated_user(self):
+        # Regression guard: the role-escalation check must key off the role
+        # actually being submitted, not the target's current role — otherwise
+        # a membership_status-only PATCH targeting an ADMIN/CLUB_LEAD user
+        # would be wrongly rejected as a role escalation attempt.
+        self.client.force_authenticate(self.club_lead)
+        resp = self.client.patch(self._url(self.admin), {'membership_status': 'INACTIVE'}, format='json')
+        self.assertEqual(resp.status_code, 200)
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.membership_status, 'INACTIVE')
+        self.assertEqual(self.admin.role, 'ADMIN')
+
+    def test_invalid_membership_status_rejected(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'membership_status': 'NOT_A_REAL_STATUS'}, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.membership_status, 'ACTIVE')
