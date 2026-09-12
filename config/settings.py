@@ -163,23 +163,8 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-# Celery & Redis
-CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-# Every .delay()/apply_async() call site in this app (DMC exports, email dispatch)
-# wraps its call in try/except with a synchronous fallback for when Celery/Redis is
-# unreachable — but Celery's own defaults (broker_connection_max_retries=100, with
-# escalating backoff) mean an unreachable broker previously made .delay() itself
-# hang for a very long time (observed: multiple minutes) instead of raising quickly,
-# defeating those fallbacks and blocking the request. Bound it to a couple of
-# seconds so a down broker degrades to the sync fallback almost immediately.
-CELERY_BROKER_CONNECTION_TIMEOUT = 2
-CELERY_BROKER_CONNECTION_MAX_RETRIES = 1
-# broker_connection_timeout alone isn't enough: 'localhost' resolves to both ::1 and
-# 127.0.0.1, and the underlying redis socket tries each with the *full* timeout (not
-# divided), roughly doubling wall time. socket_connect_timeout/socket_timeout bound
-# the transport's own per-socket attempts directly.
-CELERY_BROKER_TRANSPORT_OPTIONS = {'socket_connect_timeout': 2, 'socket_timeout': 2}
+# Background jobs run on plain Python threads (apps/core/tasks.py), not Celery —
+# no broker/worker process to configure.
 
 # SimpleJWT Authentication Lifetimes & Configuration
 from datetime import timedelta

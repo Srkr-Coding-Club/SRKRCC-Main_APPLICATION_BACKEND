@@ -124,10 +124,11 @@ class FormAutomationService:
         if response is not None:
             job.deliveries.update(response=response)
 
-        from apps.core.tasks import process_email_job_task, try_dispatch_with_timeout
-        queued = try_dispatch_with_timeout(lambda: process_email_job_task.delay(job.id))
-        if not queued:
-            EmailNotificationService.process_email_job(job)
+        # Synchronous — a single-recipient send is fast, and the admin "resend"
+        # action (the other caller of this method) needs the real outcome back
+        # immediately rather than a job that's still PENDING when the response
+        # is returned.
+        EmailNotificationService.process_email_job(job)
         return job
 
     @classmethod
@@ -137,12 +138,20 @@ class FormAutomationService:
         right after a public submission. Must be called AFTER the response's
         transaction has committed — never from inside an open transaction (mirrors
         MemberImportService.commit_import's existing convention) so a failed send
-        can never roll back an otherwise-successful submission. Swallows and logs
-        its own errors for the same reason.
+        can never roll back an otherwise-successful submission. Runs on a
+        background thread (see apps.core.tasks.run_in_background) so the
+        submitter's response isn't held up by the SMTP round-trip, and swallows
+        its own errors since a failed confirmation email must never surface as a
+        problem with what was already a successful submission.
         """
         if not form.confirmation_email_enabled or not form.confirmation_email_template:
             return
-        try:
-            cls.send_confirmation_email(form, resolved_user, answers_by_field_id, response=response)
-        except Exception as ex:
-            logger.error("FORM_CONFIRMATION_EMAIL_FAILED: form_id=%s error=%s", form.id, str(ex))
+
+        def _send():
+            try:
+                cls.send_confirmation_email(form, resolved_user, answers_by_field_id, response=response)
+            except Exception as ex:
+                logger.error("FORM_CONFIRMATION_EMAIL_FAILED: form_id=%s error=%s", form.id, str(ex))
+
+        from apps.core.tasks import run_in_background
+        run_in_background(_send)

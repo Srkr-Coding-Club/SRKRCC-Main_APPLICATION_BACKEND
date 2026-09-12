@@ -274,17 +274,11 @@ class EmailDispatchView(APIView):
                 created_by=request.user,
             )
 
-            # Dispatch off the request/response cycle so a large campaign doesn't hold a
-            # web worker for the full SMTP send duration; fall back to sync if Celery
-            # isn't reachable (mirrors apps/core/dmc/export_service.py's async pattern).
-            # try_dispatch_with_timeout bounds the wait even if the broker connection
-            # itself hangs rather than failing fast (see its docstring).
-            from apps.core.tasks import process_email_job_task, try_dispatch_with_timeout
-            queued = try_dispatch_with_timeout(lambda: process_email_job_task.delay(job.id))
-            if queued:
-                job.refresh_from_db()
-            else:
-                EmailNotificationService.process_email_job(job)
+            # Dispatch off the request/response cycle (a background thread, no
+            # task queue in this app — see apps/core/tasks.py) so a large
+            # campaign doesn't hold a web worker for the full SMTP send duration.
+            from apps.core.tasks import process_email_job, run_in_background
+            run_in_background(lambda: process_email_job(job.id))
 
             return Response({
                 "success": True,

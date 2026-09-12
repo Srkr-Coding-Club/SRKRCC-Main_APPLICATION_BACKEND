@@ -1,7 +1,9 @@
+import time
+
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
-from rest_framework.test import APITestCase
+from rest_framework.test import APITransactionTestCase
 
 from apps.core.models import EmailTemplate
 from apps.forms.models import FieldType, FormStatus
@@ -10,10 +12,33 @@ from .factories import make_form, add_field
 User = get_user_model()
 
 
-class ConfirmationEmailTrackingTests(APITestCase):
+def _wait_until(predicate, timeout=2.0, interval=0.02):
+    """Polls `predicate()` until it's truthy or `timeout` seconds elapse.
+
+    The confirmation-email auto-fire path now runs on a real background thread
+    (apps.core.tasks.run_in_background) instead of executing inline, so tests
+    that assert on its effects (mail.outbox, DB status) need to wait for it —
+    it usually finishes in well under a millisecond against the in-memory test
+    email backend, but must never be assumed synchronous.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+class ConfirmationEmailTrackingTests(APITransactionTestCase):
     """
     A form's confirmation email must be trackable per-response (sent/failed/
     pending) and resendable by an admin from the responses viewer.
+
+    Uses APITransactionTestCase (real commits) rather than APITestCase (each
+    test wrapped in a rolled-back transaction) because the confirmation email
+    now sends on a background thread with its own DB connection — that thread
+    can only see rows this test has actually committed, not rows still inside
+    an uncommitted per-test transaction.
     """
 
     def setUp(self):
@@ -64,11 +89,21 @@ class ConfirmationEmailTrackingTests(APITestCase):
         self.assertEqual(resp.status_code, 201, resp.data)
         response_id = resp.data["id"]
 
-        # Actually sent via the locmem test backend.
+        # Sent on a background thread. `mail.outbox` gets its entry appended
+        # slightly BEFORE the delivery/job rows are saved (send, then persist),
+        # so poll the actual persisted status rather than the outbox alone —
+        # otherwise the GET below can race the thread's own DB writes.
+        self.client.force_authenticate(self.admin)
+
+        def _confirmation_sent():
+            r = self.client.get(f"/api/forms/submissions/{response_id}/")
+            return r.status_code == 200 and (r.data.get("confirmation_email") or {}).get("status") == "SENT"
+
+        self.assertTrue(_wait_until(_confirmation_sent), "confirmation email was never marked SENT")
+
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn(self.member.email, mail.outbox[0].to)
 
-        self.client.force_authenticate(self.admin)
         detail = self.client.get(f"/api/forms/submissions/{response_id}/")
         self.assertEqual(detail.status_code, 200)
         self.assertTrue(detail.data["confirmation_email_enabled"])
@@ -79,9 +114,19 @@ class ConfirmationEmailTrackingTests(APITestCase):
     def test_admin_can_resend_confirmation_email(self):
         resp = self._submit()
         response_id = resp.data["id"]
+        self.client.force_authenticate(self.admin)
+
+        # Wait for the auto-fire background send to fully persist (not just hit
+        # the outbox) before resending, so the final delivery-count assertion
+        # below can't race the first send's own DB writes.
+        from apps.forms.models import Response as ResponseModel
+
+        def _first_delivery_persisted():
+            return ResponseModel.objects.get(pk=response_id).confirmation_email_deliveries.filter(status="SENT").exists()
+
+        self.assertTrue(_wait_until(_first_delivery_persisted), "confirmation email was never marked SENT")
         self.assertEqual(len(mail.outbox), 1)
 
-        self.client.force_authenticate(self.admin)
         resend = self.client.post(f"/api/forms/submissions/{response_id}/resend-confirmation-email/")
         self.assertEqual(resend.status_code, 200, resend.data)
         self.assertTrue(resend.data["success"])

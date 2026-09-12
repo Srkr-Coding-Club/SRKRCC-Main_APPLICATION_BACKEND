@@ -216,13 +216,12 @@ class ExportService:
             expires_at=timezone.now() + timezone.timedelta(hours=24),
         )
 
-        # Dispatch background task
-        try:
-            from apps.core.dmc.tasks import run_export_job
-            run_export_job.delay(job.pk)
-        except Exception:
-            # If Celery not available, run synchronously as fallback
-            self._execute_job(job, export_cols, export_req, query_req, filename)
+        # Run off the request/response cycle on a background thread (no task
+        # queue in this app — see apps/core/tasks.py) so a large export doesn't
+        # hold the web worker for the full generation time.
+        from apps.core.dmc.tasks import run_export_job
+        from apps.core.tasks import run_in_background
+        run_in_background(lambda: run_export_job(job.pk))
 
         return {"mode": "async", "job_id": job.pk, "filename": filename}
 
@@ -236,7 +235,8 @@ class ExportService:
         raise ValueError(f"Unsupported export format: {fmt}")
 
     def _execute_job(self, job: Any, export_cols: list, export_req: ExportRequest, query_req: QueryRequest, filename: str):
-        """Synchronous fallback execution — also used by the Celery task."""
+        """Synchronous execution — called directly for small exports, and by
+        the background-job function (apps/core/dmc/tasks.py) for large ones."""
         from apps.core.dmc.models import ExportJob
 
         job.status = ExportJob.STATUS_RUNNING
