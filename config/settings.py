@@ -21,8 +21,20 @@ if not DEBUG and SECRET_KEY == _INSECURE_DEFAULT_SECRET_KEY:
         "Set a unique SECRET_KEY environment variable before running in production."
     )
 
-raw_hosts = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
-ALLOWED_HOSTS = list(set([h.strip() for h in raw_hosts if h.strip()] + ['localhost', '127.0.0.1', 'testserver', '[::1]']))
+raw_hosts = os.getenv('ALLOWED_HOSTS', '*').split(',')
+default_hosts = [
+    'localhost',
+    '127.0.0.1',
+    '0.0.0.0',
+    'testserver',
+    '[::1]',
+    '.onrender.com',
+]
+render_hostname = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+if render_hostname:
+    default_hosts.append(render_hostname)
+
+ALLOWED_HOSTS = list(set([h.strip() for h in raw_hosts if h.strip()] + default_hosts))
 
 default_csrf_origins = [
     'http://localhost:3000',
@@ -41,7 +53,15 @@ custom_csrf = [o.strip() for o in raw_csrf.split(',') if o.strip()]
 CSRF_TRUSTED_ORIGINS = list(set(default_csrf_origins + custom_csrf))
 
 if not DEBUG:
-    SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'True').lower() in ('true', '1', 't')
+    # Render, Railway, and Heroku terminate SSL at their edge load balancer.
+    # Enabling SECURE_SSL_REDIRECT internally causes health checks (which connect over HTTP)
+    # to fail with 301 redirects, breaking port detection.
+    SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False').lower() in ('true', '1', 't')
+    SECURE_REDIRECT_EXEMPT = [
+        r'^$',
+        r'^api/ping/?$',
+        r'^api/health/?$',
+    ]
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000'))
