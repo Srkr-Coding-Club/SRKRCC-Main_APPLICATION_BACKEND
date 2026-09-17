@@ -36,6 +36,18 @@ if render_hostname:
 
 ALLOWED_HOSTS = list(set([h.strip() for h in raw_hosts if h.strip()] + default_hosts))
 
+from urllib.parse import urlparse
+
+def clean_origin(url_str: str) -> str:
+    """Normalizes an origin URL to scheme + netloc (stripping paths and trailing slashes)."""
+    raw = url_str.strip()
+    if not raw:
+        return ''
+    if not raw.startswith(('http://', 'https://')):
+        raw = f"https://{raw}"
+    parsed = urlparse(raw)
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip('/')
+
 default_csrf_origins = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
@@ -49,8 +61,8 @@ default_csrf_origins = [
     'https://*.onrender.com',
 ]
 raw_csrf = os.getenv('CSRF_TRUSTED_ORIGINS', '')
-custom_csrf = [o.strip() for o in raw_csrf.split(',') if o.strip()]
-CSRF_TRUSTED_ORIGINS = list(set(default_csrf_origins + custom_csrf))
+custom_csrf = [clean_origin(o) for o in raw_csrf.split(',') if clean_origin(o)]
+CSRF_TRUSTED_ORIGINS = list(set([clean_origin(o) for o in default_csrf_origins] + custom_csrf))
 
 if not DEBUG:
     # Render, Railway, and Heroku terminate SSL at their edge load balancer.
@@ -201,9 +213,9 @@ CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'True' if DEBUG els
 
 raw_cors = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:5173,http://127.0.0.1:5173')
 CORS_ALLOWED_ORIGINS = list(set([
-    origin.strip()
+    clean_origin(origin)
     for origin in raw_cors.split(',')
-    if origin.strip()
+    if clean_origin(origin)
 ]))
 
 # Regex matching for dynamic preview environments (Vercel previews, Render, localhost on any port)
