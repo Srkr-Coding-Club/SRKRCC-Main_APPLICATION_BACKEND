@@ -10,6 +10,7 @@ urlpatterns = [
     path('api/feature-flags/', include('apps.feature_flags.urls')),
     path('api/forms/', include('apps.forms.urls')),
     path('api/members/', include((members_urlpatterns, 'members'))),
+    path('api/', include('apps.attendance.urls')),
     path('api/events/', include('apps.events.urls')),
     path('api/hackathons/', include('apps.hackathons.urls')),
     path('api/codequest/', include('apps.codequest.urls')),

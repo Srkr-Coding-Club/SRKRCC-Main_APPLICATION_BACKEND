@@ -81,6 +81,28 @@ class Form(TimeStampedModel):
         help_text="Template dispatched on submission when confirmation_email_enabled is True.",
     )
 
+    # --- QR-code attendance automation ---------------------------------------
+    attendance_enabled = models.BooleanField(
+        default=False,
+        help_text="Activate QR-code attendance tracking for this form's registrants (workshop/hackathon check-in).",
+    )
+    attendance_start_date = models.DateField(
+        blank=True, null=True,
+        help_text="First day of the attendance schedule. Required when attendance_enabled is True.",
+    )
+    attendance_days = models.PositiveIntegerField(
+        default=1,
+        help_text="Number of days attendance is tracked for, starting from attendance_start_date (1-30).",
+    )
+    attendance_sessions_per_day = models.PositiveIntegerField(
+        default=1,
+        help_text="Sessions scanned per day: 1 (Morning), 2 (Morning + Afternoon), or 3 (Morning + Afternoon + Evening).",
+    )
+    attendance_window_minutes = models.PositiveIntegerField(
+        blank=True, null=True,
+        help_text="If set, a session can only be scanned within this many minutes of its scheduled start. Leave blank for no time restriction.",
+    )
+
     class Meta:
         indexes = [
             models.Index(fields=['status', 'open_at']),

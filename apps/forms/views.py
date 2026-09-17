@@ -842,6 +842,56 @@ class FormViewSet(viewsets.ModelViewSet):
         serializer = ResponseDetailSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @action(detail=True, methods=['post'], url_path='responses/bulk-delete',
+            permission_classes=[IsAdminOrClubLead])
+    def bulk_delete_responses(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/responses/bulk-delete/
+        Body: {"response_ids": [1, 2, 3]}
+
+        Deletes the given responses in one transaction. Every id must belong
+        to this form — if any don't (or don't exist at all), nothing is
+        deleted and a 400 lists the offending ids.
+        """
+        form = self.get_object()
+        response_ids = request.data.get('response_ids')
+        if not isinstance(response_ids, list) or not response_ids:
+            return DRFResponse(
+                {"error": "response_ids must be a non-empty list of response IDs."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            requested_ids = {int(rid) for rid in response_ids}
+        except (TypeError, ValueError):
+            return DRFResponse(
+                {"error": "response_ids must be a list of integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = Response.objects.filter(id__in=requested_ids, form=form)
+        valid_ids = set(qs.values_list('id', flat=True))
+        invalid_ids = requested_ids - valid_ids
+        if invalid_ids:
+            return DRFResponse(
+                {"error": f"Response(s) not found on this form: {sorted(invalid_ids)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deleted_count = qs.count()
+        with transaction.atomic():
+            qs.delete()
+
+        log_audit_event(
+            actor=request.user,
+            action=f"Bulk-deleted {deleted_count} Response(s)",
+            target_model="Form",
+            target_id=form.slug,
+            details={"response_ids": sorted(requested_ids)},
+        )
+
+        return DRFResponse({"deleted_count": deleted_count}, status=status.HTTP_200_OK)
+
 
 class ResponseViewSet(viewsets.ModelViewSet):
     """
@@ -1016,6 +1066,14 @@ class ResponseViewSet(viewsets.ModelViewSet):
                     if resolved_user and response_obj.user_id != resolved_user.id:
                         response_obj.user = resolved_user
                         response_obj.save(update_fields=['user'])
+
+                # QR-code attendance automation: issue this response's permanent
+                # attendance badge as soon as it completes. get_or_create'd, so
+                # this is a no-op on the "edit an existing single-submission
+                # response" branch above (the badge already exists).
+                if form_obj.attendance_enabled:
+                    from apps.attendance.services import issue_badge
+                    issue_badge(response_obj)
 
                 # Auto-close once the form-wide response cap is reached. Only a
                 # genuine new response (201) counts toward the total — editing an
@@ -1199,6 +1257,3 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
         if page is not None:
             return paginator.get_paginated_response(results)
         return DRFResponse(results)
-
-    def retrieve(self, request, *args, **kwargs):
-        return DRFResponse({"detail": "Not implemented."}, status=status.HTTP_404_NOT_FOUND)

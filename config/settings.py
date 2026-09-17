@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'apps.accounts',
     'apps.feature_flags',
     'apps.forms',
+    'apps.attendance',
     'apps.events',
     'apps.hackathons',
     'apps.codequest',

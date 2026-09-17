@@ -110,6 +110,8 @@ class FormSerializer(serializers.ModelSerializer):
             'allow_edits_until', 'open_at', 'close_at',
             'club_id_enabled', 'club_id_prefix', 'club_id_field_mapping',
             'confirmation_email_enabled', 'confirmation_email_template',
+            'attendance_enabled', 'attendance_start_date', 'attendance_days',
+            'attendance_sessions_per_day', 'attendance_window_minutes',
             'fields', 'created_at', 'response_count',
         ]
 
@@ -123,6 +125,18 @@ class FormSerializer(serializers.ModelSerializer):
         if not re.match(r'^[A-Z]{2,6}$', clean):
             raise serializers.ValidationError("Club ID prefix must be 2-6 letters (e.g. 'SCC').")
         return clean
+
+    def validate_attendance_days(self, value):
+        if not (1 <= value <= 30):
+            raise serializers.ValidationError("attendance_days must be between 1 and 30.")
+        return value
+
+    def validate_attendance_sessions_per_day(self, value):
+        if value not in (1, 2, 3):
+            raise serializers.ValidationError(
+                "attendance_sessions_per_day must be 1 (Morning), 2 (Morning + Afternoon), or 3 (Morning + Afternoon + Evening)."
+            )
+        return value
 
     def validate(self, data):
         club_id_enabled = data.get('club_id_enabled', getattr(self.instance, 'club_id_enabled', False))
@@ -139,6 +153,14 @@ class FormSerializer(serializers.ModelSerializer):
             if not template:
                 raise serializers.ValidationError({
                     'confirmation_email_template': "Select or create a template before enabling the confirmation email.",
+                })
+
+        attendance_enabled = data.get('attendance_enabled', getattr(self.instance, 'attendance_enabled', False))
+        if attendance_enabled:
+            start_date = data.get('attendance_start_date', getattr(self.instance, 'attendance_start_date', None))
+            if not start_date:
+                raise serializers.ValidationError({
+                    'attendance_start_date': "Attendance tracking requires a start date.",
                 })
 
         # Form-definition validation. DRAFT saves stay lenient (a form is built
@@ -165,6 +187,12 @@ class FormSerializer(serializers.ModelSerializer):
             field_data.pop('id', None)
             field_order = field_data.pop('order', order)
             FormField.objects.create(form=form, order=field_order, **field_data)
+
+        # Attendance sessions are generated/kept in sync with the form's own
+        # attendance_* config, the same way club_id / confirmation-email
+        # automations react to their own toggle+config fields.
+        from apps.attendance.services import generate_sessions
+        generate_sessions(form)
         return form
 
     def update(self, instance, validated_data):
@@ -205,6 +233,12 @@ class FormSerializer(serializers.ModelSerializer):
                     field_data.pop('id', None)
                     field_order = field_data.pop('order', order)
                     FormField.objects.create(form=instance, order=field_order, **field_data)
+
+        # Re-sync attendance sessions whenever the form (and possibly its
+        # attendance_* config) is saved. Idempotent and non-destructive of
+        # already-scanned sessions — see apps.attendance.services.generate_sessions.
+        from apps.attendance.services import generate_sessions
+        self._attendance_undeletable_sessions = generate_sessions(instance)
         return instance
 
 
