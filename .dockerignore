@@ -1,0 +1,17 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.git/
+.gitignore
+.agents/
+.codegraph/
+.code-review-graph/
+.vscode/
+staticfiles/
+media/
+*.sqlite3
+sample_backups/
