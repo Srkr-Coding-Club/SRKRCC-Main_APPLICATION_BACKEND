@@ -24,7 +24,21 @@ if not DEBUG and SECRET_KEY == _INSECURE_DEFAULT_SECRET_KEY:
 raw_hosts = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 ALLOWED_HOSTS = list(set([h.strip() for h in raw_hosts if h.strip()] + ['localhost', '127.0.0.1', 'testserver', '[::1]']))
 
-CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()]
+default_csrf_origins = [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
+    'https://*.vercel.app',
+    'https://*.onrender.com',
+]
+raw_csrf = os.getenv('CSRF_TRUSTED_ORIGINS', '')
+custom_csrf = [o.strip() for o in raw_csrf.split(',') if o.strip()]
+CSRF_TRUSTED_ORIGINS = list(set(default_csrf_origins + custom_csrf))
 
 if not DEBUG:
     SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'True').lower() in ('true', '1', 't')
@@ -64,9 +78,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -160,16 +174,42 @@ REST_FRAMEWORK = {
 }
 
 # CORS Policy
-CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'False').lower() in ('true', '1', 't')
-CORS_ALLOWED_ORIGINS = [
+from corsheaders.defaults import default_headers, default_methods
+
+# Allow all origins by default in local dev (DEBUG=True) to eliminate developer friction
+CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'True' if DEBUG else 'False').lower() in ('true', '1', 't')
+
+raw_cors = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:5173,http://127.0.0.1:5173')
+CORS_ALLOWED_ORIGINS = list(set([
     origin.strip()
-    for origin in os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000').split(',')
+    for origin in raw_cors.split(',')
     if origin.strip()
-]
+]))
+
+# Regex matching for dynamic preview environments (Vercel previews, Render, localhost on any port)
 CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https?:\/\/localhost(:\d+)?$",
+    r"^https?:\/\/127\.0\.0\.1(:\d+)?$",
     r"^https:\/\/.*\.vercel\.app$",
+    r"^https:\/\/.*\.onrender\.com$",
 ]
+
 CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'idempotency-key',
+    'x-idempotency-key',
+    'cache-control',
+    'pragma',
+]
+
+CORS_ALLOW_METHODS = list(default_methods)
+
+CORS_EXPOSE_HEADERS = [
+    'content-type',
+    'content-disposition',
+    'content-length',
+]
 
 # Background jobs run on plain Python threads (apps/core/tasks.py), not Celery —
 # no broker/worker process to configure.
