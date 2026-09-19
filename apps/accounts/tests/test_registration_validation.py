@@ -215,7 +215,62 @@ class RegistrationValidationTests(TestCase):
     def test_self_registration_cannot_grant_itself_admin(self):
         resp = self._post(role='ADMIN')
         self.assertEqual(resp.status_code, 201, resp.data)
-        self.assertEqual(User.objects.get(email='newmember@srkr.ac.in').role, 'MEMBER')
+        self.assertEqual(User.objects.get(email='newmember@srkr.ac.in').role, 'NON_AFFILIATE')
+
+    # --- AFFILIATE / NON_AFFILIATE ------------------------------------------
+
+    def test_self_registration_defaults_to_non_affiliate_with_no_role_sent(self):
+        resp = self._post()  # _payload() never sets 'role'
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(User.objects.get(email='newmember@srkr.ac.in').role, 'NON_AFFILIATE')
+
+    def test_non_affiliate_signup_does_not_require_a_club_id(self):
+        resp = self._post(role='NON_AFFILIATE')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        user = User.objects.get(email='newmember@srkr.ac.in')
+        self.assertEqual(user.role, 'NON_AFFILIATE')
+        self.assertIsNone(user.club_id)
+
+    def test_affiliate_signup_without_club_id_is_rejected(self):
+        resp = self._post(role='AFFILIATE')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('club_id', resp.data)
+        self.assertFalse(User.objects.filter(email='newmember@srkr.ac.in').exists())
+
+    def test_affiliate_signup_with_blank_club_id_is_rejected(self):
+        resp = self._post(role='AFFILIATE', club_id='')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('club_id', resp.data)
+
+    def test_affiliate_signup_with_valid_club_id_succeeds(self):
+        resp = self._post(role='AFFILIATE', club_id='25SCC410')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        user = User.objects.get(email='newmember@srkr.ac.in')
+        self.assertEqual(user.role, 'AFFILIATE')
+        self.assertEqual(user.club_id, '25SCC410')
+
+    def test_affiliate_signup_with_malformed_club_id_is_rejected_by_club_id_check_first(self):
+        # validate_club_id() runs before the cross-field AFFILIATE check, so a
+        # malformed id is reported as a format problem, not as "missing".
+        resp = self._post(role='AFFILIATE', club_id='not-a-club-id')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('club_id', resp.data)
+        # "must provide a valid Club ID" is the cross-field validate() message;
+        # it must NOT be the one that fired here (checked instead of the naive
+        # substring 'valid Club ID', which false-positives against "Invalid
+        # Club ID format" — "Invalid" itself contains "valid").
+        self.assertNotIn('must provide a valid Club ID', str(resp.data['club_id']))
+
+    def test_endpoint_still_accepts_volunteer_for_the_admin_create_user_modal(self):
+        # SELF_REGISTERABLE_ROLES keeps VOLUNTEER alongside AFFILIATE/
+        # NON_AFFILIATE specifically so the admin's "Create New User" modal
+        # (which POSTs to this same endpoint) can still directly create a
+        # VOLUNTEER, same as before this role split. The public signup form
+        # itself never sends 'VOLUNTEER' — this is the endpoint's own allowed
+        # set, broader than what any one caller offers.
+        resp = self._post(role='VOLUNTEER')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(User.objects.get(email='newmember@srkr.ac.in').role, 'VOLUNTEER')
 
 
 class LoginValidationTests(TestCase):

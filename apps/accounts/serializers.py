@@ -269,11 +269,16 @@ class RegisterSerializer(serializers.ModelSerializer):
     # Derived from email: echoed back in the response, never read from the request.
     username = serializers.CharField(read_only=True)
 
-    # Self-registration may only pick from these two low-privilege roles. ADMIN/
-    # CLUB_LEAD/JUDGE can only be granted by an existing admin — role was
-    # previously unrestricted, letting an anonymous POST with {"role": "ADMIN"}
-    # create a full admin account.
-    SELF_REGISTERABLE_ROLES = {'MEMBER', 'VOLUNTEER'}
+    # This endpoint is called by two things: the public signup form (which
+    # only ever sends AFFILIATE or NON_AFFILIATE — its "are you an affiliate?"
+    # checkbox) and the admin's "Create New User" modal (which can also
+    # directly create a VOLUNTEER, same as it could before this role split —
+    # that capability isn't being removed here, just kept working under the
+    # new names). JUDGE/CLUB_LEAD/ADMIN can only be granted by an existing
+    # admin via the Users-tab PATCH — role was previously unrestricted here,
+    # letting an anonymous POST with {"role": "ADMIN"} create a full admin
+    # account.
+    SELF_REGISTERABLE_ROLES = {'AFFILIATE', 'NON_AFFILIATE', 'VOLUNTEER'}
     role = serializers.CharField(required=False, allow_blank=True)
 
     # Branches offered on the signup form, kept in sync with the <select> in
@@ -364,7 +369,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return int(value)
 
     def validate_role(self, value):
-        return value if value in self.SELF_REGISTERABLE_ROLES else 'MEMBER'
+        return value if value in self.SELF_REGISTERABLE_ROLES else 'NON_AFFILIATE'
 
     def validate_club_id(self, value):
         if not value or not value.strip():
@@ -400,6 +405,16 @@ class RegisterSerializer(serializers.ModelSerializer):
                 validate_password(password, user=candidate)
             except DjangoValidationError as ex:
                 raise serializers.ValidationError({'password': list(ex.messages)})
+
+        # AFFILIATE always has a club_id (validate_club_id() above has already
+        # normalized it to canonical form, or to None if blank/omitted — this
+        # runs after both validate_role() and validate_club_id() since DRF
+        # calls per-field validators before this object-level one).
+        if attrs.get('role') == 'AFFILIATE' and not attrs.get('club_id'):
+            raise serializers.ValidationError({
+                'club_id': "Affiliate members must provide a valid Club ID. "
+                           "If you don't have one yet, sign up as a Non-Affiliate instead.",
+            })
         return attrs
 
     @staticmethod
@@ -443,7 +458,7 @@ class RegisterSerializer(serializers.ModelSerializer):
                     roll_number=roll_number,
                     branch=validated_data.get('branch', ''),
                     year=validated_data.get('year', None),
-                    role=validated_data.get('role') or 'MEMBER',
+                    role=validated_data.get('role') or 'NON_AFFILIATE',
                     club_id=club_id,
                 )
         except IntegrityError:
