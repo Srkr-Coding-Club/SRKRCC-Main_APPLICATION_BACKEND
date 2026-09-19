@@ -62,7 +62,8 @@ FILTERS: list[FilterDefinition] = [
     FilterDefinition(
         key="role", label="Role", type="select", operators=["eq", "neq"],
         options=[
-            FilterOption("Member", "MEMBER"),
+            FilterOption("Affiliate", "AFFILIATE"),
+            FilterOption("Non-Affiliate", "NON_AFFILIATE"),
             FilterOption("Volunteer", "VOLUNTEER"),
             FilterOption("Judge", "JUDGE"),
             FilterOption("Club Lead", "CLUB_LEAD"),

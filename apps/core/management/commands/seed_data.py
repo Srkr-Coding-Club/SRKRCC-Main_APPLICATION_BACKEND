@@ -76,7 +76,7 @@ class Command(BaseCommand):
                 "username": "member",
                 "first_name": "Priya",
                 "last_name": "Rao",
-                "role": UserRole.MEMBER,
+                "role": UserRole.NON_AFFILIATE,
                 "roll_number": "23B91A0412",
                 "branch": "ECE",
                 "year": 1,

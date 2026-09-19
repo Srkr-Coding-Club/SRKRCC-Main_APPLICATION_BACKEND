@@ -300,7 +300,10 @@ class UserAccountService:
                             referred_by_user=ref_user,
                             referred_by_raw=ref_raw or None,
                             created_from=source_origin,
-                            role=UserRole.MEMBER,
+                            # Unconditionally AFFILIATE, not club_id-derived: this path always
+                            # resolves a club_id above (either the imported row's own, or a
+                            # freshly allocated one) before reaching this point.
+                            role=UserRole.AFFILIATE,
                             password_status=PasswordStatus.NEEDS_SETUP if is_backup_import else PasswordStatus.ACTIVE,
                         )
                         if is_backup_import:
