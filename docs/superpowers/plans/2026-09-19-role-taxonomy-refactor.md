@@ -14,7 +14,7 @@
 
 - Final role set, exact strings: `AFFILIATE`, `NON_AFFILIATE`, `VOLUNTEER`, `JUDGE`, `CLUB_LEAD`, `ADMIN`. `MEMBER` no longer exists anywhere.
 - `AFFILIATE` ⇒ must have a non-null `club_id`. This is one-directional — a `NON_AFFILIATE` (or any other role) is allowed to hold a `club_id` too (e.g. historical data, or a pre-assigned id from an offline recruitment drive); nothing forces the reverse.
-- Self-registration (`POST /auth/register/`, used by both the public signup page and the admin "Create New User" modal) may only ever produce `AFFILIATE` or `NON_AFFILIATE`. `VOLUNTEER`/`JUDGE`/`CLUB_LEAD`/`ADMIN` are admin-granted only, via the Users-tab PATCH.
+- The **public signup page** may only ever produce `AFFILIATE` or `NON_AFFILIATE` (its "are you an affiliate?" checkbox is the only role signal it sends). `POST /auth/register/` — the endpoint both the public signup page and the admin "Create New User" modal call — accepts `AFFILIATE`, `NON_AFFILIATE`, or `VOLUNTEER` (the modal can still directly create a `VOLUNTEER`, unchanged from before this role split — see the pre-flight ruling in the ledger). `JUDGE`/`CLUB_LEAD`/`ADMIN` are never accepted by this endpoint from either caller; they're admin-granted only, via the Users-tab PATCH.
 - An admin PATCHing a user's role to `AFFILIATE` when that user has no `club_id` is rejected with `400` and a field-anchored `club_id` error — never silently allowed, never auto-combined with a club_id assignment in the same request.
 - Default role for a fresh row with no other signal: `NON_AFFILIATE`.
 - Backend repo root: `C:\Users\chall\OneDrive\Desktop\SRKRCC-Main_APPLICATION_BACKEND`. Frontend repo root: `C:\Users\chall\OneDrive\Desktop\SRKRCC-Main_APPLICATION_FRONTEND`. Run backend tests with `./venv/Scripts/python.exe manage.py test <path>` from the backend root.
@@ -291,12 +291,23 @@ Add to `apps/accounts/tests/test_registration_validation.py`, inside `Registrati
         self.assertEqual(resp.status_code, 400)
         self.assertIn('club_id', resp.data)
         self.assertNotIn('valid Club ID', str(resp.data['club_id']))
+
+    def test_endpoint_still_accepts_volunteer_for_the_admin_create_user_modal(self):
+        # SELF_REGISTERABLE_ROLES keeps VOLUNTEER alongside AFFILIATE/
+        # NON_AFFILIATE specifically so the admin's "Create New User" modal
+        # (which POSTs to this same endpoint) can still directly create a
+        # VOLUNTEER, same as before this role split. The public signup form
+        # itself never sends 'VOLUNTEER' — this is the endpoint's own allowed
+        # set, broader than what any one caller offers.
+        resp = self._post(role='VOLUNTEER')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(User.objects.get(email='newmember@srkr.ac.in').role, 'VOLUNTEER')
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `./venv/Scripts/python.exe manage.py test apps.accounts.tests.test_registration_validation -v 1`
-Expected: `FAIL`/`ERROR` on the six new tests — `role='AFFILIATE'` currently coerces to `'MEMBER'` (not in `SELF_REGISTERABLE_ROLES` yet) via the old `validate_role` fallback, so none of the AFFILIATE-specific assertions hold yet, and `test_self_registration_defaults_to_non_affiliate_with_no_role_sent` fails because the current default is `'MEMBER'`.
+Expected: `FAIL`/`ERROR` on six of the seven new tests — `role='AFFILIATE'` currently coerces to `'MEMBER'` (not in `SELF_REGISTERABLE_ROLES` yet) via the old `validate_role` fallback, so none of the AFFILIATE-specific assertions hold yet, and `test_self_registration_defaults_to_non_affiliate_with_no_role_sent` fails because the current default is `'MEMBER'`. `test_endpoint_still_accepts_volunteer_for_the_admin_create_user_modal` passes already — `'VOLUNTEER'` is in the *old* `SELF_REGISTERABLE_ROLES` too, just not asserted against `'NON_AFFILIATE'`-flavored expectations; it's included here as a regression guard for Step 3, not because it fails first.
 
 - [ ] **Step 3: Implement**
 
@@ -314,12 +325,16 @@ Edit `apps/accounts/serializers.py`. Replace:
 with:
 
 ```python
-    # Self-registration may only pick from these two roles — the signup form's
-    # "are you an affiliate?" checkbox. VOLUNTEER/JUDGE/CLUB_LEAD/ADMIN can only
-    # be granted by an existing admin — role was previously unrestricted,
+    # This endpoint is called by two things: the public signup form (which
+    # only ever sends AFFILIATE or NON_AFFILIATE — its "are you an affiliate?"
+    # checkbox) and the admin's "Create New User" modal (which can also
+    # directly create a VOLUNTEER, same as it could before this role split —
+    # that capability isn't being removed here, just kept working under the
+    # new names). JUDGE/CLUB_LEAD/ADMIN can only be granted by an existing
+    # admin via the Users-tab PATCH — role was previously unrestricted here,
     # letting an anonymous POST with {"role": "ADMIN"} create a full admin
     # account.
-    SELF_REGISTERABLE_ROLES = {'AFFILIATE', 'NON_AFFILIATE'}
+    SELF_REGISTERABLE_ROLES = {'AFFILIATE', 'NON_AFFILIATE', 'VOLUNTEER'}
     role = serializers.CharField(required=False, allow_blank=True)
 ```
 
@@ -723,7 +738,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Run the entire backend test suite**
 
 Run: `./venv/Scripts/python.exe manage.py test`
-Expected: `OK`, all tests pass (231+ tests: the pre-existing 228 plus the 9 new ones added across Tasks 1-3 — 3 in `test_role_migration.py`, 6 in `test_registration_validation.py`, 2 in `test_user_role_update.py`; note some of Task 2's new tests double-count against this if already run individually, the point is zero failures/errors across the whole suite).
+Expected: `OK`, all tests pass (232+ tests: the pre-existing 228 plus the 10 new ones added across Tasks 1-3 — 3 in `test_role_migration.py`, 7 in `test_registration_validation.py`, 2 in `test_user_role_update.py`; note some of Task 2's new tests double-count against this if already run individually, the point is zero failures/errors across the whole suite).
 
 - [ ] **Step 2: Grep the whole backend for any remaining `'MEMBER'` role literal**
 
