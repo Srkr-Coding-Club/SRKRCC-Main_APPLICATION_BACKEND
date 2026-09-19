@@ -1,5 +1,5 @@
 from rest_framework import generics, permissions, status, filters
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import get_user_model
@@ -103,6 +103,14 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
             is_full_admin = requester.is_superuser or requester.is_staff or getattr(requester, 'role', None) == 'ADMIN'
             if new_role in self.ELEVATED_ROLES and not is_full_admin:
                 raise PermissionDenied("Only an Admin can assign the Admin or Club Lead role.")
+            # AFFILIATE always has a club_id. This endpoint doesn't accept
+            # club_id in its own payload (UserRoleUpdateSerializer only writes
+            # role/membership_status) — the admin must assign one first via
+            # the existing Club ID tooling, then set the role.
+            if new_role == 'AFFILIATE' and not target.club_id:
+                raise ValidationError({
+                    'club_id': ["Assign a Club ID to this member before setting their role to Affiliate."],
+                })
 
         previous_role = target.role
         previous_membership_status = target.membership_status
