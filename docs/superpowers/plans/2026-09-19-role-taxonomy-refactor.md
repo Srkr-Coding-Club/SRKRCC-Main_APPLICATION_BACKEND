@@ -995,7 +995,9 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - Consumes: `RegisterSerializer`'s AFFILIATE/club_id contract (Task 2) — this is the second real caller of `POST /auth/register/` (the first is the public signup form), so it needs the same Affiliate ID input the signup form already has.
 - Produces: `newUser` state gains a `clubId: string` field — no other file reads `newUser` besides `useAdminData.ts` and `CreateUserModal.tsx` (confirmed: `src/app/admin/users/page.tsx` only passes the whole `newUser`/`setNewUser` pair through as props, it doesn't destructure individual fields), so this is a self-contained two-file change.
 
-- [ ] **Step 1: Widen the role union in `CreateUserModal`'s props and add `clubId`**
+- [ ] **Step 1: Add `clubId` to `CreateUserModal`'s props**
+
+> **Note for the implementer:** Task 8 already widened this interface's `role` union from the old 5-value set to `'AFFILIATE' | 'NON_AFFILIATE' | 'VOLUNTEER' | 'JUDGE' | 'CLUB_LEAD' | 'ADMIN'` (a forced side effect of a structural type dependency between this file, `UsersTab.tsx`, and `useAdminData.ts` — all three declare their own separate `role` union but are wired together via component props in `src/app/admin/users/page.tsx`, so widening one without the others breaks the build). Your `role` union is therefore **already correct** — the only remaining change here is adding `clubId: string;` to both the `newUser` and `setNewUser` shapes below.
 
 Edit `src/components/admin/CreateUserModal.tsx`. Replace:
 
@@ -1010,7 +1012,7 @@ interface CreateUserModalProps {
     rollNumber: string;
     branch: string;
     year: string;
-    role: 'MEMBER' | 'VOLUNTEER' | 'JUDGE' | 'CLUB_LEAD' | 'ADMIN';
+    role: 'AFFILIATE' | 'NON_AFFILIATE' | 'VOLUNTEER' | 'JUDGE' | 'CLUB_LEAD' | 'ADMIN';
     password: string;
   };
   setNewUser: React.Dispatch<React.SetStateAction<{
@@ -1019,7 +1021,7 @@ interface CreateUserModalProps {
     rollNumber: string;
     branch: string;
     year: string;
-    role: 'MEMBER' | 'VOLUNTEER' | 'JUDGE' | 'CLUB_LEAD' | 'ADMIN';
+    role: 'AFFILIATE' | 'NON_AFFILIATE' | 'VOLUNTEER' | 'JUDGE' | 'CLUB_LEAD' | 'ADMIN';
     password: string;
   }>>;
 }
