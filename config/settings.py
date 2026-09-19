@@ -158,6 +158,9 @@ AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+    # Character-class mix (upper/lower/digit/special). Lives in AUTH_PASSWORD_VALIDATORS
+    # rather than the signup serializer so it also covers the password-setup link flow.
+    {'NAME': 'apps.accounts.validators.ComplexPasswordValidator'},
 ]
 
 # Internationalization

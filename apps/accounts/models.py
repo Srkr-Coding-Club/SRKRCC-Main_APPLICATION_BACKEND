@@ -58,7 +58,14 @@ class User(AbstractUser, TimeStampedModel):
     )
 
     # Profile & Academic Details
-    roll_number = models.CharField(max_length=50, blank=True, null=True)
+    #
+    # unique=True (added alongside the self-registration uniqueness check in
+    # RegisterSerializer) — two students previously could sign up with the same
+    # roll number since nothing enforced it beyond format. NULL is exempt from
+    # the constraint, which legacy/admin/faculty rows without a roll number rely
+    # on; blank='' is not, so callers that don't have a value must pass None
+    # (apps/accounts/services/user_account_service.py already does this).
+    roll_number = models.CharField(max_length=50, blank=True, null=True, unique=True, db_index=True)
     branch = models.CharField(max_length=100, blank=True, null=True)
     year = models.IntegerField(blank=True, null=True)
     phone_number = models.CharField(max_length=20, blank=True, null=True)
