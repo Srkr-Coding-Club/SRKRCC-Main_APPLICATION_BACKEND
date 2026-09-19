@@ -4,7 +4,14 @@ from django.db import models
 from apps.core.models import TimeStampedModel
 
 class UserRole(models.TextChoices):
-    MEMBER = 'MEMBER', 'Member'
+    # AFFILIATE always has a club_id — enforced in RegisterSerializer.validate()
+    # (signup + the admin "Create New User" modal, which reuses that same
+    # endpoint) and in UserDetailView.perform_update (the admin role-change
+    # PATCH). NON_AFFILIATE has no such requirement, though nothing stops one
+    # from holding a club_id too (e.g. a pre-assigned id from an offline
+    # recruitment drive, or historical data).
+    AFFILIATE = 'AFFILIATE', 'Affiliate'
+    NON_AFFILIATE = 'NON_AFFILIATE', 'Non-Affiliate'
     VOLUNTEER = 'VOLUNTEER', 'Volunteer'
     JUDGE = 'JUDGE', 'Judge'
     CLUB_LEAD = 'CLUB_LEAD', 'Club Lead'
@@ -41,7 +48,7 @@ class User(AbstractUser, TimeStampedModel):
     role = models.CharField(
         max_length=20,
         choices=UserRole.choices,
-        default=UserRole.MEMBER
+        default=UserRole.NON_AFFILIATE
     )
     membership_status = models.CharField(
         max_length=20,
