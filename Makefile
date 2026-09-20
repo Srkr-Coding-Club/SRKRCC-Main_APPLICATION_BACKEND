@@ -1,14 +1,14 @@
 .PHONY: setup dev run migrations migrate superuser seed-users admin-user shell check clean
 
 # Virtual environment python binary
-VENV = venv
+VENV = .venv
 UV = uv
 
 setup:
 	@echo "Creating virtual environment with uv..."
-	$(UV) venv $(VENV)
+	$(UV) venv $(VENV) --link-mode copy
 	@echo "Installing dependencies..."
-	$(UV) pip install -r requirements.txt
+	$(UV) pip install --link-mode copy -r requirements.txt
 	@echo "Backend environment ready! Update .env with your local PostgreSQL credentials if needed."
 
 dev: run

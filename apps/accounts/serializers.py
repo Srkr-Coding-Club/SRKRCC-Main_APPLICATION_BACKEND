@@ -1,3 +1,4 @@
+import re
 from django.db import models
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -192,6 +193,16 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['username', 'email', 'password', 'first_name', 'last_name', 'role', 'roll_number', 'branch', 'year']
+
+    def validate_roll_number(self, value):
+        if not value:
+            raise serializers.ValidationError("Register number (roll number) is required.")
+        value = str(value).strip().upper()
+        if not re.match(r'^[0-9]{2}[A-Z0-9]{8}$', value):
+            raise serializers.ValidationError(
+                "Invalid Register Number format. Must be a 10-character alphanumeric registration ID (e.g., 21B91A0501)."
+            )
+        return value
 
     def create(self, validated_data):
         user = User.objects.create_user(
