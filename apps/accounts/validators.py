@@ -20,6 +20,11 @@ NAME_MAX_LENGTH = 60
 ROLL_NUMBER_REGEX = re.compile(r"^[A-Z0-9]{10}$")
 ROLL_NUMBER_LENGTH = 10
 
+# Digits only, exactly 10 characters (e.g. 9876543210) — no country code,
+# spaces, or symbols.
+PHONE_NUMBER_REGEX = re.compile(r"^\d{10}$")
+PHONE_NUMBER_LENGTH = 10
+
 # Pragmatic e-mail shape check layered on top of Django's EmailValidator:
 # rejects consecutive/leading/trailing dots and demands a >=2 char TLD.
 EMAIL_REGEX = re.compile(
@@ -47,6 +52,11 @@ def normalize_name(value: str) -> str:
 def normalize_roll_number(value: str) -> str:
     """Uppercases and strips all whitespace from a roll number."""
     return re.sub(r"\s+", "", (value or "")).upper()
+
+
+def normalize_phone_number(value: str) -> str:
+    """Strips everything but digits from a phone number."""
+    return re.sub(r"\D", "", value or "")
 
 
 class ComplexPasswordValidator:

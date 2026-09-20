@@ -15,10 +15,13 @@ from apps.accounts.validators import (
     NAME_REGEX,
     PASSWORD_MAX_LENGTH,
     PASSWORD_MIN_LENGTH,
+    PHONE_NUMBER_LENGTH,
+    PHONE_NUMBER_REGEX,
     ROLL_NUMBER_LENGTH,
     ROLL_NUMBER_REGEX,
     normalize_email,
     normalize_name,
+    normalize_phone_number,
     normalize_roll_number,
 )
 
@@ -143,21 +146,27 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
             'streak', 'points', 'events_count', 'projects_count',
             'registered_events', 'badges'
         ]
-        read_only_fields = ['id', 'role', 'created_at', 'club_id']
+        # `email` is the account's identity (USERNAME_FIELD, login identifier,
+        # and what every notification is addressed to) — it must never change
+        # through this self-service endpoint. It used to be missing from this
+        # list, meaning a user could silently PATCH their own email here with
+        # no validation and no re-verification step.
+        read_only_fields = ['id', 'role', 'created_at', 'club_id', 'email']
 
     def get_referred_by_display(self, obj):
         if obj.referred_by_user:
             return f"{obj.referred_by_user.first_name} {obj.referred_by_user.last_name}".strip() or obj.referred_by_user.email
         return obj.referred_by_raw or ""
 
-    # `first_name`/`last_name`/`roll_number` are writable through this
-    # self-service PATCH /api/auth/me/ endpoint (only id/role/created_at/
-    # club_id are read-only above), so they must be held to the exact same
-    # rules RegisterSerializer enforces at signup — otherwise a user could
-    # PATCH their own name to contain digits, or their roll number to a
-    # malformed value, bypassing every signup-time check. These reuse the
-    # same shared helpers/constants from apps/accounts/validators.py that
-    # RegisterSerializer imports above, so the two can never drift apart.
+    # `first_name`/`last_name`/`roll_number`/`phone_number` are writable
+    # through this self-service PATCH /api/auth/me/ endpoint (only
+    # id/role/created_at/club_id/email are read-only above), so they must be
+    # held to the exact same rules RegisterSerializer enforces at signup —
+    # otherwise a user could PATCH their own name to contain digits, or their
+    # roll number to a malformed value, bypassing every signup-time check.
+    # These reuse the same shared helpers/constants from
+    # apps/accounts/validators.py that RegisterSerializer imports above, so
+    # the two can never drift apart.
     def validate_first_name(self, value):
         return self._validate_name(value, "First name", required=True)
 
@@ -204,6 +213,18 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
                 "or contact a club representative if you believe this is a mistake."
             )
         return roll
+
+    def validate_phone_number(self, value):
+        # blank/null is allowed (the model field is optional) — a user can
+        # still clear a previously-set phone number.
+        if not value or not value.strip():
+            return ""
+        phone = normalize_phone_number(value)
+        if len(phone) != PHONE_NUMBER_LENGTH or not PHONE_NUMBER_REGEX.match(phone):
+            raise serializers.ValidationError(
+                f"Phone number must be exactly {PHONE_NUMBER_LENGTH} digits, numbers only."
+            )
+        return phone
 
     def get_streak(self, obj):
         try:

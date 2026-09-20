@@ -2,11 +2,12 @@
 Server-side field rules for PATCH /api/auth/me/ (ProfileView / self-service
 profile update).
 
-UserProfileDetailSerializer only marks id/role/created_at/club_id read-only,
-so first_name/last_name/roll_number/branch/year are all writable here. They
-must be held to the exact same rules RegisterSerializer enforces at signup
-(apps/accounts/validators.py) — otherwise a user could PATCH their own
-profile to a value the signup form would have rejected outright.
+UserProfileDetailSerializer only marks id/role/created_at/club_id/email
+read-only, so first_name/last_name/roll_number/phone_number/branch/year are
+all writable here. They must be held to the exact same rules
+RegisterSerializer enforces at signup (apps/accounts/validators.py) —
+otherwise a user could PATCH their own profile to a value the signup form
+would have rejected outright.
 """
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -75,3 +76,43 @@ class ProfileUpdateValidationTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.data)
         self.user.refresh_from_db()
         self.assertEqual(self.user.branch, "IT")
+
+    def test_email_is_immutable_via_profile_patch(self):
+        """email is the account identity (login + USERNAME_FIELD) — it must
+        never change through this endpoint, silently or otherwise."""
+        resp = self._patch(email="attacker@evil.com", first_name="Ravi")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "selfupdater@srkr.ac.in")
+
+    def test_phone_number_with_letters_is_rejected(self):
+        resp = self._patch(phone_number="98765abcde")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("phone_number", resp.data)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.phone_number, None)
+
+    def test_phone_number_wrong_length_is_rejected(self):
+        resp = self._patch(phone_number="98765")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("phone_number", resp.data)
+
+    def test_valid_phone_number_succeeds(self):
+        resp = self._patch(phone_number="9876543210")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.phone_number, "9876543210")
+
+    def test_phone_number_with_spaces_is_normalized(self):
+        resp = self._patch(phone_number="98765 43210")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.phone_number, "9876543210")
+
+    def test_phone_number_can_be_cleared(self):
+        self.user.phone_number = "9876543210"
+        self.user.save(update_fields=["phone_number"])
+        resp = self._patch(phone_number="")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.phone_number, "")
