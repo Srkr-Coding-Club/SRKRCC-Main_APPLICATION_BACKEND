@@ -150,7 +150,7 @@ class UniversalBackupEngineTests(TestCase):
             first_name="Regular",
             last_name="Member",
             password="MemberPassword123!",
-            role="MEMBER",
+            role="NON_AFFILIATE",
         )
         member_client = APIClient()
         member_client.force_authenticate(user=member)

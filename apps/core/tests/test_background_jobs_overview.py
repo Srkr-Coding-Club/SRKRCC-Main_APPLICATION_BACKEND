@@ -17,7 +17,7 @@ class BackgroundJobsOverviewTests(APITestCase):
             username="jobsadmin", email="jobsadmin@srkr.ac.in", password="pw12345!", role="ADMIN",
         )
         self.member = User.objects.create_user(
-            username="jobsmember", email="jobsmember@srkr.ac.in", password="pw12345!", role="MEMBER",
+            username="jobsmember", email="jobsmember@srkr.ac.in", password="pw12345!", role="NON_AFFILIATE",
         )
 
         template = EmailTemplate.objects.create(

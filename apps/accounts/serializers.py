@@ -150,6 +150,61 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
             return f"{obj.referred_by_user.first_name} {obj.referred_by_user.last_name}".strip() or obj.referred_by_user.email
         return obj.referred_by_raw or ""
 
+    # `first_name`/`last_name`/`roll_number` are writable through this
+    # self-service PATCH /api/auth/me/ endpoint (only id/role/created_at/
+    # club_id are read-only above), so they must be held to the exact same
+    # rules RegisterSerializer enforces at signup — otherwise a user could
+    # PATCH their own name to contain digits, or their roll number to a
+    # malformed value, bypassing every signup-time check. These reuse the
+    # same shared helpers/constants from apps/accounts/validators.py that
+    # RegisterSerializer imports above, so the two can never drift apart.
+    def validate_first_name(self, value):
+        return self._validate_name(value, "First name", required=True)
+
+    def validate_last_name(self, value):
+        return self._validate_name(value, "Last name", required=False)
+
+    def _validate_name(self, value, label, required):
+        name = normalize_name(value)
+        if not name:
+            if required:
+                raise serializers.ValidationError(f"{label} is required.")
+            return ""
+        if len(name) < NAME_MIN_LENGTH:
+            raise serializers.ValidationError(f"{label} must be at least {NAME_MIN_LENGTH} characters long.")
+        if len(name) > NAME_MAX_LENGTH:
+            raise serializers.ValidationError(f"{label} must be at most {NAME_MAX_LENGTH} characters long.")
+        if not NAME_REGEX.match(name):
+            raise serializers.ValidationError(
+                f"{label} may only contain letters, spaces, hyphens and apostrophes — no digits or symbols."
+            )
+        return name
+
+    def validate_roll_number(self, value):
+        roll = normalize_roll_number(value)
+        if not roll:
+            raise serializers.ValidationError("Roll number is required.")
+        if len(roll) != ROLL_NUMBER_LENGTH:
+            raise serializers.ValidationError(
+                f"Roll number must be exactly {ROLL_NUMBER_LENGTH} characters (yours has {len(roll)})."
+            )
+        if not ROLL_NUMBER_REGEX.match(roll):
+            raise serializers.ValidationError(
+                "Roll number must be alphanumeric only (letters A-Z and digits 0-9), e.g. 21B91A0501."
+            )
+        # Exclude the current user's own row — otherwise re-saving an
+        # unchanged roll number would be rejected as "already taken by
+        # themselves."
+        existing = User.objects.filter(roll_number__iexact=roll)
+        if self.instance is not None:
+            existing = existing.exclude(id=self.instance.id)
+        if existing.exists():
+            raise serializers.ValidationError(
+                "This roll number is already registered. If this is your roll number, sign in instead, "
+                "or contact a club representative if you believe this is a mistake."
+            )
+        return roll
+
     def get_streak(self, obj):
         try:
             return obj.streak.current_streak

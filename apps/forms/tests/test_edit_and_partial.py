@@ -11,7 +11,7 @@ User = get_user_model()
 class EditRevalidationTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(
-            username="s", email="s@srkr.ac.in", password="x", role="MEMBER",
+            username="s", email="s@srkr.ac.in", password="x", role="NON_AFFILIATE",
         )
         self.form = make_form(status=FormStatus.PUBLISHED, allow_response_editing=True)
         self.name = add_field(self.form, FieldType.TEXT, label="Name", required=True, order=1,

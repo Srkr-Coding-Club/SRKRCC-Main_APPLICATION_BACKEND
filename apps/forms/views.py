@@ -20,7 +20,7 @@ from .serializers import (
 from .validation import validate_submission, validate_form_definition, PARTIAL
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead
-from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError
+from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError, RollNumberConflictError
 from .services import FormAutomationService
 from apps.core.models import EmailDelivery
 from apps.core.idempotency import (
@@ -1089,7 +1089,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
                 if submission_warnings:
                     resp_data = dict(resp_data)
                     resp_data['warnings'] = submission_warnings
-        except (ClubIdImmutableError, ClubIdConflictError) as ex:
+        except (ClubIdImmutableError, ClubIdConflictError, RollNumberConflictError) as ex:
             return DRFResponse({"error": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
 
         # Confirmation email dispatch happens AFTER the transaction commits — never

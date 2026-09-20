@@ -15,7 +15,7 @@ class EditInPlaceTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(
-            username="editor", email="editor@srkr.ac.in", password="pw12345!", role="MEMBER",
+            username="editor", email="editor@srkr.ac.in", password="pw12345!", role="NON_AFFILIATE",
         )
         self.form = make_form(
             status=FormStatus.PUBLISHED,
@@ -136,7 +136,7 @@ class DuplicateEmailAnswerTests(APITestCase):
         form = make_form(status=FormStatus.PUBLISHED, prevent_duplicate_email_answers=True, allow_response_editing=True)
         email_field = add_field(form, FieldType.EMAIL, label="Email", required=True, order=1)
         user = User.objects.create_user(
-            username="dupeditor", email="dupeditor@srkr.ac.in", password="pw12345!", role="MEMBER",
+            username="dupeditor", email="dupeditor@srkr.ac.in", password="pw12345!", role="NON_AFFILIATE",
         )
         self.client.force_authenticate(user)
 

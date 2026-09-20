@@ -10,7 +10,7 @@ User = get_user_model()
 class SubmissionEndpointTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(
-            username="student", email="student@srkr.ac.in", password="x", role="MEMBER",
+            username="student", email="student@srkr.ac.in", password="x", role="NON_AFFILIATE",
         )
         self.form = make_form(status=FormStatus.PUBLISHED, allow_multiple_responses=True,
                               max_responses_per_user=3)

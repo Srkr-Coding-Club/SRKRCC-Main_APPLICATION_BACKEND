@@ -70,7 +70,7 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
             username="admin1", email="admin1@srkr.ac.in", password="pw12345!", role="ADMIN",
         )
         self.member = User.objects.create_user(
-            username="member1", email="member1@srkr.ac.in", password="pw12345!", role="MEMBER",
+            username="member1", email="member1@srkr.ac.in", password="pw12345!", role="NON_AFFILIATE",
         )
 
     def tearDown(self):
