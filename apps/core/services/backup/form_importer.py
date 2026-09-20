@@ -6,6 +6,7 @@ from django.utils import timezone
 from apps.core.models import BackupJob, ImportAttempt, ImportAttemptStatus, ImportRow, ImportRowAction
 from apps.core.services.backup.base_importer import BaseBackupImporter
 from apps.forms.models import Form, FormField, Response as FormResponse, Answer as FormAnswer
+from apps.forms.validation import validate_submission, PARTIAL
 from apps.accounts.services.user_account_service import UserAccountService
 
 try:
@@ -192,6 +193,22 @@ class FormSubmissionImporter(BaseBackupImporter):
                 sid = transaction.savepoint()
                 try:
                     payload = row.normalized_data
+
+                    # Validate the row against the live form definition in PARTIAL
+                    # mode: structural / type / option errors reject the row;
+                    # missing-required and constraint misses are recorded as
+                    # warnings and the row is still imported (historical backups
+                    # are routinely incomplete).
+                    raw_answers = [
+                        {"field": fid, "value": v}
+                        for fid, v in payload.items() if v not in (None, "")
+                    ]
+                    report = validate_submission(target_form, raw_answers, mode=PARTIAL)
+                    if report.errors:
+                        raise ValueError(
+                            "; ".join(f"{e.label or e.field_id}: {e.message}" for e in report.errors)
+                        )
+
                     # Check if user email exists in raw payload to link user
                     user_email = row.raw_data.get("email") or row.raw_data.get("Email")
                     linked_user = None
@@ -201,26 +218,23 @@ class FormSubmissionImporter(BaseBackupImporter):
                     resp = FormResponse.objects.create(
                         form=target_form,
                         user=linked_user,
+                        form_version=target_form.version,
                         is_manual_entry=True,
                         created_by_admin=user if hasattr(user, 'is_authenticated') and user.is_authenticated else None,
                     )
 
-                    answer_objects = []
-                    for field_id_str, val in payload.items():
-                        try:
-                            f_id = int(field_id_str)
-                            answer_objects.append(
-                                FormAnswer(
-                                    response=resp,
-                                    field_id=f_id,
-                                    value=val,
-                                )
-                            )
-                        except (ValueError, TypeError):
-                            pass
-
+                    answer_objects = [
+                        FormAnswer(response=resp, field_id=fid, value=val)
+                        for fid, val in report.cleaned_answers.items()
+                    ]
                     if answer_objects:
                         FormAnswer.objects.bulk_create(answer_objects)
+
+                    if report.warnings:
+                        row.error_message = "[imported with warnings] " + "; ".join(
+                            w.message for w in report.warnings[:5]
+                        )
+                        row.save(update_fields=['error_message'])
 
                     row.target_object_id = str(resp.id)
                     row.save(update_fields=['target_object_id'])

@@ -48,7 +48,7 @@ FORMS_ALL_FILTERS: list[FilterDefinition] = [
     FilterDefinition(key="is_manual_entry", label="Entry Type", type="boolean", operators=["eq"]),
 ]
 
-ALLOWED_SORT_FIELDS_FORMS = {"id", "submitted_at", "form_title"}
+ALLOWED_SORT_FIELDS_FORMS = {"id", "submitted_at", "form_title", "is_manual_entry"}
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ class FormsAllAdapter(BaseDatasetAdapter):
         return list(COMMON_COLUMNS), list(FORMS_ALL_FILTERS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
-        qs = Response.objects.select_related("form", "user").filter(is_test_submission=False)
+        qs = Response.objects.select_related("form", "user").prefetch_related("answers__field").filter(is_test_submission=False)
 
         if query_req.search:
             q = query_req.search.strip()
@@ -106,7 +106,7 @@ class FormsAllAdapter(BaseDatasetAdapter):
         return record
 
     def stream_records(self, query_req: QueryRequest, user: Any, selected_ids: list[str] | None = None) -> Generator[dict[str, CanonicalValue], None, None]:
-        qs = Response.objects.select_related("form", "user").filter(is_test_submission=False)
+        qs = Response.objects.select_related("form", "user").prefetch_related("answers__field").filter(is_test_submission=False)
         if selected_ids is not None:
             qs = qs.filter(pk__in=selected_ids)
         else:
@@ -116,15 +116,56 @@ class FormsAllAdapter(BaseDatasetAdapter):
         for r in qs.iterator(chunk_size=500):
             yield self._normalize_common(r)
 
+    def _resolve_identity(self, r: Response) -> tuple[str | None, str | None]:
+        """
+        Resolves (name, email) with the same 3-tier fallback as
+        ResponseDetailSerializer.get_user/get_user_name/get_user_email
+        (apps/forms/serializers.py), so manual-entry and CSV-imported
+        responses — which have no `r.user` — don't render blank:
+          1. Real r.user.
+          2. Manual entry created by an admin (r.created_by_admin).
+          3. Search r.answers for a name/email-shaped field.
+        """
+        if r.user:
+            name = f"{r.user.first_name} {r.user.last_name}".strip() or r.user.username or r.user.email
+            return name, r.user.email
+        if r.is_manual_entry and r.created_by_admin:
+            return f"Admin: {r.created_by_admin.email}", r.created_by_admin.email
+
+        name = None
+        email = None
+        for ans in r.answers.all():
+            if not ans.field or not ans.value or not str(ans.value).strip():
+                continue
+            label = ans.field.label.lower()
+            if name is None and any(k in label for k in ("name", "student", "candidate", "applicant")):
+                name = str(ans.value).strip()
+            if email is None and (ans.field.type == "EMAIL" or "email" in label):
+                email = str(ans.value).strip()
+        return name or "Anonymous Student", email or "offline@srkr.ac.in"
+
+    def _resolve_roll_number(self, r: Response) -> str | None:
+        """Same fallback tiers as _resolve_identity, applied to roll number."""
+        if r.user:
+            return r.user.roll_number
+        if r.is_manual_entry and r.created_by_admin:
+            return r.created_by_admin.roll_number
+        for ans in r.answers.all():
+            if not ans.field or not ans.value or not str(ans.value).strip():
+                continue
+            if "roll" in ans.field.label.lower():
+                return str(ans.value).strip()
+        return None
+
     def _normalize_common(self, r: Response) -> dict[str, CanonicalValue]:
-        u = r.user
-        name = f"{u.first_name} {u.last_name}".strip() if u else None
+        name, email = self._resolve_identity(r)
+        roll_number = self._resolve_roll_number(r)
         return {
             "id":              self._val(str(r.pk), "number", "forms.Response.id"),
             "form_title":      self._val(r.form.title, "text", "forms.Form.title"),
             "name":            self._val(name, "text", "forms.Response.user.first_name+last_name"),
-            "email":           self._val(u.email if u else None, "email", "forms.Response.user.email"),
-            "roll_number":     self._val(u.roll_number if u else None, "text", "forms.Response.user.roll_number"),
+            "email":           self._val(email, "email", "forms.Response.user.email"),
+            "roll_number":     self._val(roll_number, "text", "forms.Response.user.roll_number"),
             "is_manual_entry": self._val(r.is_manual_entry, "boolean", "forms.Response.is_manual_entry"),
             "submitted_at":    self._val(r.submitted_at.isoformat() if r.submitted_at else None, "datetime", "forms.Response.submitted_at"),
         }

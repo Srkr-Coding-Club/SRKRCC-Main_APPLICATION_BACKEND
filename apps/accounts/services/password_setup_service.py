@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 import secrets
 from datetime import timedelta
 from typing import Any
@@ -197,8 +198,16 @@ class PasswordSetupService:
         if not raw_token or not new_password:
             raise InvalidSetupTokenError("Token and new password are required.")
 
+        # Mirrors the strength meter shown on the setup-password page (length, mixed
+        # case, number/symbol) — the UI's own submit handler previously only checked
+        # length, so a weak password satisfying none of the visible requirements could
+        # still be submitted. Enforced here too since this API can be called directly.
         if len(new_password) < 8:
             raise ValidationError("Password must be at least 8 characters in length.")
+        if not (re.search(r'[a-z]', new_password) and re.search(r'[A-Z]', new_password)):
+            raise ValidationError("Password must contain both upper and lower case letters.")
+        if not re.search(r'[0-9!@#$%^&*(),.?":{}|<>]', new_password):
+            raise ValidationError("Password must contain at least one number or symbol.")
 
         token_hash = hashlib.sha256(raw_token.strip().encode()).hexdigest()
 
@@ -224,6 +233,10 @@ class PasswordSetupService:
                 raise InvalidSetupTokenError("This setup link has expired. Please request a new one.")
 
             user = token.user
+            # Django's standard checks (common-password blocklist, similarity to the
+            # user's own name/email/username) need the resolved user, so they run here
+            # rather than with the strength-meter checks above.
+            validate_password(new_password, user=user)
             user.set_password(new_password)
             user.password_status = PasswordStatus.ACTIVE
             user.save(update_fields=['password', 'password_status', 'updated_at'])

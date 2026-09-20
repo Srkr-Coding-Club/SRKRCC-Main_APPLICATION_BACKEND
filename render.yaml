@@ -1,0 +1,41 @@
+databases:
+  - name: srkrcc-postgres
+    databaseName: srkrcc_db
+    user: srkrcc_user
+    plan: free
+    region: singapore
+
+services:
+  - type: web
+    name: srkrcc-backend
+    runtime: python
+    region: singapore
+    plan: free
+    healthCheckPath: /api/ping/
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 3 --timeout 120"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: srkrcc-postgres
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: ".onrender.com,0.0.0.0,localhost,127.0.0.1"
+      - key: CORS_ALLOW_ALL_ORIGINS
+        value: "False"
+      - key: CORS_ALLOWED_ORIGINS
+        value: "http://localhost:3000"
+      - key: CSRF_TRUSTED_ORIGINS
+        value: "https://*.onrender.com"
+      - key: DJANGO_SUPERUSER_EMAIL
+        value: "admin@srkr.ac.in"
+      - key: DJANGO_SUPERUSER_PASSWORD
+        generateValue: true
+      - key: DJANGO_SUPERUSER_USERNAME
+        value: "admin"

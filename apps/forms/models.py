@@ -44,9 +44,64 @@ class Form(TimeStampedModel):
     allow_response_editing = models.BooleanField(default=True, help_text="Allow users to view and update their previously submitted response")
     enable_prefill = models.BooleanField(default=True, help_text="Automatically pre-fill student profile details when limit is 1")
     max_responses_per_user = models.PositiveIntegerField(default=1, help_text="Maximum allowed submissions per user (1 for single submission)")
+    max_total_responses = models.PositiveIntegerField(
+        blank=True, null=True,
+        help_text="Auto-close the form once this many total (non-test) responses are received. Leave blank for unlimited.",
+    )
+    prevent_duplicate_email_answers = models.BooleanField(
+        default=False,
+        help_text="Reject a submission if any EMAIL-type field's value has already been used to answer this same form (excluding test submissions). Off by default — some forms legitimately expect one email to submit more than once (e.g. a parent registering several children).",
+    )
     allow_edits_until = models.DateTimeField(blank=True, null=True, help_text="Deadline after which responses are locked")
     open_at = models.DateTimeField(blank=True, null=True)
     close_at = models.DateTimeField(blank=True, null=True)
+
+    # --- Club Member ID automation -----------------------------------------
+    club_id_enabled = models.BooleanField(
+        default=False,
+        help_text="On each completed submission, find-or-create a club member (by the mapped email field) and allocate a permanent Club ID if they don't already have one.",
+    )
+    club_id_prefix = models.CharField(
+        max_length=10, default='SCC',
+        help_text="2-6 uppercase letters, e.g. 'SCC'. Combined with the submission year: '25SCC278'.",
+    )
+    club_id_field_mapping = models.JSONField(
+        default=dict, blank=True,
+        help_text="Maps profile attributes to this form's own field IDs, e.g. {'email': 12, 'full_name': 13, 'phone_number': 14, 'branch': 15, 'roll_number': 16}. 'email' is required when club_id_enabled is True.",
+    )
+
+    # --- Submission confirmation email automation ---------------------------
+    confirmation_email_enabled = models.BooleanField(
+        default=False,
+        help_text="Send an EmailTemplate-based confirmation email to the submitter when their response completes.",
+    )
+    confirmation_email_template = models.ForeignKey(
+        'core.EmailTemplate', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='confirmation_forms',
+        help_text="Template dispatched on submission when confirmation_email_enabled is True.",
+    )
+
+    # --- QR-code attendance automation ---------------------------------------
+    attendance_enabled = models.BooleanField(
+        default=False,
+        help_text="Activate QR-code attendance tracking for this form's registrants (workshop/hackathon check-in).",
+    )
+    attendance_start_date = models.DateField(
+        blank=True, null=True,
+        help_text="First day of the attendance schedule. Required when attendance_enabled is True.",
+    )
+    attendance_days = models.PositiveIntegerField(
+        default=1,
+        help_text="Number of days attendance is tracked for, starting from attendance_start_date (1-30).",
+    )
+    attendance_sessions_per_day = models.PositiveIntegerField(
+        default=1,
+        help_text="Sessions scanned per day: 1 (Morning), 2 (Morning + Afternoon), or 3 (Morning + Afternoon + Evening).",
+    )
+    attendance_window_minutes = models.PositiveIntegerField(
+        blank=True, null=True,
+        help_text="If set, a session can only be scanned within this many minutes of its scheduled start. Leave blank for no time restriction.",
+    )
 
     class Meta:
         indexes = [

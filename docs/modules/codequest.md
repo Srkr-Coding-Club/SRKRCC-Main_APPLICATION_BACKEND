@@ -28,9 +28,24 @@ Members who want daily practice, and Admins/Club Leads who curate the problem ba
 This module uses date-based logic differently from Events/Hackathons — instead of a whole page hiding, **individual problems publish and unpublish themselves daily**:
 
 - Only **today's problem** (by server date) is shown on `/codequest`.
-- Problems scheduled for future dates stay invisible (even to admins browsing publicly) until their date arrives.
+- Problems scheduled for future dates stay invisible to anonymous and member API callers until their date arrives. Admins and Club Leads can inspect the complete calendar only through the protected admin workflow.
 - Once a problem's day passes, it automatically moves to `/codequest/archive` — still viewable, but no longer "today's problem."
 - The entire Codequest module can still be hidden from the sidebar via the module-level feature flag (e.g. during exam season).
+
+## Admin API workflow
+
+The admin workspace uses the same API as the public problem feed. `POST`, `PATCH`, and
+`DELETE /api/codequest/` are restricted to Admin and Club Lead users. The public `GET /api/codequest/`
+response contains today's problem and the completed archive, but never future scheduled problems;
+authenticated Admin and Club Lead callers receive the complete scheduling calendar. A problem carries its
+scheduled date, statement, samples, tags, and optional external judge link; the backend derives
+its unique slug from the title.
+
+Submissions remain member-owned. Admins and Club Leads review them through
+`POST /api/codequest/submissions/{id}/review/` with `{ "is_correct": true | false }`.
+The endpoint locks the submission, records the verdict, and rebuilds the member's current and
+maximum streak from distinct accepted problem dates. Verdicts and points therefore never depend
+on a browser-side calculation.
 
 ```mermaid
 flowchart LR

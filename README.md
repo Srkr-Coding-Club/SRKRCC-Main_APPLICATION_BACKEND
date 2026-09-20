@@ -141,6 +141,16 @@ venv\Scripts\python manage.py runserver 8000
 | **Create Superuser** | `make superuser` | Interactive prompt to create an Admin user. |
 | **Django System Check** | `make check` | Runs Django system verification check. |
 | **Interactive Shell** | `make shell` | Opens Django Python shell. |
+| **Setup Super Admin** | `python manage.py setup_admin` | Automated headless superadmin provisioning. |
+
+---
+
+## ☁️ Production Deployment (100% Free Tier)
+
+Deploy the backend and database for $0/month on Render + Neon Serverless PostgreSQL:
+* **[Free-Tier Production Deployment Guide](docs/deployment/FREE_TIER_DEPLOYMENT_GUIDE.md)** — Complete step-by-step instructions with environment variable references.
+* **1-Click Blueprint**: Includes [`render.yaml`](render.yaml) for automated provisioning on Render.
+* **Production Container**: Includes [`Dockerfile`](Dockerfile) & [`docker-compose.yml`](docker-compose.yml) for local production stack previews.
 
 ---
 

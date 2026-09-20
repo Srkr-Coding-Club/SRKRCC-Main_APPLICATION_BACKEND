@@ -85,6 +85,29 @@ Every field value is normalized to one of four states:
 
 ---
 
+## Row Selection & Bulk Email
+
+The grid supports per-row and select-all-on-page checkboxes
+(`DataManagementCenter.tsx`'s `DataGrid`), keyed by each record's `id` column
+(always present in query results regardless of which columns are toggled
+visible — `id` isn't in `FORBIDDEN_COLUMN_KEYS`). Selection is deliberately
+**scoped to the currently-loaded page**: it's cleared on search/sort/filter/page
+changes rather than tracked across pages, since the "Email Selected" action reads
+name/email straight out of the loaded `records` — this also keeps recipient counts
+bounded (no "select all matching filter" spanning thousands of rows).
+
+Two actions consume the selection:
+
+- **Export → "Selected Rows Only"** — passes the selected IDs as
+  `selected_record_ids` to `POST /datasets/<id>/export/` (previously dead: the
+  option existed in the UI but always sent an empty array).
+- **"Email Selected (n)"** — shown when the active dataset has a column of type
+  `email`. Opens `EmailTemplateEditor` (`mode="send"`), which either picks an
+  existing [Email Template](../features/email-notifications.md) or drafts one
+  inline, then dispatches to the selected rows' emails via the same
+  `POST /api/auth/emails/send/` endpoint the admin email system already uses —
+  no DMC-specific send path.
+
 ## Export Strategy
 
 - **Synchronous** (≤ `DMC_SYNC_EXPORT_MAX_ROWS` = 1000 rows): Returns file inline as HTTP response.
