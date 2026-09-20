@@ -59,6 +59,11 @@ class ClubIdConflictError(AccountError):
     pass
 
 
+class RollNumberConflictError(AccountError):
+    """Raised when an incoming roll_number is already held by a different user."""
+    pass
+
+
 class UserAccountService:
     """
     Single Source of Truth for all Member and User creation, identity resolution,
@@ -300,7 +305,10 @@ class UserAccountService:
                             referred_by_user=ref_user,
                             referred_by_raw=ref_raw or None,
                             created_from=source_origin,
-                            role=UserRole.MEMBER,
+                            # Unconditionally AFFILIATE, not club_id-derived: this path always
+                            # resolves a club_id above (either the imported row's own, or a
+                            # freshly allocated one) before reaching this point.
+                            role=UserRole.AFFILIATE,
                             password_status=PasswordStatus.NEEDS_SETUP if is_backup_import else PasswordStatus.ACTIVE,
                         )
                         if is_backup_import:
@@ -314,6 +322,14 @@ class UserAccountService:
                     created = False
                     user = cls.find_by_email(email)
                     if not user:
+                        # Not an email collision after all — check whether it was
+                        # actually a roll_number collision (roll_number carries a
+                        # unique constraint) before falling back to the generic
+                        # re-raise below.
+                        if roll_num and User.objects.filter(roll_number=roll_num).exists():
+                            raise RollNumberConflictError(
+                                f"Roll number '{roll_num}' is already registered to another member."
+                            )
                         # Not an email collision after all (e.g. username or club_id
                         # unique constraint) — re-raise the original failure shape.
                         raise
@@ -401,7 +417,25 @@ class UserAccountService:
 
                 if update_field_list:
                     update_field_list.append("updated_at")
-                    user.save(update_fields=update_field_list)
+                    try:
+                        # Nested atomic (savepoint) so an IntegrityError here only
+                        # rolls back this save, not the whole outer transaction —
+                        # otherwise the diagnostic query below would itself fail
+                        # with "You can't execute queries until the end of the
+                        # 'atomic' block."
+                        with transaction.atomic():
+                            user.save(update_fields=update_field_list)
+                    except IntegrityError:
+                        if roll_num and 'roll_number' in update_field_list and User.objects.filter(
+                            roll_number=roll_num
+                        ).exclude(id=user.id).exists():
+                            raise RollNumberConflictError(
+                                f"Roll number '{roll_num}' is already registered to another member."
+                            )
+                        # Not a roll_number collision — re-raise the original
+                        # failure shape rather than swallowing an unexpected
+                        # constraint violation.
+                        raise
                     changed_fields.extend(update_field_list)
 
             return user, created, changed_fields

@@ -32,7 +32,7 @@ class AttendanceSessionListViewTests(APITestCase):
     def setUp(self):
         self.form = make_attendance_form(attendance_sessions_per_day=2)
         self.admin = User.objects.create_user(username="admin1", email="admin1@srkr.ac.in", password="x", role="ADMIN")
-        self.member = User.objects.create_user(username="member1", email="member1@srkr.ac.in", password="x", role="MEMBER")
+        self.member = User.objects.create_user(username="member1", email="member1@srkr.ac.in", password="x", role="NON_AFFILIATE")
 
     def test_admin_can_list_sessions(self):
         self.client.force_authenticate(self.admin)
@@ -53,7 +53,7 @@ class AttendanceSessionListViewTests(APITestCase):
 class MyBadgeViewTests(APITestCase):
     def setUp(self):
         self.form = make_attendance_form()
-        self.user = User.objects.create_user(username="reg1", email="reg1@srkr.ac.in", password="x", role="MEMBER")
+        self.user = User.objects.create_user(username="reg1", email="reg1@srkr.ac.in", password="x", role="NON_AFFILIATE")
 
     def test_returns_badge_for_own_response(self):
         response_obj = Response.objects.create(form=self.form, user=self.user, form_version=self.form.version)
@@ -83,7 +83,7 @@ class AttendanceScanViewTests(APITestCase):
     def setUp(self):
         self.form = make_attendance_form(attendance_sessions_per_day=1)
         self.session_obj = AttendanceSession.objects.get(form=self.form)
-        self.registrant = User.objects.create_user(username="reg2", email="reg2@srkr.ac.in", password="x", role="MEMBER")
+        self.registrant = User.objects.create_user(username="reg2", email="reg2@srkr.ac.in", password="x", role="NON_AFFILIATE")
         self.response_obj = Response.objects.create(
             form=self.form, user=self.registrant, form_version=self.form.version,
         )
@@ -91,7 +91,7 @@ class AttendanceScanViewTests(APITestCase):
 
         self.volunteer = User.objects.create_user(username="vol1", email="vol1@srkr.ac.in", password="x", role="VOLUNTEER")
         self.admin = User.objects.create_user(username="admin2", email="admin2@srkr.ac.in", password="x", role="ADMIN")
-        self.member = User.objects.create_user(username="member2", email="member2@srkr.ac.in", password="x", role="MEMBER")
+        self.member = User.objects.create_user(username="member2", email="member2@srkr.ac.in", password="x", role="NON_AFFILIATE")
 
     def _scan(self, user, token=None, session_id=None):
         self.client.force_authenticate(user)
@@ -178,13 +178,13 @@ class AttendanceReportViewTests(APITestCase):
         self.form = make_attendance_form(attendance_sessions_per_day=2)
         self.sessions = list(AttendanceSession.objects.filter(form=self.form).order_by('session_label'))
         self.admin = User.objects.create_user(username="admin3", email="admin3@srkr.ac.in", password="x", role="ADMIN")
-        self.member = User.objects.create_user(username="member3", email="member3@srkr.ac.in", password="x", role="MEMBER")
+        self.member = User.objects.create_user(username="member3", email="member3@srkr.ac.in", password="x", role="NON_AFFILIATE")
 
         self.r1 = Response.objects.create(form=self.form, user=self.member, form_version=self.form.version)
         self.b1 = issue_badge(self.r1)
         AttendanceRecord.objects.create(badge=self.b1, session=self.sessions[0])
 
-        self.other_user = User.objects.create_user(username="member4", email="member4@srkr.ac.in", password="x", role="MEMBER")
+        self.other_user = User.objects.create_user(username="member4", email="member4@srkr.ac.in", password="x", role="NON_AFFILIATE")
         self.r2 = Response.objects.create(form=self.form, user=self.other_user, form_version=self.form.version)
         issue_badge(self.r2)  # no scans
 

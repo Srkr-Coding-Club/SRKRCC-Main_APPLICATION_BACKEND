@@ -43,7 +43,7 @@ class DMCAsyncExportTests(APITransactionTestCase):
         # A couple of extra users just so the "users" dataset has real rows to export.
         for i in range(3):
             User.objects.create_user(
-                username=f"exportuser{i}", email=f"exportuser{i}@srkr.ac.in", password="pw12345!", role="MEMBER",
+                username=f"exportuser{i}", email=f"exportuser{i}@srkr.ac.in", password="pw12345!", role="NON_AFFILIATE",
             )
 
     def test_export_endpoint_dispatches_and_completes_in_background(self):

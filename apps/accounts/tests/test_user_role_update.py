@@ -17,7 +17,7 @@ class UserRoleUpdateTests(TestCase):
             username='lead1', email='lead1@srkr.ac.in', password='pw12345!', role='CLUB_LEAD',
         )
         self.member = User.objects.create_user(
-            username='member1', email='member1@srkr.ac.in', password='pw12345!', role='MEMBER',
+            username='member1', email='member1@srkr.ac.in', password='pw12345!', role='NON_AFFILIATE',
         )
 
     def _url(self, user):
@@ -42,7 +42,7 @@ class UserRoleUpdateTests(TestCase):
         resp = self.client.patch(self._url(self.member), {'role': 'ADMIN'}, format='json')
         self.assertEqual(resp.status_code, 403)
         self.member.refresh_from_db()
-        self.assertEqual(self.member.role, 'MEMBER')
+        self.assertEqual(self.member.role, 'NON_AFFILIATE')
 
     def test_club_lead_cannot_promote_to_club_lead(self):
         self.client.force_authenticate(self.club_lead)
@@ -56,16 +56,33 @@ class UserRoleUpdateTests(TestCase):
         self.member.refresh_from_db()
         self.assertEqual(self.member.role, 'VOLUNTEER')
 
+    def test_admin_cannot_promote_to_affiliate_without_a_club_id(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'role': 'AFFILIATE'}, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('club_id', resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.role, 'NON_AFFILIATE')
+
+    def test_admin_can_promote_to_affiliate_when_club_id_already_set(self):
+        self.member.club_id = '25SCC420'
+        self.member.save(update_fields=['club_id'])
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'role': 'AFFILIATE'}, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.role, 'AFFILIATE')
+
     def test_cannot_change_own_role(self):
         self.client.force_authenticate(self.admin)
-        resp = self.client.patch(self._url(self.admin), {'role': 'MEMBER'}, format='json')
+        resp = self.client.patch(self._url(self.admin), {'role': 'NON_AFFILIATE'}, format='json')
         self.assertEqual(resp.status_code, 403)
         self.admin.refresh_from_db()
         self.assertEqual(self.admin.role, 'ADMIN')
 
     def test_member_forbidden_from_endpoint(self):
         self.client.force_authenticate(self.member)
-        resp = self.client.patch(self._url(self.club_lead), {'role': 'MEMBER'}, format='json')
+        resp = self.client.patch(self._url(self.club_lead), {'role': 'NON_AFFILIATE'}, format='json')
         self.assertEqual(resp.status_code, 403)
 
     def test_unauthenticated_forbidden(self):

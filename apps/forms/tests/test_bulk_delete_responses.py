@@ -29,7 +29,7 @@ class BulkDeleteResponsesTests(APITestCase):
             username="bulklead", email="bulklead@srkr.ac.in", password="pw12345!", role="CLUB_LEAD",
         )
         self.member = User.objects.create_user(
-            username="bulkmember", email="bulkmember@srkr.ac.in", password="pw12345!", role="MEMBER",
+            username="bulkmember", email="bulkmember@srkr.ac.in", password="pw12345!", role="NON_AFFILIATE",
         )
 
         self.responses = [

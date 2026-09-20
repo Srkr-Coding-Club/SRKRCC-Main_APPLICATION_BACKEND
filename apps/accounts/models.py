@@ -4,7 +4,14 @@ from django.db import models
 from apps.core.models import TimeStampedModel
 
 class UserRole(models.TextChoices):
-    MEMBER = 'MEMBER', 'Member'
+    # AFFILIATE always has a club_id — enforced in RegisterSerializer.validate()
+    # (signup + the admin "Create New User" modal, which reuses that same
+    # endpoint) and in UserDetailView.perform_update (the admin role-change
+    # PATCH). NON_AFFILIATE has no such requirement, though nothing stops one
+    # from holding a club_id too (e.g. a pre-assigned id from an offline
+    # recruitment drive, or historical data).
+    AFFILIATE = 'AFFILIATE', 'Affiliate'
+    NON_AFFILIATE = 'NON_AFFILIATE', 'Non-Affiliate'
     VOLUNTEER = 'VOLUNTEER', 'Volunteer'
     JUDGE = 'JUDGE', 'Judge'
     CLUB_LEAD = 'CLUB_LEAD', 'Club Lead'
@@ -41,7 +48,7 @@ class User(AbstractUser, TimeStampedModel):
     role = models.CharField(
         max_length=20,
         choices=UserRole.choices,
-        default=UserRole.MEMBER
+        default=UserRole.NON_AFFILIATE
     )
     membership_status = models.CharField(
         max_length=20,
@@ -58,7 +65,14 @@ class User(AbstractUser, TimeStampedModel):
     )
 
     # Profile & Academic Details
-    roll_number = models.CharField(max_length=50, blank=True, null=True)
+    #
+    # unique=True (added alongside the self-registration uniqueness check in
+    # RegisterSerializer) — two students previously could sign up with the same
+    # roll number since nothing enforced it beyond format. NULL is exempt from
+    # the constraint, which legacy/admin/faculty rows without a roll number rely
+    # on; blank='' is not, so callers that don't have a value must pass None
+    # (apps/accounts/services/user_account_service.py already does this).
+    roll_number = models.CharField(max_length=50, blank=True, null=True, unique=True, db_index=True)
     branch = models.CharField(max_length=100, blank=True, null=True)
     year = models.IntegerField(blank=True, null=True)
     phone_number = models.CharField(max_length=20, blank=True, null=True)
