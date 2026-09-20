@@ -16,8 +16,8 @@ NAME_REGEX = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ]+(?:[ '\-.][A-Za-zÀ-ÖØ-öø
 NAME_MIN_LENGTH = 2
 NAME_MAX_LENGTH = 60
 
-# Exactly 10 alphanumeric characters, stored uppercase (e.g. 21B91A0501).
-ROLL_NUMBER_REGEX = re.compile(r"^[A-Z0-9]{10}$")
+# Exactly 10 alphanumeric characters starting with 2-digit year, stored uppercase (e.g. 21B91A0501).
+ROLL_NUMBER_REGEX = re.compile(r"^[0-9]{2}[A-Z0-9]{8}$")
 ROLL_NUMBER_LENGTH = 10
 
 # Pragmatic e-mail shape check layered on top of Django's EmailValidator:
