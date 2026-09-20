@@ -1010,6 +1010,15 @@ class ResponseViewSet(viewsets.ModelViewSet):
                     existing = user_responses.first()
                     if existing:
                         now = timezone.now()
+                        # Only meaningful in the allow_multiple_responses=False branch
+                        # below — "edit my one response in place" is a single-response
+                        # concept. When multiple responses ARE allowed, a prior response
+                        # must never block or redirect a new one (the frontend used to
+                        # get this wrong too: it forced edit mode — PATCHing the first
+                        # response — the moment any response existed, regardless of this
+                        # flag, so a second independent submission was never reachable
+                        # through the UI even though this endpoint already supported it
+                        # via the max_responses_per_user cap below).
                         is_edit_locked = (
                             not form_obj.allow_response_editing
                             or (form_obj.allow_edits_until and now > form_obj.allow_edits_until)
