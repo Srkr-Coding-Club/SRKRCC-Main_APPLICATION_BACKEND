@@ -16,6 +16,8 @@ class Problem(TimeStampedModel):
     sample_input = models.TextField(blank=True)
     sample_output = models.TextField(blank=True)
     tags = models.JSONField(default=list, blank=True)
+    external_url = models.URLField(blank=True)
+    external_platform = models.CharField(max_length=80, blank=True)
     scheduled_date = models.DateField(unique=True, help_text="Auto-publishes on this date as Today's Problem")
 
     def __str__(self):
