@@ -51,7 +51,7 @@ def unsplit_member_role(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('accounts', '0005_roll_number_unique'),
+        ('accounts', '0006_roll_number_unique'),
     ]
 
     operations = [

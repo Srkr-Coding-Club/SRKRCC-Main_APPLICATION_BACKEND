@@ -1,5 +1,5 @@
 """
-Verifies the mapping rule the 0006_affiliate_non_affiliate_roles data
+Verifies the mapping rule the 0007_affiliate_non_affiliate_roles data
 migration applies to historical MEMBER rows: a MEMBER with a club_id becomes
 AFFILIATE, a MEMBER without one becomes NON_AFFILIATE. This tests the rule
 directly against the current model (not the migration file itself — Django
