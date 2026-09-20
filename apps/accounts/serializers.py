@@ -269,12 +269,19 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
                 form = resp.form
                 events_list.append({
                     'id': resp.id,
+                    'form_id': form.id,
                     'form_slug': form.slug,
                     'title': form.title,
                     'track': form.category or 'General Track',
                     'date': str(form.open_at or resp.submitted_at.date() if resp.submitted_at else 'Active'),
                     'status': 'Seat Confirmed' if form.status == 'PUBLISHED' else 'Registration Received',
                     'badgeBg': 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400' if form.status == 'PUBLISHED' else 'bg-orange-50 dark:bg-orange-950/40 text-[#FF7A00]',
+                    # Drives the "View QR Badge" action on the profile page's
+                    # registered-events list (Profile → Registered Events →
+                    # select event) — the attendance QR pass moved here from
+                    # the form page, so the profile needs to know which
+                    # registrations actually have a badge to show.
+                    'attendance_enabled': bool(form.attendance_enabled),
                 })
         except Exception:
             pass
