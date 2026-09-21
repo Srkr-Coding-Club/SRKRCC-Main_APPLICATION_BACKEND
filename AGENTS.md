@@ -136,7 +136,7 @@ For backend changes:
 * Consider transactions (`django.db.transaction.atomic`) for multi-step database mutations.
 * Maintain PostgreSQL compatibility (`dj-database-url`, `psycopg2-binary`).
 * Protect user/role boundaries and never expose internal database stack traces to clients.
-* Use Celery + Redis for scheduled tasks and background job processing.
+* Background job processing uses plain Python threads (`apps/core/tasks.py::run_in_background`), not Celery/Redis — this is a deliberate choice for the app's current scale (see that module's docstring). Don't introduce a Celery/Redis dependency without a concrete scale-driven reason; follow the existing thread-based pattern for new background work.
 
 ### 9. Testing and Validation
 

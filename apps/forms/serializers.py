@@ -139,8 +139,17 @@ class FormSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data):
+        # DRAFT saves stay lenient (a form is built incrementally — the builder
+        # itself tells the admin to enable Club ID / confirmation email, save
+        # once to get real field IDs, *then* come back to finish the field
+        # mapping / template pick). Only PUBLISHED / SCHEDULED must have this
+        # automation fully configured, matching the same leniency the
+        # form-definition check below already applies.
+        target_status = data.get('status', getattr(self.instance, 'status', FormStatus.DRAFT))
+        going_live = target_status in (FormStatus.PUBLISHED, FormStatus.SCHEDULED)
+
         club_id_enabled = data.get('club_id_enabled', getattr(self.instance, 'club_id_enabled', False))
-        if club_id_enabled:
+        if club_id_enabled and going_live:
             mapping = data.get('club_id_field_mapping', getattr(self.instance, 'club_id_field_mapping', None) or {})
             if not mapping.get('email'):
                 raise serializers.ValidationError({
@@ -148,7 +157,7 @@ class FormSerializer(serializers.ModelSerializer):
                 })
 
         confirmation_email_enabled = data.get('confirmation_email_enabled', getattr(self.instance, 'confirmation_email_enabled', False))
-        if confirmation_email_enabled:
+        if confirmation_email_enabled and going_live:
             template = data.get('confirmation_email_template', getattr(self.instance, 'confirmation_email_template', None))
             if not template:
                 raise serializers.ValidationError({
@@ -156,7 +165,7 @@ class FormSerializer(serializers.ModelSerializer):
                 })
 
         attendance_enabled = data.get('attendance_enabled', getattr(self.instance, 'attendance_enabled', False))
-        if attendance_enabled:
+        if attendance_enabled and going_live:
             start_date = data.get('attendance_start_date', getattr(self.instance, 'attendance_start_date', None))
             if not start_date:
                 raise serializers.ValidationError({
@@ -166,8 +175,7 @@ class FormSerializer(serializers.ModelSerializer):
         # Form-definition validation. DRAFT saves stay lenient (a form is built
         # incrementally); PUBLISHED / SCHEDULED must have a fully valid definition
         # so every submission against it can be validated.
-        target_status = data.get('status', getattr(self.instance, 'status', FormStatus.DRAFT))
-        if target_status in (FormStatus.PUBLISHED, FormStatus.SCHEDULED) and 'fields' in data:
+        if going_live and 'fields' in data:
             report = validate_form_definition({'fields': data.get('fields') or []})
             if not report.publishable:
                 raise FormValidationError({
@@ -455,16 +463,17 @@ class ResponseSerializer(serializers.ModelSerializer):
         if form:
             validated_data['form_version'] = form.version
 
+        # Deliberately does NOT fall back to a client-supplied `user` ID from
+        # request.data for anonymous callers — that was an IDOR letting anyone
+        # attribute a response to an arbitrary user by ID (hijacking their
+        # single-submission response / consuming their response quota).
+        # ResponseViewSet.create() already passes the correct `user` via
+        # `serializer.save(user=user_to_assign)` (the authenticated caller, or
+        # None); an authenticated caller's own identity is the only implicit
+        # fallback trusted here.
         request = self.context.get('request')
-        if not validated_data.get('user'):
-            if request and request.user and request.user.is_authenticated:
-                validated_data['user'] = request.user
-            elif request and isinstance(request.data, dict) and request.data.get('user'):
-                try:
-                    from django.contrib.auth import get_user_model
-                    validated_data['user'] = get_user_model().objects.get(id=request.data.get('user'))
-                except Exception:
-                    pass
+        if not validated_data.get('user') and request and request.user and request.user.is_authenticated:
+            validated_data['user'] = request.user
 
         response = Response.objects.create(**validated_data)
         self._write_answers(response)

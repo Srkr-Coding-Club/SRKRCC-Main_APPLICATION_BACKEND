@@ -10,7 +10,7 @@ Members who want to attend, and Club Leads/Admins who organize.
 
 | Page | Path (example) | What it shows | Visible to |
 |---|---|---|---|
-| Events listing | `/events` | All events currently within their visibility window, filterable by upcoming/past, category | Everyone |
+| Events listing | `/events` | All events (no server-side date filtering — `EventViewSet` returns `Event.objects.all()` unfiltered; see the Visibility Rules gap note below), filterable by category | Everyone |
 | Event details | `/events/[slug]` | Description, date/time/venue (or online link), speaker info, registration button | Everyone |
 | Registration form | `/events/[slug]/register` | Dynamic form (varies per event — could be as simple as name+email, or detailed) | Logged-in members (or public, if event is open) |
 | My registrations | `/events/my` | List of events a member has registered for, with reminders | Logged-in members |
@@ -24,9 +24,8 @@ Members who want to attend, and Club Leads/Admins who organize.
 | Attendee list | `/admin/events/[slug]/attendees` | View/export registrants, mark attendance, send reminders | Admin, Club Lead, Volunteer |
 
 ## Visibility Rules (Feature Flag + Event Dates)
-Same two-layer model as Hackathons:
-1. **Module-level flag** can hide "Events" from the sidebar entirely.
-2. **Per-event date window** — each event has a start/end (or registration-close) date. Once an event's window passes, it automatically drops off `/events` (moves to a "past events" archive if enabled) without any manual admin action.
+1. **Module-level flag** can hide "Events" from the sidebar entirely — this part is real (see [Feature Flags](../features/feature-flags.md)).
+2. **Per-event date window — not implemented.** `Event` does have `visible_from`/`visible_until` columns and they're editable via the API, but `EventViewSet.get_queryset()` (`apps/events/views.py`) is just `Event.objects.all()` — no date filtering at all. A past event does not automatically drop off `/events`; nothing currently archives it server-side. See [Scheduling](../features/scheduling.md) for the full per-item breakdown across modules.
 
 ```mermaid
 flowchart LR

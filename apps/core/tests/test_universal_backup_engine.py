@@ -113,6 +113,41 @@ class UniversalBackupEngineTests(TestCase):
         seq = ClubIDSequence.objects.get(year=2025, prefix="SCC")
         self.assertEqual(seq.next_sequence, 278)
 
+    def test_commit_blocked_below_50_percent_confidence(self):
+        """
+        The commit path must independently enforce the Strict 50% Rule server-side
+        — the UI's own gate is advisory, not a security boundary (never trust the
+        frontend). A regression test for a bug where `commit_import` never checked
+        `required_fields_satisfied` / `schema_confidence_percentage` at all, so a
+        direct API call (or a UI that displayed a stale/wrong confidence number)
+        could commit a structurally inadequate import.
+        """
+        # 'Email' + 'E-mail' dedupe to one canonical field out of 8 = 25% (see
+        # test_exact_50_percent_formula_and_alias_deduplication above), well
+        # under the 50% floor, though the required 'email' field is present.
+        csv_content = b"Email,E-mail,Phone Number\nunder50@test.ac.in,under50@test.ac.in,9876500099\n"
+        backup_job, _ = UniversalBackupService.intake_backup_file(
+            file_obj=io.BytesIO(csv_content),
+            filename="under_50_percent.csv",
+            user=self.admin,
+        )
+
+        attempt, _ = UniversalBackupService.generate_preview(
+            backup_job=backup_job,
+            target_domain='USERS',
+            idempotency_key="test-key-under-50",
+        )
+        self.assertTrue(attempt.required_fields_satisfied)
+        self.assertLess(attempt.schema_confidence_percentage, Decimal("50.00"))
+
+        with self.assertRaises(Exception):
+            UniversalBackupService.commit_import(attempt_id=str(attempt.id), user=self.admin)
+
+        # Nothing was written to the domain table.
+        self.assertFalse(User.objects.filter(email="under50@test.ac.in").exists())
+        attempt.refresh_from_db()
+        self.assertNotEqual(attempt.status, ImportAttemptStatus.COMMITTED)
+
     def test_raw_vault_schemaless_archiving(self):
         """
         Unknown / arbitrary spreadsheets with zero schema matching are archived safely into Raw Vault.

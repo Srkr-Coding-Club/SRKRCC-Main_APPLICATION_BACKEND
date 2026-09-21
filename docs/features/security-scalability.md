@@ -6,7 +6,7 @@ Not a single button or page — this is a design principle behind the platform: 
 ## What Makes It Scalable
 - **One codebase, many modules** — new club activities become new modules, not new platforms to maintain. See [../architecture/README.md](../architecture/README.md).
 - **No-new-table forms** — the [Dynamic Form Builder](dynamic-form-builder.md) means adding the 500th form is as cheap as the 1st. See [../architecture/data-model-dynamic-forms.md](../architecture/data-model-dynamic-forms.md).
-- **Caching & background jobs (Redis/Celery)** — heavy or repeated work (dashboards, scheduled publishing, bulk emails) doesn't slow down the live site for everyone else. See [scheduling.md](scheduling.md).
+- **Background jobs off the request cycle** — bulk emails and large DMC exports run on a background thread (`apps/core/tasks.py::run_in_background`) so they don't hold up the request that triggered them. This is plain Python threading, not Redis/Celery — see [../architecture/tech-stack.md](../architecture/tech-stack.md#background-jobs--caching-current-state) for why, and [scheduling.md](scheduling.md) for what's actually scheduled vs. still-aspirational.
 - **CDN-backed file storage (Cloudflare R2)** — images and files load fast regardless of how many members are viewing them at once.
 - **Free-tier-friendly hosting** — the platform can grow from ₹0/month to a few hundred/month only once usage genuinely justifies it. See [../architecture/deployment-infra.md](../architecture/deployment-infra.md).
 

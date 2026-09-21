@@ -359,8 +359,13 @@ class RegisterSerializer(serializers.ModelSerializer):
     # new names). JUDGE/CLUB_LEAD/ADMIN can only be granted by an existing
     # admin via the Users-tab PATCH — role was previously unrestricted here,
     # letting an anonymous POST with {"role": "ADMIN"} create a full admin
-    # account.
-    SELF_REGISTERABLE_ROLES = {'AFFILIATE', 'NON_AFFILIATE', 'VOLUNTEER'}
+    # account. VOLUNTEER must go through the same gate: this endpoint has no
+    # permission_classes restriction (AllowAny, since it's also the public
+    # signup form), so without a caller check here, anyone could self-grant
+    # VOLUNTEER — which is enough to reach the attendance-scan endpoint
+    # (apps.attendance.permissions.IsVolunteerOrAbove) — via a direct API call.
+    SELF_REGISTERABLE_ROLES = {'AFFILIATE', 'NON_AFFILIATE'}
+    ADMIN_GRANTABLE_ROLES = SELF_REGISTERABLE_ROLES | {'VOLUNTEER'}
     role = serializers.CharField(required=False, allow_blank=True)
 
     # Branches offered on the signup form, kept in sync with the <select> in
@@ -451,7 +456,12 @@ class RegisterSerializer(serializers.ModelSerializer):
         return int(value)
 
     def validate_role(self, value):
-        return value if value in self.SELF_REGISTERABLE_ROLES else 'NON_AFFILIATE'
+        requester = getattr(self.context.get('request'), 'user', None)
+        is_admin_caller = bool(requester and requester.is_authenticated and (
+            requester.is_staff or requester.is_superuser or getattr(requester, 'role', None) in ('ADMIN', 'CLUB_LEAD')
+        ))
+        allowed = self.ADMIN_GRANTABLE_ROLES if is_admin_caller else self.SELF_REGISTERABLE_ROLES
+        return value if value in allowed else 'NON_AFFILIATE'
 
     def validate_club_id(self, value):
         if not value or not value.strip():

@@ -111,7 +111,7 @@ Two actions consume the selection:
 ## Export Strategy
 
 - **Synchronous** (≤ `DMC_SYNC_EXPORT_MAX_ROWS` = 1000 rows): Returns file inline as HTTP response.
-- **Asynchronous** (> 1000 rows): Creates `ExportJob`, dispatches Celery task, returns `job_id` for polling.
+- **Asynchronous** (> 1000 rows): Creates `ExportJob`, dispatches a plain background thread via `apps/core/tasks.py::run_in_background` (`apps/core/dmc/tasks.py` — **not Celery**, no task queue in this app), returns `job_id` for polling.
 - Adapters provide `stream_records()` generator — ExportService handles CSV/XLSX/JSON serialization.
 
 ---

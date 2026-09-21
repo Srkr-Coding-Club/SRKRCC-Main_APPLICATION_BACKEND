@@ -102,3 +102,62 @@ class BackwardCompatTests(TestCase):
         Answer.objects.create(response=resp, field=f2, value=["A", "B"])
         data = ResponseDetailSerializer(resp).data
         self.assertEqual(len(data["answers"]), 2)
+
+
+class FormVisibilityTests(APITestCase):
+    """DRAFT forms are unfinished/internal — only ADMIN/CLUB_LEAD may list or
+    retrieve them; everyone else (including anonymous) must not be able to
+    discover a draft form's existence or field structure, whether by listing
+    or by knowing/guessing its slug."""
+
+    def setUp(self):
+        self.draft = make_form(status=FormStatus.DRAFT, slug="secret-draft")
+        self.published = make_form(status=FormStatus.PUBLISHED, slug="open-form")
+        self.scheduled = make_form(status=FormStatus.SCHEDULED, slug="upcoming-form")
+        self.admin = User.objects.create_user(
+            username="admin", email="admin@srkr.ac.in", password="x", role="ADMIN", is_staff=True,
+        )
+
+    def test_anonymous_list_excludes_draft(self):
+        resp = self.client.get("/api/forms/")
+        slugs = {f["slug"] for f in resp.data}
+        self.assertNotIn("secret-draft", slugs)
+        self.assertIn("open-form", slugs)
+        self.assertIn("upcoming-form", slugs)
+
+    def test_anonymous_retrieve_of_draft_slug_is_404(self):
+        resp = self.client.get(f"/api/forms/{self.draft.slug}/")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_admin_can_still_list_and_retrieve_draft(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.get("/api/forms/")
+        slugs = {f["slug"] for f in resp.data}
+        self.assertIn("secret-draft", slugs)
+        resp = self.client.get(f"/api/forms/{self.draft.slug}/")
+        self.assertEqual(resp.status_code, 200)
+
+
+class AnonymousSubmissionIdentityTests(APITestCase):
+    """An anonymous submitter must never be able to attribute a response to
+    an arbitrary user by ID — that was an IDOR letting anyone hijack another
+    member's single-submission response or consume their response quota."""
+
+    def setUp(self):
+        self.form = make_form(status=FormStatus.PUBLISHED)
+        self.name = add_field(self.form, FieldType.TEXT, label="Name", order=1)
+        self.victim = User.objects.create_user(
+            username="victim", email="victim@srkr.ac.in", password="x", role="NON_AFFILIATE",
+        )
+
+    def test_anonymous_post_with_user_id_does_not_attribute_response(self):
+        resp = self.client.post(
+            "/api/forms/submissions/",
+            {"form": self.form.id, "user": self.victim.id,
+             "answers": [{"field": self.name.id, "value": "Ada"}],
+             "idempotency_key": "spoof-1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        created = Response.objects.get(form=self.form)
+        self.assertIsNone(created.user_id)

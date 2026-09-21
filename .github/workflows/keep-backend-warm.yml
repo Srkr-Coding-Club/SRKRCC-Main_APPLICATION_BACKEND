@@ -1,0 +1,28 @@
+name: Keep Backend Warm
+
+# Render's free tier spins the web service down after ~15 minutes with no
+# incoming HTTP request. The frontend used to try to prevent this with a
+# client-side setInterval ping (src/components/BackendHeartbeat.tsx) — but
+# that only runs while someone's browser tab has the site open, so it does
+# nothing during the exact zero-visitor windows where the service actually
+# goes cold. A scheduled job that runs independent of any visitor is the
+# only thing that can reliably keep the service warm.
+#
+# This runs every 10 minutes (comfortably under Render's ~15 minute sleep
+# threshold). GitHub's own docs note scheduled workflows can be delayed a
+# few minutes under high platform load, which is why 10 (not 14) minutes
+# is used as the margin.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab to test
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health endpoint
+        env:
+          BACKEND_PING_URL: ${{ vars.BACKEND_PING_URL || 'https://srkrcc-backend.onrender.com/api/ping/' }}
+        run: |
+          curl --fail --silent --show-error --max-time 25 --retry 2 --retry-delay 5 "$BACKEND_PING_URL"

@@ -40,11 +40,13 @@ flowchart LR
 - **Dispatch**: `POST /api/auth/emails/send/` (`EmailDispatchView`,
   `apps/accounts/views_import.py`) accepts either an existing `template_id` or an
   inline `template_name` + `subject_template` + `message` (auto-creates a
-  lightweight template on the fly). Runs off the request via Celery
-  (`apps/core/tasks.py::process_email_job_task`) with a synchronous fallback —
-  bounded to a few seconds even if the broker is unreachable
-  (`try_dispatch_with_timeout`), so a down queue degrades gracefully instead of
-  hanging the request.
+  lightweight template on the fly). Runs off the request via a plain background
+  thread — `run_in_background(lambda: process_email_job(job.id))`
+  (`apps/core/tasks.py`) — **not Celery**; there is no task queue, broker, or
+  worker process in this app. The `EmailJob` row is created synchronously before
+  the thread starts, so the job's status is always queryable even if the SMTP
+  send is still in flight or the thread dies; there's no retry and the send
+  itself won't survive a process restart mid-run.
 - **Two triggers exist today**:
   1. **Member import welcome email** — `MemberImportService.commit_import`
      (CSV/XLSX backup import), optional per import.

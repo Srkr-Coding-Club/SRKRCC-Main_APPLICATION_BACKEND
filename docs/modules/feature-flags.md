@@ -13,13 +13,22 @@ Feature flags control the platform at **two levels**, which work together:
 ### 1. Module-level flag (manual, admin-controlled)
 A simple on/off switch per module. Example: Admin turns "Hackathons" **off** in the off-season → the module disappears from the sidebar entirely for all users (except Admins, who can still see it greyed-out in the admin panel).
 
-### 2. Item-level, date-based visibility (automatic)
-Within an *enabled* module, individual items (a specific event, a specific hackathon, a specific blog post, a specific Codequest problem) can have their own `visible_from` / `visible_until` dates. The system checks these automatically, every time the page is requested — no admin action needed on the day itself.
+### 2. Item-level, date-based visibility (documented design, not implemented)
 
-**Example — an event with a visibility window:**
-- Admin creates "Intro to Git Workshop" and sets it visible from Aug 1 to Aug 15 (the day of the workshop).
-- Aug 1–15: it appears on `/events` and in listings.
-- Aug 16 onward: it **automatically disappears** from the active listing (and, depending on module settings, moves to a "past events" archive) — nobody has to remember to hide it.
+> **Gap between this doc and the code.** Everything below this line describes
+> the *target* design for item-level scheduling. Checked against the actual
+> models and views: `Event` and `Hackathon` do have `visible_from`/`visible_until`
+> columns (and `Event`'s serializer lets an admin set them), but **no view,
+> queryset, or serializer on either app ever reads those fields to filter
+> what's shown** — they're stored and editable, but have zero effect on what
+> a visitor sees. `FeatureFlag` itself is a plain `is_enabled` boolean with no
+> date fields at all. Blog posts have no scheduling field of any kind. The one
+> item type that genuinely does auto-show/hide by date is a
+> [Codequest](../modules/codequest.md) problem — via a simple `scheduled_date <= today`
+> read-time filter, not a `visible_from`/`visible_until` window. See
+> [scheduling.md](scheduling.md) for the full per-item breakdown.
+
+The design intent, once/if built, would work like this:
 
 ```mermaid
 flowchart TD
@@ -32,23 +41,14 @@ flowchart TD
     F -- No --> H[Hidden / archived]
 ```
 
-## How Admins Use It
+## How Admins Use It Today
 
 | Action | Where | Effect |
 |---|---|---|
-| Toggle a module on/off | Admin → Modules (see [../admin/module-management-feature-flags.md](../admin/module-management-feature-flags.md)) | Module appears/disappears from sidebar for everyone except Admins |
-| Set an item's visibility window | Inside that item's edit screen (event, hackathon, blog post, etc.) | Item auto-shows/hides on those dates, independent of the module flag |
-| Override auto-hide | Same edit screen — an explicit "always visible" checkbox | Keeps an item visible past its date (e.g. permanently public results page) |
-
-## Who Sees What, Exactly
-
-| Viewer | Module flag OFF | Module flag ON, item outside date window |
-|---|---|---|
-| Public visitor / Member | Cannot see module or item at all | Cannot see that specific item; other items in the module are unaffected |
-| Volunteer | Same as member | Same as member |
-| Club Lead / Admin | Module still visible inside Admin Panel (marked "disabled") so it can be re-enabled | Item still visible inside Admin Panel (marked "outside visibility window") so it can be edited |
+| Toggle a module on/off | Admin → Modules (see [../admin/module-management-feature-flags.md](../admin/module-management-feature-flags.md)) | Module appears/disappears from sidebar for everyone except Admins — this part is real and working. |
+| Set an Event's `visible_from`/`visible_until` | Inside the event's edit screen | Saved to the database, but **has no effect on visibility** — the event is shown or hidden purely by the module flag and its own normal listing logic. Not implemented for Hackathons, Blog, or Codequest. |
 
 ## Related Docs
-- [../admin/module-management-feature-flags.md](../admin/module-management-feature-flags.md) — how to actually flip a flag
-- [scheduling.md](scheduling.md) — the engine that checks dates automatically
-- Every module doc (e.g. [../modules/events.md](../modules/events.md)) has a "Visibility Rules" section showing how this applies to that specific module
+- [../admin/module-management-feature-flags.md](../admin/module-management-feature-flags.md) — how to actually flip a module flag
+- [scheduling.md](scheduling.md) — the real, per-item status of scheduling across the platform
+- Every module doc (e.g. [../modules/events.md](../modules/events.md)) has a "Visibility Rules" section — treat any item-level date-window claim there the same way as this doc's gap note above

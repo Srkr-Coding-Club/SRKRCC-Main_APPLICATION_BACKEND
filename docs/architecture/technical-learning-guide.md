@@ -1,6 +1,10 @@
 # Under the Hood: Backend Technical Learning Guide
 
-This guide explains **how Django, DRF, PostgreSQL, Redis, Celery, Centralized RBAC, and the Dynamic Form Builder engine work under the hood** in the SRKR Coding Club Backend.
+This guide explains **how Django, DRF, PostgreSQL, background jobs, Centralized RBAC, and the Dynamic Form Builder engine work under the hood** in the SRKR Coding Club Backend.
+
+> Note: this app does **not** use Redis or Celery — see §6 below for what actually
+> runs background work, and [tech-stack.md](tech-stack.md#background-jobs--caching-current-state)
+> for the full reasoning.
 
 ---
 
@@ -77,3 +81,54 @@ Django ORM bridges Python code with PostgreSQL SQL queries:
   - `prefetch_related(*fields)`: Executes batch lookups for reverse foreign keys and Many-to-Many relationships (`answers__field`).
 * **Transactions & ACID Consistency**:
   - Multi-step operations (e.g. form submission with answers in `ResponseViewSet.create`, CSV bulk ingest in `bulk_ingest`) are wrapped in `with transaction.atomic():` so partial failures are rolled back cleanly.
+
+---
+
+## 6. Background Jobs Under the Hood (no Redis, no Celery)
+
+Bulk email sends (`EmailDispatchView`) and large DMC exports
+(`ExportService._run_async`) both need to run longer than a single request
+should hold a web worker open for. Instead of a task queue, this app uses
+[apps/core/tasks.py](file:///c:/Users/chall/OneDrive/Desktop/SRKRCC-Main_APPLICATION_BACKEND/apps/core/tasks.py)'s
+`run_in_background(fn)`:
+
+```python
+def run_in_background(fn) -> None:
+    def _runner():
+        try:
+            fn()
+        except Exception:
+            logger.exception("Background job raised an unhandled exception")
+        finally:
+            connections.close_all()
+    threading.Thread(target=_runner, daemon=True).start()
+```
+
+1. The view first creates a durable status row synchronously — `EmailJob` or
+   `ExportJob` — **before** dispatching, so `GET .../jobs/<id>/` always has
+   something real to report even if the thread hasn't started yet or dies.
+2. `run_in_background` spawns a daemon `threading.Thread` and returns
+   immediately — the HTTP response goes out without waiting for the actual
+   work.
+3. The callable passed in looks up everything it needs **by id** (never by
+   closing over an ORM instance from the request's connection/transaction) —
+   the background thread gets its own DB connection, so a passed-by-reference
+   object could be stale or, inside a test's atomic transaction, simply
+   invisible to it.
+4. `connections.close_all()` runs in the thread's `finally` block — `connections`
+   is thread-local, so this only closes the connection(s) this specific thread
+   opened, preventing a leaked connection from blocking test-database teardown.
+
+**Why not Celery?** This app runs at college-club scale (dozens of admins, not
+a high-volume SaaS) — a real task queue is more infrastructure than the
+workload justifies. The explicit tradeoff: a job's *last known status* always
+survives (it's a DB row), but the *in-flight work itself* does not survive a
+process restart mid-run, and there's no automatic retry. Revisit this decision
+if job volume or reliability requirements ever genuinely outgrow it — see the
+full reasoning in the `apps/core/tasks.py` module docstring.
+
+**What Django's cache framework is actually used for**: there's no `CACHES`
+override in `config/settings.py`, so `django.core.cache.cache` is the default
+in-process `LocMemCache`. The only consumer today is the password-setup-link
+rate limiter (`apps/accounts/services/password_setup_service.py`) — there is
+no dashboard/query-result caching layer.

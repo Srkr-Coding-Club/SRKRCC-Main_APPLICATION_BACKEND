@@ -19,7 +19,7 @@ from .serializers import (
 )
 from .validation import validate_submission, validate_form_definition, PARTIAL
 from apps.audit.utils import log_audit_event
-from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead
+from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead, _is_admin_or_club_lead
 from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError, RollNumberConflictError
 from .services import FormAutomationService
 from apps.core.models import EmailDelivery
@@ -49,12 +49,22 @@ class FormViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
-        return Form.objects.annotate(
+        queryset = Form.objects.annotate(
             response_count=Count(
                 'responses',
                 filter=Q(responses__is_test_submission=False),
             )
         ).order_by('-created_at')
+
+        if _is_admin_or_club_lead(self.request.user):
+            return queryset
+        # DRAFT forms are unfinished/internal — the builder's own "Preview"
+        # link only ever needs this while logged in as ADMIN/CLUB_LEAD, so
+        # hiding DRAFT from everyone else closes off both the public list
+        # endpoint and a guessed/shared slug leaking an unpublished form's
+        # structure. PUBLISHED/SCHEDULED/CLOSED stay visible — the public form
+        # page renders a dedicated message for each of those.
+        return queryset.exclude(status=FormStatus.DRAFT)
 
     def create(self, request, *args, **kwargs):
         key = get_idempotency_key(request)
@@ -981,14 +991,14 @@ class ResponseViewSet(viewsets.ModelViewSet):
         if form_obj.close_at and now > form_obj.close_at:
             return DRFResponse({"error": f"Submissions for this form closed on {form_obj.close_at.isoformat()}."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Only the authenticated caller's own identity is ever trusted here — an
+        # anonymous submitter cannot attribute a response to an arbitrary user by
+        # passing a `user` ID in the body (that was an IDOR: it let anyone hijack
+        # another member's single-submission response or response quota). Linking
+        # an anonymous submission to a member is instead handled further below via
+        # `FormAutomationService.resolve_club_member`, which resolves identity from
+        # the form's own mapped email field rather than trusting a client-supplied ID.
         user_to_assign = request.user if request.user and request.user.is_authenticated else None
-        if not user_to_assign and request.data.get('user'):
-            try:
-                from django.contrib.auth import get_user_model
-                User = get_user_model()
-                user_to_assign = User.objects.get(id=request.data.get('user'))
-            except Exception:
-                user_to_assign = None
 
         resp_status = status.HTTP_201_CREATED
         resolved_user = None

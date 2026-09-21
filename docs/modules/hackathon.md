@@ -31,7 +31,7 @@ The Hackathons module is the generic engine for running any hackathon on the pla
 ## Visibility Rules (Feature Flag + Event Dates)
 A hackathon's listing/detail page is controlled by **two layers**:
 1. **Module-level flag** — the whole "Hackathons" module can be hidden from the sidebar entirely (e.g. during an off-season). See [Feature Flags](../features/feature-flags.md).
-2. **Per-hackathon date-based visibility** — each hackathon has a `visible_from` / `visible_until` date. Outside that window it's automatically hidden from `/hackathons` and the sidebar, even if the module itself is enabled — no manual toggling needed. Organizers can also override this manually (e.g. keep a past hackathon's results page public indefinitely).
+2. **Per-hackathon date-based visibility — not implemented.** `Hackathon` does have `visible_from`/`visible_until` columns, but no view or queryset anywhere reads them; they have zero effect on what's shown. Every hackathon is visible whenever the module flag is on, regardless of these dates. See [Feature Flags](../features/feature-flags.md) and [Scheduling](../features/scheduling.md) for the full gap writeup.
 
 ```mermaid
 flowchart LR

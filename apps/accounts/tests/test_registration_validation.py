@@ -261,13 +261,24 @@ class RegistrationValidationTests(TestCase):
         # Club ID format" — "Invalid" itself contains "valid").
         self.assertNotIn('must provide a valid Club ID', str(resp.data['club_id']))
 
-    def test_endpoint_still_accepts_volunteer_for_the_admin_create_user_modal(self):
-        # SELF_REGISTERABLE_ROLES keeps VOLUNTEER alongside AFFILIATE/
-        # NON_AFFILIATE specifically so the admin's "Create New User" modal
-        # (which POSTs to this same endpoint) can still directly create a
-        # VOLUNTEER, same as before this role split. The public signup form
-        # itself never sends 'VOLUNTEER' — this is the endpoint's own allowed
-        # set, broader than what any one caller offers.
+    def test_anonymous_self_registration_cannot_grant_volunteer(self):
+        # This endpoint is AllowAny (it's also the public signup form), so an
+        # anonymous POST with role='VOLUNTEER' must be downgraded the same way
+        # ADMIN/CLUB_LEAD already are — VOLUNTEER is enough to reach the
+        # attendance-scan endpoint (IsVolunteerOrAbove), so letting anyone
+        # self-grant it would be a privilege escalation.
+        resp = self._post(role='VOLUNTEER')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(User.objects.get(email='newmember@srkr.ac.in').role, 'NON_AFFILIATE')
+
+    def test_admin_caller_can_still_create_volunteer_via_this_endpoint(self):
+        # The admin's "Create New User" modal POSTs to this same endpoint, so
+        # VOLUNTEER stays reachable when the caller is themselves an
+        # authenticated ADMIN/CLUB_LEAD.
+        admin = User.objects.create_user(
+            username='admin', email='admin@srkr.ac.in', password=VALID_PASSWORD, role='ADMIN', is_staff=True,
+        )
+        self.client.force_authenticate(admin)
         resp = self._post(role='VOLUNTEER')
         self.assertEqual(resp.status_code, 201, resp.data)
         self.assertEqual(User.objects.get(email='newmember@srkr.ac.in').role, 'VOLUNTEER')

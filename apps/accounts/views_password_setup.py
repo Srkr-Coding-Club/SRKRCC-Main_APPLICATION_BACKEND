@@ -11,9 +11,16 @@ from apps.accounts.services.password_setup_service import (
 
 
 def get_client_ip(request) -> str | None:
+    # This deployment sits behind exactly one trusted reverse proxy
+    # (SECURE_PROXY_SSL_HEADER in settings.py confirms it terminates TLS in
+    # front of Django). That proxy appends the real client IP as the LAST hop
+    # of X-Forwarded-For rather than replacing whatever the client already
+    # sent — so the first entry is attacker-controlled and picking it let
+    # anyone reset their own 20/hr/IP setup-link rate limit on every request
+    # by sending a fresh forged X-Forwarded-For value each time.
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
-        return x_forwarded_for.split(',')[0].strip()
+        return x_forwarded_for.split(',')[-1].strip()
     return request.META.get('REMOTE_ADDR')
 
 

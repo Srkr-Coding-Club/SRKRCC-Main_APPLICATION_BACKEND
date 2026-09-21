@@ -143,6 +143,35 @@ class PasswordSetupLifecycleTests(TestCase):
         )
         self.assertEqual(res_blocked.status_code, 429)
 
+    def test_ip_rate_limit_uses_the_proxy_appended_hop_not_the_client_supplied_one(self):
+        """
+        This deployment sits behind exactly one trusted reverse proxy, which
+        appends the real client IP as the LAST hop of X-Forwarded-For. Trusting
+        the FIRST hop instead (attacker-controlled) let anyone reset their own
+        20/hr/IP bucket by sending a fresh forged value on every request —
+        confirmed here by varying only the forged first hop and checking the
+        real (last) IP's bucket is still what gets exhausted.
+        """
+        real_ip = "203.0.113.7"
+        for i in range(20):
+            res = self.client.post(
+                "/api/auth/setup-password/request/",
+                {"email": f"nobody{i}@srkr.ac.in"},
+                format="json",
+                HTTP_X_FORWARDED_FOR=f"1.2.3.{i}, {real_ip}",
+            )
+            self.assertEqual(res.status_code, 200)
+
+        # 21st request from the same real (last-hop) IP, despite yet another
+        # forged first hop, must now be blocked.
+        res_blocked = self.client.post(
+            "/api/auth/setup-password/request/",
+            {"email": "onemore@srkr.ac.in"},
+            format="json",
+            HTTP_X_FORWARDED_FOR=f"9.9.9.9, {real_ip}",
+        )
+        self.assertEqual(res_blocked.status_code, 429)
+
     def test_token_creation_and_hash_storage(self):
         """
         Verifies that only SHA-256 hashes are stored in the database, never raw tokens.
