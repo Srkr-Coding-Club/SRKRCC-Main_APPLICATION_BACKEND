@@ -191,6 +191,43 @@ class RatingTests(TestCase):
         self.assertTrue(validate_submission(form, answers((f, "3"))).ok)
 
 
+class RemainingFieldTypeTests(TestCase):
+    def test_phone_good_and_bad_values(self):
+        form = make_form()
+        field = add_field(form, FieldType.PHONE, label="Phone", required=True, order=1)
+        self.assertTrue(validate_submission(form, answers((field, "+91 9876543210"))).ok)
+        self.assertIn(codes.INVALID_PHONE, _codes(validate_submission(form, answers((field, "not a phone")))))
+
+    def test_url_good_and_bad_values(self):
+        form = make_form()
+        field = add_field(form, FieldType.URL, label="Portfolio", required=True, order=1)
+        self.assertTrue(validate_submission(form, answers((field, "https://example.com/profile"))).ok)
+        self.assertIn(codes.INVALID_URL, _codes(validate_submission(form, answers((field, "example.com")))))
+
+    def test_time_good_and_bad_values(self):
+        form = make_form()
+        field = add_field(form, FieldType.TIME, label="Start time", required=True, order=1)
+        self.assertTrue(validate_submission(form, answers((field, "09:30"))).ok)
+        self.assertIn(codes.INVALID_TIME, _codes(validate_submission(form, answers((field, "25:99")))))
+
+    def test_matrix_good_and_bad_rows_and_columns(self):
+        form = make_form()
+        field = add_field(
+            form, FieldType.MATRIX_RADIO, label="Matrix", required=True,
+            rows=["Speed", "Quality"], options=["Low", "High"], order=1,
+        )
+        self.assertTrue(validate_submission(form, answers((field, {"Speed": "High", "Quality": "Low"}))).ok)
+        report = validate_submission(form, answers((field, {"Unknown": "High", "Speed": "Invalid"})))
+        self.assertIn(codes.UNKNOWN_MATRIX_ROW, _codes(report))
+        self.assertIn(codes.UNKNOWN_MATRIX_COLUMN, _codes(report))
+
+    def test_signature_accepts_non_empty_scalar_and_rejects_object(self):
+        form = make_form()
+        field = add_field(form, FieldType.SIGNATURE, label="Signature", required=True, order=1)
+        self.assertTrue(validate_submission(form, answers((field, "data:image/png;base64,abc"))).ok)
+        self.assertIn(codes.EXPECTED_SCALAR, _codes(validate_submission(form, answers((field, {"drawn": True})))))
+
+
 class FileTests(TestCase):
     def setUp(self):
         self.form = make_form()

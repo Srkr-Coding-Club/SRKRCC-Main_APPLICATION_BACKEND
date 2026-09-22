@@ -1,5 +1,14 @@
 # Architecture: Dynamic Form Validation Engine
 
+## Club ID field
+
+`CLUB_ID` is a scalar text field with submission-time member verification. The
+response serializer finds the first active Club ID field when legacy automation
+mapping is absent, trims and compares the submitted value case-insensitively,
+and rejects unknown IDs before persistence. Legacy mapped verification remains
+compatible, including optional name, email, phone, branch, and roll-number
+comparisons.
+
 > Where it lives: `apps/forms/validation/`
 > What it guarantees: the **stored form definition is the source of truth**. Every
 > rule an admin configures in the builder is checked when the form is saved and

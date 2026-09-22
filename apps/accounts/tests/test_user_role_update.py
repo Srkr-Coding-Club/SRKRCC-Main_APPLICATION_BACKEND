@@ -116,3 +116,58 @@ class UserRoleUpdateTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.member.refresh_from_db()
         self.assertEqual(self.member.membership_status, 'ACTIVE')
+
+    # --- Roll number: admin can set/correct/clear it any time --------------
+    # Unlike the member's own self-service PATCH /api/auth/me/ (which locks
+    # roll_number after the member's first self-set — see
+    # test_profile_update_validation.py), this endpoint has no such lock:
+    # an admin can add, correct, or clear it whenever needed.
+
+    def test_admin_can_set_roll_number_for_a_member_with_none(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'roll_number': '21B91A0501'}, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.roll_number, '21B91A0501')
+
+    def test_admin_can_correct_a_members_already_set_roll_number(self):
+        self.member.roll_number = '21B91A0501'
+        self.member.save(update_fields=['roll_number'])
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'roll_number': '21B91A0502'}, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.roll_number, '21B91A0502')
+
+    def test_admin_can_clear_a_members_roll_number(self):
+        self.member.roll_number = '21B91A0501'
+        self.member.save(update_fields=['roll_number'])
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'roll_number': ''}, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.member.refresh_from_db()
+        self.assertIsNone(self.member.roll_number)
+
+    def test_club_lead_can_also_edit_roll_number(self):
+        # roll_number carries no privilege risk (unlike `role`), so it follows
+        # membership_status's rule: any requester who can reach this endpoint
+        # (IsAdminOrClubLead) may set it.
+        self.client.force_authenticate(self.club_lead)
+        resp = self.client.patch(self._url(self.member), {'roll_number': '21B91A0501'}, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.roll_number, '21B91A0501')
+
+    def test_admin_roll_number_edit_still_rejects_malformed_values(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'roll_number': 'bad!'}, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('roll_number', resp.data)
+
+    def test_admin_roll_number_edit_still_rejects_duplicates(self):
+        self.club_lead.roll_number = '21B91A0501'
+        self.club_lead.save(update_fields=['roll_number'])
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'roll_number': '21B91A0501'}, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('roll_number', resp.data)

@@ -46,13 +46,20 @@ Every form has an **Automation** section (in the builder, right under the title/
   body, and which `{{placeholders}}` like `{{full_name}}`/`{{club_id}}` to use).
   The submitter receives it, personalized with their own answers, once their
   response is saved.
+- **Verify Club ID on submission** — alternatively, add the dedicated **Club ID**
+  field from the builder palette. A Club ID field automatically verifies the
+  submitted value against the member directory before the response is saved,
+  using case-insensitive, trimmed matching. An unregistered ID is rejected;
+  optional mapped profile fields can also be checked against the member record.
+  The legacy Automation toggle and field mapping remain supported for existing
+  forms, and a form cannot generate and verify IDs at the same time.
 
 Field mapping needs a field's **permanent** ID, so a brand-new form must be saved
 once before its fields can be mapped — the builder shows a hint and hides the
 mapping controls until then.
 
 ## Supported Field Types
-Text · Email · Phone · Number · Dropdown · Radio Button · Checkbox · Date · Time · File Upload · Multi File Upload · Paragraph · URL · Section (visual grouping) · Rating · Linear Scale · Matrix · Signature · Conditional Logic (show/hide/require a field based on a previous answer)
+Text · Email · Phone · Number · Club ID · Dropdown · Radio Button · Checkbox · Date · Time · File Upload · Multi File Upload · Paragraph · URL · Section (visual grouping) · Rating · Linear Scale · Matrix · Signature · Conditional Logic (show/hide/require a field based on a previous answer)
 
 ## Validation & Rules (backend-enforced)
 

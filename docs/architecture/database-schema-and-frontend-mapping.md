@@ -404,6 +404,8 @@ Internal administrator notes attached to member profiles.
 - `visible_from` / `visible_until` (`DateTimeField`, nullable, blank)
 - `registration_form_id` (`ForeignKey -> forms.Form`, `on_delete=SET_NULL`, nullable, blank)
 
+API-only (not DB columns — annotated in `EventViewSet.get_queryset()` / serialized from `registration_form`): `form_slug`, `form_title`, `registration_count` (non-test `Form.responses` count for the linked `registration_form`).
+
 ---
 
 ### 3.4. Hackathons & Competitions (`apps/hackathons/models.py`)
@@ -421,11 +423,13 @@ Internal administrator notes attached to member profiles.
 - `visible_from` / `visible_until` (`DateTimeField`, nullable, blank)
 - `registration_form_id` (`ForeignKey -> forms.Form`, `on_delete=SET_NULL`, nullable, blank)
 
+API-only (not DB columns — annotated in `HackathonViewSet.get_queryset()` / serialized from `registration_form`): `form_slug`, `form_title`, `registration_count` (non-test `Form.responses` count for the linked `registration_form`), `team_count` (`teams` reverse count).
+
 #### `Team` (Table: `hackathons_team`)
 - `id` (`BigAutoField`, PK)
 - `hackathon_id` (`ForeignKey -> Hackathon`, `on_delete=CASCADE`, `related_name='teams'`)
 - `name` (`CharField(150)`)
-- `leader_id` (`ForeignKey -> User`, `on_delete=CASCADE`, `related_name='led_teams'`)
+- `leader_id` (`ForeignKey -> User`, `on_delete=SET_NULL`, nullable, `related_name='led_teams'`) — a deleted user never takes the rest of the team or its Submission with them
 - `members` (`ManyToManyField -> User`, `related_name='hackathon_teams'`, blank)
 
 #### `Submission` (Table: `hackathons_submission`)
@@ -491,7 +495,7 @@ Internal administrator notes attached to member profiles.
 - `id` (`BigAutoField`, PK)
 - `title` (`CharField(200)`)
 - `slug` (`SlugField(200)`, Unique)
-- `author_id` (`ForeignKey -> User`, `on_delete=CASCADE`, `related_name='blog_posts'`)
+- `author_id` (`ForeignKey -> User`, `on_delete=SET_NULL`, nullable, `related_name='blog_posts'`) — posts outlive the author's account
 - `content` (`TextField`)
 - `excerpt` (`TextField`, blank)
 - `cover_image` (`URLField`, nullable, blank)
@@ -542,6 +546,33 @@ The table below describes where and how backend database models map directly to 
 | **`BlogPost`** | `/api/blogs/` | `/blogs`<br>`/admin` | `ContentHubTab.tsx` | Student engineering blog articles, tag filtering, cover image banners, author attribution. |
 | **`FeatureFlag`** | `/api/feature-flags/` | Everywhere | `FlagsTab.tsx`<br>`PlatformModulesGrid.tsx`<br>`Navbar.tsx` | Dynamic module access switches (enables/disables CodeQuest, Hackathons, Forms, etc. in realtime without redeployments). |
 | **`AuditLog`** | `/api/audit/` | `/admin` | `AuditLogsTab.tsx`<br>`DataHealthTab.tsx` | System mutation audit trail (flag toggles, bulk imports, schema updates, user role changes). |
+
+---
+
+## 4a. Delete / Cascade Policy
+
+Every relation follows one of three rules (pinned by `apps/core/tests/test_delete_cascades.py`):
+
+1. **Owned child data → `CASCADE`** — it has no meaning without its parent.
+2. **Cross-module links → `SET_NULL`** — deleting one kind of entity never silently deletes a *different* kind (a form delete unlinks events; it doesn't delete them).
+3. **Authorship / actor links → `SET_NULL`** — shared content and history outlive the account that created them.
+
+`PROTECT` is used only where deleting would destroy history that has no API delete path anyway.
+
+| Deleting… | CASCADE (also deleted) | SET_NULL (kept, link cleared) | PROTECT (blocks delete) |
+|---|---|---|---|
+| **Form** | `FormField`, `Response` → `Answer`, `AttendanceBadge` → `AttendanceRecord`, `AttendanceSession`, `BulkIngestSession` | `Event.registration_form`, `Hackathon.registration_form`, `JobListing.application_form`, `EmailDelivery.response`, `ImportAttempt.target_form` | — |
+| **Response** | `Answer`, `AttendanceBadge` → `AttendanceRecord` | `EmailDelivery.response` | — |
+| **Event** | — (no children) | — | — |
+| **Hackathon** | `Team` → `Submission`, team-member M2M rows | — | — |
+| **Team** | `Submission`, team-member M2M rows | — | — |
+| **User** | `PasswordSetupToken`, CodeQuest `Submission`, `UserStreak`, `MemberNote` (notes *about* them), hackathon-team membership rows | `Response.user`, `Response.created_by_admin`, `Team.leader`, `BlogPost.author`, `User.referred_by_user`, `AuditLog.actor`, `AttendanceRecord.scanned_by`, `EmailDelivery.recipient_user`, every `created_by` / `committed_by` | — |
+| **CodeQuest Problem** | `Submission` | — | — |
+| **EmailTemplate** | — | `Form.confirmation_email_template` | `EmailJob.template` (no API delete; deactivate via `is_active`) |
+| **EmailJob** | `EmailDelivery` | — | — |
+| **BackupJob** | `ImportAttempt` → `ImportRow`, `RawBackupArchive` → `RawBackupRow` | — | — |
+
+API delete endpoints that write an `AuditLog` entry: `DELETE /api/forms/{slug}/`, `/api/events/{slug}/`, `/api/hackathons/{slug}/`. Users have no API delete (use `membership_status`); user deletion is Django-admin only.
 
 ---
 

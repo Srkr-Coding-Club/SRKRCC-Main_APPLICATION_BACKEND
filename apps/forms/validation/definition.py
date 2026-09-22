@@ -33,6 +33,7 @@ _COMPARABLE_TYPES = {
     FieldType.TEXT, FieldType.PARAGRAPH, FieldType.EMAIL, FieldType.PHONE,
     FieldType.URL, FieldType.NUMBER, FieldType.DATE, FieldType.TIME,
     FieldType.RADIO, FieldType.DROPDOWN, FieldType.RATING, FieldType.LINEAR_SCALE,
+    FieldType.CLUB_ID,
 }
 
 

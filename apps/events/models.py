@@ -2,6 +2,10 @@ from django.db import models
 from apps.core.models import TimeStampedModel
 from apps.forms.models import Form
 
+class EventStatus(models.TextChoices):
+    LIVE = 'LIVE', 'Live'
+    CLOSED = 'CLOSED', 'Closed'
+
 class Event(TimeStampedModel):
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
@@ -10,9 +14,13 @@ class Event(TimeStampedModel):
     venue = models.CharField(max_length=200, default='Campus Auditorium')
     capacity = models.PositiveIntegerField(default=100)
     poster_image = models.URLField(blank=True, null=True)
-    
-    start_time = models.DateTimeField()
-    end_time = models.DateTimeField()
+    status = models.CharField(max_length=20, choices=EventStatus.choices, default=EventStatus.LIVE)
+
+    # Nullable: an event can be created before its schedule is finalized
+    # (e.g. announced with a venue TBD) — the public card/detail page shows
+    # "Date to be announced" instead of forcing a placeholder date.
+    start_time = models.DateTimeField(null=True, blank=True)
+    end_time = models.DateTimeField(null=True, blank=True)
     visible_from = models.DateTimeField(blank=True, null=True)
     visible_until = models.DateTimeField(blank=True, null=True)
     

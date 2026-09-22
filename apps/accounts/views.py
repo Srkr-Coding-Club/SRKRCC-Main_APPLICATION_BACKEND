@@ -114,6 +114,7 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
 
         previous_role = target.role
         previous_membership_status = target.membership_status
+        previous_roll_number = target.roll_number
         user = serializer.save()
 
         details = {}
@@ -123,11 +124,20 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
         if 'membership_status' in serializer.validated_data:
             details["previous_membership_status"] = previous_membership_status
             details["new_membership_status"] = user.membership_status
+        if 'roll_number' in serializer.validated_data:
+            details["previous_roll_number"] = previous_roll_number
+            details["new_roll_number"] = user.roll_number
 
         if details:
+            if 'role' in serializer.validated_data:
+                action = "User Role Changed"
+            elif 'membership_status' in serializer.validated_data:
+                action = "User Membership Status Changed"
+            else:
+                action = "User Roll Number Changed"
             log_audit_event(
                 actor=requester,
-                action="User Role Changed" if 'role' in serializer.validated_data else "User Membership Status Changed",
+                action=action,
                 target_model="User",
                 target_id=str(user.id),
                 details=details,

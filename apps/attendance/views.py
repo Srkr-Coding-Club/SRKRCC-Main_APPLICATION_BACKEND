@@ -21,8 +21,14 @@ class AttendanceSessionListView(APIView):
     GET /api/forms/<form_id>/attendance/sessions/
     Lists the form's AttendanceSession rows (generated from its attendance_*
     config — see apps.attendance.services.generate_sessions).
+
+    IsVolunteerOrAbove, not IsAdminOrClubLead: the scanner UI calls this to
+    populate its "Session" picker before a volunteer can scan anything, so it
+    has to carry the same permission as the scan endpoint itself — a
+    volunteer who can POST /api/attendance/scan/ but can't GET the session
+    list to pick a session_id for it is blocked from scanning either way.
     """
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [IsVolunteerOrAbove]
 
     def get(self, request, form_id):
         form = get_object_or_404(Form, id=form_id)
@@ -64,6 +70,61 @@ class MyBadgeView(APIView):
         badge = issue_badge(response_obj)
         serializer = AttendanceBadgeSerializer(badge)
         return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+
+
+class MyAttendanceRecordView(APIView):
+    """
+    GET /api/forms/<form_id>/attendance/my-record/
+    Self-service counterpart to AttendanceReportView (which is admin-only and
+    covers every registrant): returns just the authenticated caller's own
+    session-by-session attendance so the profile page can show "did I actually
+    check in", not just the QR pass itself. 404 under the same conditions as
+    MyBadgeView (no response, or attendance isn't enabled on this form).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, form_id):
+        form = get_object_or_404(Form, id=form_id)
+        if not form.attendance_enabled:
+            return DRFResponse(
+                {"error": "Attendance tracking is not enabled for this form."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        response_obj = FormResponse.objects.filter(
+            form=form, user=request.user, is_test_submission=False,
+        ).order_by('-submitted_at').first()
+        if not response_obj:
+            return DRFResponse(
+                {"error": "You have not submitted a response to this form."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        badge = issue_badge(response_obj)
+        attended_session_ids = set(badge.records.values_list('session_id', flat=True))
+
+        sessions = form.attendance_sessions.all().order_by('day_index', 'session_label')
+        session_rows = [
+            {
+                "id": s.id,
+                "day_index": s.day_index,
+                "session_label": s.session_label,
+                "session_label_display": s.get_session_label_display(),
+                "date": s.date,
+                "opens_at": s.opens_at,
+                "attended": s.id in attended_session_ids,
+            }
+            for s in sessions
+        ]
+
+        total = len(session_rows)
+        attended_count = len(attended_session_ids)
+        return DRFResponse({
+            "sessions": session_rows,
+            "attended_count": attended_count,
+            "total_sessions": total,
+            "percentage": round((attended_count / total) * 100, 1) if total else 0.0,
+        }, status=status.HTTP_200_OK)
 
 
 class AttendanceScanView(APIView):

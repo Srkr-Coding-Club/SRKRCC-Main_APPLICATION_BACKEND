@@ -221,7 +221,9 @@ class ImportAttempt(TimeStampedModel):
     backup_job = models.ForeignKey(BackupJob, on_delete=models.CASCADE, related_name='import_attempts')
     idempotency_key = models.CharField(max_length=128, unique=True, null=True, blank=True, db_index=True)
     target_domain = models.CharField(max_length=50)  # USERS, FORMS, EVENTS, HACKATHONS, UNKNOWN_RAW
-    target_form = models.ForeignKey('forms.Form', null=True, blank=True, on_delete=models.PROTECT)
+    # SET_NULL, not PROTECT: import history (and its raw ImportRow provenance) must
+    # survive, but must never block an admin from deleting the form itself.
+    target_form = models.ForeignKey('forms.Form', null=True, blank=True, on_delete=models.SET_NULL)
 
     column_mapping = models.JSONField(default=dict)
     unmapped_columns = models.JSONField(default=list)

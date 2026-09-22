@@ -5,7 +5,8 @@ from apps.core.models import TimeStampedModel
 class BlogPost(TimeStampedModel):
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
-    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='blog_posts')
+    # SET_NULL, not CASCADE: published posts outlive their author's account.
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='blog_posts')
     content = models.TextField()
     excerpt = models.TextField(blank=True)
     cover_image = models.URLField(blank=True, null=True)

@@ -31,6 +31,7 @@ class CoercionError(Exception):
 _SCALAR_TEXT_TYPES = {
     FieldType.TEXT, FieldType.PARAGRAPH, FieldType.EMAIL,
     FieldType.PHONE, FieldType.URL, FieldType.SIGNATURE,
+    FieldType.CLUB_ID,
     FieldType.RADIO, FieldType.DROPDOWN,
 }
 _MATRIX_TYPES = {FieldType.MATRIX_RADIO, FieldType.MATRIX_CHECKBOX}

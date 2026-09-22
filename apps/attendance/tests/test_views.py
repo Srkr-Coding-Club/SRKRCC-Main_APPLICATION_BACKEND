@@ -32,10 +32,20 @@ class AttendanceSessionListViewTests(APITestCase):
     def setUp(self):
         self.form = make_attendance_form(attendance_sessions_per_day=2)
         self.admin = User.objects.create_user(username="admin1", email="admin1@srkr.ac.in", password="x", role="ADMIN")
+        self.volunteer = User.objects.create_user(username="vol_list1", email="vol_list1@srkr.ac.in", password="x", role="VOLUNTEER")
         self.member = User.objects.create_user(username="member1", email="member1@srkr.ac.in", password="x", role="NON_AFFILIATE")
 
     def test_admin_can_list_sessions(self):
         self.client.force_authenticate(self.admin)
+        resp = self.client.get(f"/api/forms/{self.form.id}/attendance/sessions/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(len(resp.data), 2)
+
+    def test_volunteer_can_list_sessions(self):
+        """Regression: this endpoint used to be IsAdminOrClubLead, so a volunteer
+        could scan (IsVolunteerOrAbove) but never populate the session picker
+        needed to know what to scan against."""
+        self.client.force_authenticate(self.volunteer)
         resp = self.client.get(f"/api/forms/{self.form.id}/attendance/sessions/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
         self.assertEqual(len(resp.data), 2)
@@ -77,6 +87,72 @@ class MyBadgeViewTests(APITestCase):
         self.client.force_authenticate(self.user)
         resp = self.client.get(f"/api/forms/{plain_form.id}/attendance/my-badge/")
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class MyAttendanceRecordViewTests(APITestCase):
+    def setUp(self):
+        self.form = make_attendance_form(attendance_days=2, attendance_sessions_per_day=1)
+        self.sessions = list(AttendanceSession.objects.filter(form=self.form).order_by('day_index'))
+        self.user = User.objects.create_user(username="reg3", email="reg3@srkr.ac.in", password="x", role="NON_AFFILIATE")
+
+    def test_returns_own_session_by_session_attendance(self):
+        response_obj = Response.objects.create(form=self.form, user=self.user, form_version=self.form.version)
+        badge = issue_badge(response_obj)
+        AttendanceRecord.objects.create(badge=badge, session=self.sessions[0])
+
+        self.client.force_authenticate(self.user)
+        resp = self.client.get(f"/api/forms/{self.form.id}/attendance/my-record/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+        self.assertEqual(resp.data["total_sessions"], 2)
+        self.assertEqual(resp.data["attended_count"], 1)
+        self.assertEqual(resp.data["percentage"], 50.0)
+
+        by_id = {s["id"]: s for s in resp.data["sessions"]}
+        self.assertTrue(by_id[self.sessions[0].id]["attended"])
+        self.assertFalse(by_id[self.sessions[1].id]["attended"])
+
+    def test_zero_sessions_attended_yet(self):
+        response_obj = Response.objects.create(form=self.form, user=self.user, form_version=self.form.version)
+        issue_badge(response_obj)
+
+        self.client.force_authenticate(self.user)
+        resp = self.client.get(f"/api/forms/{self.form.id}/attendance/my-record/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(resp.data["attended_count"], 0)
+        self.assertEqual(resp.data["percentage"], 0.0)
+        self.assertTrue(all(not s["attended"] for s in resp.data["sessions"]))
+
+    def test_only_sees_own_attendance_not_another_registrants(self):
+        other = User.objects.create_user(username="reg4", email="reg4@srkr.ac.in", password="x", role="NON_AFFILIATE")
+        other_response = Response.objects.create(form=self.form, user=other, form_version=self.form.version)
+        other_badge = issue_badge(other_response)
+        AttendanceRecord.objects.create(badge=other_badge, session=self.sessions[0])
+        AttendanceRecord.objects.create(badge=other_badge, session=self.sessions[1])
+
+        my_response = Response.objects.create(form=self.form, user=self.user, form_version=self.form.version)
+        issue_badge(my_response)  # no scans for me
+
+        self.client.force_authenticate(self.user)
+        resp = self.client.get(f"/api/forms/{self.form.id}/attendance/my-record/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(resp.data["attended_count"], 0)
+
+    def test_404_when_no_response(self):
+        self.client.force_authenticate(self.user)
+        resp = self.client.get(f"/api/forms/{self.form.id}/attendance/my-record/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_404_when_attendance_not_enabled(self):
+        plain_form = make_form(status=FormStatus.PUBLISHED, attendance_enabled=False)
+        Response.objects.create(form=plain_form, user=self.user, form_version=plain_form.version)
+        self.client.force_authenticate(self.user)
+        resp = self.client.get(f"/api/forms/{plain_form.id}/attendance/my-record/")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_anonymous_forbidden(self):
+        resp = self.client.get(f"/api/forms/{self.form.id}/attendance/my-record/")
+        self.assertIn(resp.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
 
 
 class AttendanceScanViewTests(APITestCase):

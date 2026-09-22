@@ -97,6 +97,20 @@ class FormViewSet(viewsets.ModelViewSet):
             details={"title": form.title, "status": form.status, "version": form.version}
         )
 
+    def perform_destroy(self, instance):
+        details = {
+            "title": instance.title,
+            "responses_deleted": instance.responses.count(),
+            "unlinked_events": list(instance.event_set.values_list('slug', flat=True)),
+            "unlinked_hackathons": list(instance.hackathon_set.values_list('slug', flat=True)),
+        }
+        slug = instance.slug
+        instance.delete()
+        log_audit_event(
+            actor=self.request.user, action="Deleted Form",
+            target_model="Form", target_id=slug, details=details,
+        )
+
     # -----------------------------------------------------------------------
     # Existing: soft-delete a field
     # -----------------------------------------------------------------------

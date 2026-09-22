@@ -31,6 +31,7 @@ class FieldType(models.TextChoices):
     MATRIX_RADIO = 'MATRIX_RADIO', 'Matrix Radio Grid'
     MATRIX_CHECKBOX = 'MATRIX_CHECKBOX', 'Matrix Checkbox Grid'
     SIGNATURE = 'SIGNATURE', 'Signature Capture'
+    CLUB_ID = 'CLUB_ID', 'Club ID'
 
 class Form(TimeStampedModel):
     title = models.CharField(max_length=200)
@@ -67,7 +68,21 @@ class Form(TimeStampedModel):
     )
     club_id_field_mapping = models.JSONField(
         default=dict, blank=True,
-        help_text="Maps profile attributes to this form's own field IDs, e.g. {'email': 12, 'full_name': 13, 'phone_number': 14, 'branch': 15, 'roll_number': 16}. 'email' is required when club_id_enabled is True.",
+        help_text="Maps profile attributes to this form's own field IDs, e.g. {'email': 12, 'full_name': 13, 'phone_number': 14, 'branch': 15, 'roll_number': 16, 'club_id': 17}. 'email' is required when club_id_enabled is True; 'club_id' is required when club_id_verification_enabled is True.",
+    )
+
+    # --- Club Member ID verification automation ------------------------------
+    # The inverse of club_id_enabled above: that one *generates* a Club ID for a
+    # submitter who doesn't have one yet; this one *checks* a Club ID the
+    # submitter claims to already have, rejecting the submission if it isn't
+    # registered or if the other mapped details (name/email/phone/branch/roll
+    # number) don't match that member's actual record — e.g. someone using a
+    # club-mate's valid Club ID with their own details. Mutually exclusive with
+    # club_id_enabled (enforced in FormSerializer.validate()), since a form
+    # either generates a new ID or verifies an existing one, not both.
+    club_id_verification_enabled = models.BooleanField(
+        default=False,
+        help_text="On each submission, verify the mapped Club ID field is a registered member and that the other mapped fields match that member's record. The 'club_id' key of club_id_field_mapping supplies which field holds the submitted Club ID.",
     )
 
     # --- Submission confirmation email automation ---------------------------

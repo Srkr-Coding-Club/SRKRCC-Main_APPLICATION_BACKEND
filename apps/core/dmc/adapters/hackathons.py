@@ -118,7 +118,8 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
     def _expand_team(self, team: Team) -> list[dict]:
         rows = []
         leader = team.leader
-        rows.append({"id": f"t{team.id}_l{leader.id}", "name": f"{leader.first_name} {leader.last_name}".strip(), "email": leader.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Leader", "roll_number": getattr(leader, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
+        if leader is not None:
+            rows.append({"id": f"t{team.id}_l{leader.id}", "name": f"{leader.first_name} {leader.last_name}".strip(), "email": leader.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Leader", "roll_number": getattr(leader, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
         for m in team.members.all():
             rows.append({"id": f"t{team.id}_m{m.id}", "name": f"{m.first_name} {m.last_name}".strip(), "email": m.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Member", "roll_number": getattr(m, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
         return rows
@@ -185,8 +186,8 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
             "id":               self._val(str(t.pk),                                     "number",   "hackathons.Team.id"),
             "team_name":        self._val(t.name,                                         "text",     "hackathons.Team.name"),
             "hackathon_title":  self._val(t.hackathon.title,                              "text",     "hackathons.Hackathon.title"),
-            "leader_name":      self._val(f"{leader.first_name} {leader.last_name}".strip(), "text", "hackathons.Team.leader"),
-            "leader_email":     self._val(leader.email,                                   "email",    "hackathons.Team.leader.email"),
+            "leader_name":      self._val(f"{leader.first_name} {leader.last_name}".strip() if leader else None, "text", "hackathons.Team.leader"),
+            "leader_email":     self._val(leader.email if leader else None,               "email",    "hackathons.Team.leader.email"),
             "member_count":     self._val(t.members.count(),                              "number",   "hackathons.Team.members.count"),
             "project_title":    self._val(sub.project_title if sub else None,             "text",     "hackathons.Submission.project_title"),
             "submission_score": self._val(sub.score if sub else None,                     "number",   "hackathons.Submission.score"),

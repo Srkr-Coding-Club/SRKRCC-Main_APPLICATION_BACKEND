@@ -5,6 +5,7 @@ import logging
 
 from rest_framework import serializers
 from rest_framework.exceptions import APIException
+from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.utils import timezone
@@ -50,6 +51,7 @@ def save_signature_to_storage(base64_string: str) -> str:
 
 
 EMAIL_RE = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
+User = get_user_model()
 
 
 class FormValidationError(APIException):
@@ -108,7 +110,7 @@ class FormSerializer(serializers.ModelSerializer):
             'version', 'allow_multiple_responses', 'allow_response_editing', 'enable_prefill', 'max_responses_per_user',
             'max_total_responses', 'prevent_duplicate_email_answers',
             'allow_edits_until', 'open_at', 'close_at',
-            'club_id_enabled', 'club_id_prefix', 'club_id_field_mapping',
+            'club_id_enabled', 'club_id_prefix', 'club_id_field_mapping', 'club_id_verification_enabled',
             'confirmation_email_enabled', 'confirmation_email_template',
             'attendance_enabled', 'attendance_start_date', 'attendance_days',
             'attendance_sessions_per_day', 'attendance_window_minutes',
@@ -149,11 +151,26 @@ class FormSerializer(serializers.ModelSerializer):
         going_live = target_status in (FormStatus.PUBLISHED, FormStatus.SCHEDULED)
 
         club_id_enabled = data.get('club_id_enabled', getattr(self.instance, 'club_id_enabled', False))
+        club_id_verification_enabled = data.get(
+            'club_id_verification_enabled', getattr(self.instance, 'club_id_verification_enabled', False)
+        )
+        if club_id_enabled and club_id_verification_enabled:
+            raise serializers.ValidationError({
+                'club_id_verification_enabled': "A form either generates a new Club ID or verifies an existing one, not both — disable 'Generate Club Member ID' first.",
+            })
+
         if club_id_enabled and going_live:
             mapping = data.get('club_id_field_mapping', getattr(self.instance, 'club_id_field_mapping', None) or {})
             if not mapping.get('email'):
                 raise serializers.ValidationError({
                     'club_id_field_mapping': "Club ID generation requires an 'email' field mapping — pick which form field supplies the member's email.",
+                })
+
+        if club_id_verification_enabled and going_live:
+            mapping = data.get('club_id_field_mapping', getattr(self.instance, 'club_id_field_mapping', None) or {})
+            if not mapping.get('club_id'):
+                raise serializers.ValidationError({
+                    'club_id_field_mapping': "Club ID verification requires a 'club_id' field mapping — pick which form field collects the member's Club ID.",
                 })
 
         confirmation_email_enabled = data.get('confirmation_email_enabled', getattr(self.instance, 'confirmation_email_enabled', False))
@@ -415,6 +432,106 @@ class ResponseSerializer(serializers.ModelSerializer):
                     rule='uniqueEmail',
                 ))
 
+    # Human-readable labels for the mismatch message — keyed the same as
+    # club_id_field_mapping (minus 'club_id' itself, which is the lookup key,
+    # not something compared against).
+    _CLUB_ID_VERIFY_LABELS = {
+        'full_name': 'name',
+        'email': 'email',
+        'phone_number': 'phone number',
+        'branch': 'branch',
+        'roll_number': 'roll number',
+    }
+
+    def _check_club_id_verification(self, form, report):
+        """
+        Opt-in (Form.club_id_verification_enabled) check: the submitter claims
+        an existing Club ID (via the mapped 'club_id' field) — reject the
+        submission if that Club ID isn't registered, or if any other mapped
+        field (name/email/phone/branch/roll number) doesn't match that
+        member's actual record. Catches both typos and someone submitting
+        with a Club ID that isn't theirs.
+
+        Mirrors _check_duplicate_emails's shape: adds FieldError entries to
+        the same `report` rather than raising directly, so a mismatch behaves
+        exactly like any other field-level validation error on the client.
+        """
+        mapping = form.club_id_field_mapping or {}
+
+        def field_id_of(key):
+            raw = mapping.get(key)
+            try:
+                return int(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        club_id_field_id = field_id_of('club_id')
+        if club_id_field_id is None:
+            dedicated_field = form.fields.filter(
+                is_deleted=False, type=FieldType.CLUB_ID,
+            ).order_by('order', 'id').first()
+            club_id_field_id = dedicated_field.id if dedicated_field else None
+        if club_id_field_id is None:
+            # Not configured — same leniency as resolve_club_member() when its
+            # email mapping is missing; the publish gate is what actually
+            # enforces this is set before the form can go live.
+            return
+
+        submitted_club_id = report.cleaned_answers.get(club_id_field_id)
+        if not submitted_club_id or not str(submitted_club_id).strip():
+            # Blank — required-field validation already flagged this if the
+            # field is required; nothing more to check here.
+            return
+
+        field_labels = {f.id: f.label for f in form.fields.all()}
+        normalized_club_id = str(submitted_club_id).strip()
+        member = User.objects.filter(club_id__iexact=normalized_club_id).first()
+
+        if member is None:
+            report.add_error(FieldError(
+                code='CLUB_ID_NOT_FOUND',
+                message=f"'{normalized_club_id}' is not a registered Club ID.",
+                field_id=club_id_field_id,
+                label=field_labels.get(club_id_field_id),
+                rule='clubIdVerification',
+            ))
+            return
+
+        def norm_text(v):
+            return re.sub(r'\s+', ' ', str(v or '')).strip().casefold()
+
+        def norm_digits(v):
+            return re.sub(r'\D', '', str(v or ''))
+
+        member_values = {
+            'full_name': (f'{member.first_name} {member.last_name}'.strip(), norm_text),
+            'email': (member.email, norm_text),
+            'phone_number': (member.phone_number, norm_digits),
+            'branch': (member.branch, norm_text),
+            'roll_number': (member.roll_number, norm_text),
+        }
+
+        for key, (member_value, normalize) in member_values.items():
+            field_id = field_id_of(key)
+            if field_id is None:
+                continue
+            submitted_value = report.cleaned_answers.get(field_id)
+            if not submitted_value or not str(submitted_value).strip():
+                continue
+            if not member_value:
+                # Nothing on file to compare against (e.g. member has no phone
+                # number saved) — skip rather than reject over missing data
+                # that isn't the submitter's fault.
+                continue
+            if normalize(submitted_value) != normalize(member_value):
+                report.add_error(FieldError(
+                    code='CLUB_ID_MISMATCH',
+                    message=f"The {self._CLUB_ID_VERIFY_LABELS[key]} you entered doesn't match our records for Club ID '{normalized_club_id}'.",
+                    field_id=field_id,
+                    label=field_labels.get(field_id),
+                    rule='clubIdVerification',
+                ))
+
     def validate(self, data):
         form = self._resolve_form(data)
         if form is None:
@@ -434,6 +551,12 @@ class ResponseSerializer(serializers.ModelSerializer):
 
         if form.prevent_duplicate_email_answers and not report.errors:
             self._check_duplicate_emails(form, report)
+
+        has_dedicated_club_id_field = form.fields.filter(
+            is_deleted=False, type=FieldType.CLUB_ID,
+        ).exists()
+        if (form.club_id_verification_enabled or has_dedicated_club_id_field) and not report.errors:
+            self._check_club_id_verification(form, report)
 
         if report.errors:
             raise FormValidationError(report.as_dict())

@@ -3,6 +3,10 @@ from django.conf import settings
 from apps.core.models import TimeStampedModel
 from apps.forms.models import Form
 
+class HackathonStatus(models.TextChoices):
+    LIVE = 'LIVE', 'Live'
+    CLOSED = 'CLOSED', 'Closed'
+
 class Hackathon(TimeStampedModel):
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
@@ -11,6 +15,7 @@ class Hackathon(TimeStampedModel):
     description = models.TextField()
     prize_pool = models.CharField(max_length=100, default='₹50,000')
     banner_image = models.URLField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=HackathonStatus.choices, default=HackathonStatus.LIVE)
 
     start_date = models.DateTimeField()
     end_date = models.DateTimeField()
@@ -26,7 +31,9 @@ class Hackathon(TimeStampedModel):
 class Team(TimeStampedModel):
     hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='teams')
     name = models.CharField(max_length=150)
-    leader = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='led_teams')
+    # SET_NULL, not CASCADE: deleting one user must not wipe the whole team
+    # (other members + the team's Submission) along with them.
+    leader = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='led_teams')
     members = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name='hackathon_teams', blank=True)
 
     def __str__(self):

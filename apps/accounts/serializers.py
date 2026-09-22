@@ -110,17 +110,45 @@ class UserSerializer(serializers.ModelSerializer):
 
 class UserRoleUpdateSerializer(serializers.ModelSerializer):
     """
-    Narrow PATCH surface for the admin Users tab — `role` and `membership_status`
-    are writable here (everything else on User stays read-only). Cross-role
-    escalation rules (ADMIN-vs-CLUB_LEAD) apply only to `role` and are enforced
-    in the view (UserDetailView.perform_update), since they depend on who the
-    requester is. `membership_status` isn't a privilege field, so any requester
-    who can already reach this endpoint (IsAdminOrClubLead) may set it.
+    Narrow PATCH surface for the admin Users tab — `role`, `membership_status`,
+    and `roll_number` are writable here (everything else on User stays
+    read-only). Cross-role escalation rules (ADMIN-vs-CLUB_LEAD) apply only to
+    `role` and are enforced in the view (UserDetailView.perform_update), since
+    they depend on who the requester is. `membership_status` isn't a
+    privilege field, so any requester who can already reach this endpoint
+    (IsAdminOrClubLead) may set it.
+
+    `roll_number` is deliberately writable here but NOT on the self-service
+    PATCH /api/auth/me/ path once a member has already set it (see
+    UserProfileDetailSerializer.validate_roll_number) — a member can add
+    their own roll number once, but only an admin can add/correct/clear it
+    after that.
     """
     class Meta:
         model = User
-        fields = ['id', 'role', 'membership_status']
+        fields = ['id', 'role', 'membership_status', 'roll_number']
         read_only_fields = ['id']
+
+    def validate_roll_number(self, value):
+        roll = normalize_roll_number(value)
+        if not roll:
+            return None
+        if len(roll) != ROLL_NUMBER_LENGTH:
+            raise serializers.ValidationError(
+                f"Roll number must be exactly {ROLL_NUMBER_LENGTH} characters (yours has {len(roll)})."
+            )
+        if not ROLL_NUMBER_REGEX.match(roll):
+            raise serializers.ValidationError(
+                "Roll number must be alphanumeric only (letters A-Z and digits 0-9), e.g. 21B91A0501."
+            )
+        existing = User.objects.filter(roll_number__iexact=roll)
+        if self.instance is not None:
+            existing = existing.exclude(id=self.instance.id)
+        if existing.exists():
+            raise serializers.ValidationError(
+                "This roll number is already registered to another member."
+            )
+        return roll
 
 
 class UserProfileDetailSerializer(serializers.ModelSerializer):
@@ -189,9 +217,23 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
         return name
 
     def validate_roll_number(self, value):
+        # Optional field — a user can leave it unset at signup and fill it in
+        # later from their profile (the model column is null=True precisely
+        # for this). But once they've self-set it, this self-service endpoint
+        # locks it — only an admin (via UserRoleUpdateSerializer / the Users
+        # tab) can change or clear it after that, so a member can't edit away
+        # their own official record once volunteers/attendance have started
+        # relying on it.
         roll = normalize_roll_number(value)
+        current = self.instance.roll_number if self.instance is not None else None
+        if current:
+            if roll != current:
+                raise serializers.ValidationError(
+                    "Your roll number is already set. Contact an admin to change it."
+                )
+            return current
         if not roll:
-            raise serializers.ValidationError("Roll number is required.")
+            return None
         if len(roll) != ROLL_NUMBER_LENGTH:
             raise serializers.ValidationError(
                 f"Roll number must be exactly {ROLL_NUMBER_LENGTH} characters (yours has {len(roll)})."
@@ -345,7 +387,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(max_length=EMAIL_MAX_LENGTH)
     first_name = serializers.CharField(max_length=NAME_MAX_LENGTH)
     last_name = serializers.CharField(required=False, allow_blank=True, max_length=NAME_MAX_LENGTH)
-    roll_number = serializers.CharField(max_length=ROLL_NUMBER_LENGTH * 2)
+    roll_number = serializers.CharField(max_length=ROLL_NUMBER_LENGTH * 2, required=False, allow_blank=True, allow_null=True)
     branch = serializers.CharField()
     year = serializers.IntegerField()
     # Derived from email: echoed back in the response, never read from the request.
@@ -423,9 +465,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         return name
 
     def validate_roll_number(self, value):
+        # Optional at signup — a member can add it later from their profile.
         roll = normalize_roll_number(value)
         if not roll:
-            raise serializers.ValidationError("Roll number is required.")
+            return None
         if len(roll) != ROLL_NUMBER_LENGTH:
             raise serializers.ValidationError(
                 f"Roll number must be exactly {ROLL_NUMBER_LENGTH} characters (yours has {len(roll)})."

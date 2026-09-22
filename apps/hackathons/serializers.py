@@ -1,10 +1,33 @@
-from rest_framework import serializers, viewsets, permissions
+from django.utils import timezone
+from rest_framework import serializers
 from .models import Hackathon, Team, Submission
 
 class HackathonSerializer(serializers.ModelSerializer):
+    form_slug = serializers.CharField(source='registration_form.slug', read_only=True)
+    form_title = serializers.CharField(source='registration_form.title', read_only=True)
+    registration_count = serializers.IntegerField(read_only=True, default=0)
+    team_count = serializers.IntegerField(read_only=True, default=0)
+    is_hidden = serializers.SerializerMethodField()
+
     class Meta:
         model = Hackathon
-        fields = '__all__'
+        fields = [
+            'id', 'title', 'slug', 'is_flagship', 'theme', 'description',
+            'prize_pool', 'banner_image', 'status', 'start_date', 'end_date',
+            'visible_from', 'visible_until', 'is_hidden', 'registration_form',
+            'form_slug', 'form_title', 'registration_count', 'team_count',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['status']
+
+    def get_is_hidden(self, obj) -> bool:
+        """See EventSerializer.get_is_hidden — identical window logic."""
+        now = timezone.now()
+        if obj.visible_from and obj.visible_from > now:
+            return True
+        if obj.visible_until and obj.visible_until <= now:
+            return True
+        return False
 
 class TeamSerializer(serializers.ModelSerializer):
     class Meta:

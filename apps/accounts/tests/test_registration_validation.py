@@ -123,6 +123,34 @@ class RegistrationValidationTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn('roll_number', resp.data)
 
+    def test_roll_number_may_be_omitted(self):
+        """Optional field — a member can sign up without one and add it later
+        from their profile."""
+        payload = self._payload()
+        del payload['roll_number']
+        resp = self.client.post('/api/auth/register/', payload, format='json')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertIsNone(User.objects.get(email='newmember@srkr.ac.in').roll_number)
+
+    def test_blank_roll_number_is_accepted(self):
+        resp = self._post(roll_number='')
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertIsNone(User.objects.get(email='newmember@srkr.ac.in').roll_number)
+
+    def test_two_members_can_both_omit_roll_number(self):
+        """Regression guard: clearing an empty roll number to NULL (rather
+        than storing '') is what lets two different rows both have no roll
+        number without violating the unique constraint."""
+        payload = self._payload()
+        del payload['roll_number']
+        resp1 = self.client.post('/api/auth/register/', payload, format='json')
+        self.assertEqual(resp1.status_code, 201, resp1.data)
+
+        payload2 = self._payload(email='secondmember@srkr.ac.in')
+        del payload2['roll_number']
+        resp2 = self.client.post('/api/auth/register/', payload2, format='json')
+        self.assertEqual(resp2.status_code, 201, resp2.data)
+
     def test_roll_number_is_uppercased(self):
         resp = self._post(roll_number='22b91a0599')
         self.assertEqual(resp.status_code, 201, resp.data)
