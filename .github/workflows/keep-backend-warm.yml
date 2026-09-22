@@ -23,6 +23,14 @@ jobs:
     steps:
       - name: Ping backend health endpoint
         env:
-          BACKEND_PING_URL: ${{ vars.BACKEND_PING_URL || 'https://srkrcc-backend.onrender.com/api/ping/' }}
+          BACKEND_PING_URL: ${{ vars.BACKEND_PING_URL || 'https://srkrcc-main-application-backend.onrender.com/api/ping/' }}
         run: |
-          curl --fail --silent --show-error --max-time 25 --retry 2 --retry-delay 5 "$BACKEND_PING_URL"
+          echo "Pinging backend at: $BACKEND_PING_URL"
+          response=$(curl -sSL -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}s\n" --max-time 35 --retry 2 --retry-delay 5 "$BACKEND_PING_URL")
+          echo "$response"
+          status=$(echo "$response" | grep "HTTP_STATUS:" | cut -d':' -f2)
+          if [ "$status" -lt 200 ] || [ "$status" -ge 400 ]; then
+            echo "::error::Ping failed! Backend returned HTTP status $status"
+            exit 1
+          fi
+          echo "Backend ping successful (HTTP $status)."
