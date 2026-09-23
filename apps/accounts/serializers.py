@@ -435,7 +435,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     def validate_email(self, value):
         email = normalize_email(value)
         if not EMAIL_REGEX.match(email):
-            raise serializers.ValidationError("Enter a valid email address, for example student@srkr.ac.in.")
+            raise serializers.ValidationError("Enter a valid email address, for example you@example.com.")
         if User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError(
                 "An account with this email already exists. Sign in instead, or use "
