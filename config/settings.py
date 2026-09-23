@@ -107,6 +107,7 @@ INSTALLED_APPS = [
     'apps.career',
     'apps.blogs',
     'apps.audit',
+    'apps.announcements',
 ]
 
 MIDDLEWARE = [
