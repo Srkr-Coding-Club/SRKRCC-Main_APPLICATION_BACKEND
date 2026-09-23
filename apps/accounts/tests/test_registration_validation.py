@@ -216,6 +216,32 @@ class RegistrationValidationTests(TestCase):
                 self.assertEqual(resp.status_code, 400)
                 self.assertIn('year', resp.data)
 
+    # --- Phone number -------------------------------------------------------
+
+    def test_phone_number_may_be_omitted(self):
+        resp = self._post(email='no-phone@srkr.ac.in', roll_number='22B91A0511')
+        self.assertEqual(resp.status_code, 201)
+
+    def test_blank_phone_number_is_accepted(self):
+        resp = self._post(email='blank-phone@srkr.ac.in', roll_number='22B91A0512', phone_number='')
+        self.assertEqual(resp.status_code, 201)
+
+    def test_phone_number_with_wrong_digit_count_is_rejected(self):
+        resp = self._post(phone_number='12345')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('phone_number', resp.data)
+
+    def test_phone_number_with_letters_is_rejected(self):
+        resp = self._post(phone_number='9876543abc')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('phone_number', resp.data)
+
+    def test_phone_number_with_separators_is_normalized_and_accepted(self):
+        resp = self._post(email='formatted-phone@srkr.ac.in', roll_number='22B91A0513', phone_number='987-654-3210')
+        self.assertEqual(resp.status_code, 201)
+        user = User.objects.get(email='formatted-phone@srkr.ac.in')
+        self.assertEqual(user.phone_number, '9876543210')
+
     # --- Password ---------------------------------------------------------
 
     def test_weak_passwords_are_rejected(self):

@@ -390,6 +390,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     roll_number = serializers.CharField(max_length=ROLL_NUMBER_LENGTH * 2, required=False, allow_blank=True, allow_null=True)
     branch = serializers.CharField()
     year = serializers.IntegerField()
+    phone_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     # Derived from email: echoed back in the response, never read from the request.
     username = serializers.CharField(read_only=True)
 
@@ -428,7 +429,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'username', 'email', 'password', 'first_name', 'last_name',
-            'role', 'roll_number', 'branch', 'year', 'club_id',
+            'role', 'roll_number', 'branch', 'year', 'club_id', 'phone_number',
         ]
 
     def validate_email(self, value):
@@ -497,6 +498,19 @@ class RegisterSerializer(serializers.ModelSerializer):
                 f"Year of study must be between {self.MIN_YEAR} and {self.MAX_YEAR}."
             )
         return int(value)
+
+    def validate_phone_number(self, value):
+        # Optional at signup, same as roll_number — a member can add it later
+        # from their profile (UserProfileDetailSerializer.validate_phone_number
+        # applies the identical rule there).
+        if not value or not value.strip():
+            return None
+        phone = normalize_phone_number(value)
+        if len(phone) != PHONE_NUMBER_LENGTH or not PHONE_NUMBER_REGEX.match(phone):
+            raise serializers.ValidationError(
+                f"Phone number must be exactly {PHONE_NUMBER_LENGTH} digits, numbers only."
+            )
+        return phone
 
     def validate_role(self, value):
         requester = getattr(self.context.get('request'), 'user', None)
@@ -595,6 +609,7 @@ class RegisterSerializer(serializers.ModelSerializer):
                     year=validated_data.get('year', None),
                     role=validated_data.get('role') or 'NON_AFFILIATE',
                     club_id=club_id,
+                    phone_number=validated_data.get('phone_number') or None,
                 )
         except IntegrityError:
             # Two requests can both pass the pre-save exists() checks above and
