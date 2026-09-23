@@ -413,7 +413,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     # Branches offered on the signup form, kept in sync with the <select> in
     # src/app/signup/page.tsx — free-text branches would poison the admin
     # directory's branch filter and the per-branch analytics.
-    ALLOWED_BRANCHES = {'CSE', 'IT', 'AIML', 'AIDS', 'ECE', 'EEE', 'MECH', 'CIVIL'}
+    ALLOWED_BRANCHES = {'CSE', 'IT', 'AIML', 'AIDS', 'CIC', 'CSBS', 'CSIT', 'CSD', 'ECE', 'EEE', 'MECH', 'CIVIL'}
     MIN_YEAR = 1
     MAX_YEAR = 4
 

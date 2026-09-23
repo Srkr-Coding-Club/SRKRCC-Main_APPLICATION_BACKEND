@@ -117,6 +117,17 @@ class FormSerializer(serializers.ModelSerializer):
             'fields', 'created_at', 'response_count',
         ]
 
+    def validate_title(self, value):
+        # DRF's CharField only rejects a literal "" ("may not be blank") — a
+        # whitespace-only title like "   " passes that check as a non-empty
+        # string, so a form can end up with a title that renders as a blank
+        # row wherever it's listed (e.g. the admin's "Select a form" dropdown
+        # in the responses viewer). Strip and require real content.
+        title = (value or '').strip()
+        if not title:
+            raise serializers.ValidationError("Title is required.")
+        return title
+
     def validate_image_url(self, value):
         if not value or not str(value).strip():
             return None
