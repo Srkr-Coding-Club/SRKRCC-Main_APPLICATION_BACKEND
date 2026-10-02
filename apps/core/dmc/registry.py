@@ -22,6 +22,7 @@ def _build_registry() -> dict[str, DatasetDefinition]:
         HackathonParticipantsAdapter,
         HackathonTeamsAdapter,
         HackathonSubmissionsAdapter,
+        HackathonRoundEntriesAdapter,
     )
     from apps.core.dmc.adapters.events_codequest_careers import (
         EventRegistrationsAdapter,
@@ -106,6 +107,19 @@ def _build_registry() -> dict[str, DatasetDefinition]:
             capabilities=DatasetCapabilities(),
             health="OK",
             adapter_class=HackathonSubmissionsAdapter,
+        ),
+        DatasetDefinition(
+            id="hackathon_round_entries",
+            label="Hackathon Round Results",
+            description="One row per team per round: shortlisting result, feedback and details-form status.",
+            group="Hackathons",
+            primary_key="id",
+            default_sort_field="round_order",
+            default_sort_direction="asc",
+            allowed_sort_fields=["id", "round_order", "team_name", "status", "decided_at"],
+            capabilities=DatasetCapabilities(),
+            health="OK",
+            adapter_class=HackathonRoundEntriesAdapter,
         ),
 
         # -----------------------------------------------------------------------

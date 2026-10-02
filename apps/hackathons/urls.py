@@ -23,6 +23,7 @@ urlpatterns = [
     path('<slug:slug>/stats/', views.HackathonStatsView.as_view(), name='hackathon-stats'),
 
     path('<slug:slug>/problem-statements/', views.ProblemStatementListView.as_view(), name='hackathon-ps-list'),
+    path('<slug:slug>/problem-statements/upload/', views.ProblemStatementUploadView.as_view(), name='hackathon-ps-upload'),
     path('<slug:slug>/problem-statements/<int:pk>/', views.ProblemStatementDetailView.as_view(), name='hackathon-ps-detail'),
 
     path('<slug:slug>/rounds/', views.RoundListView.as_view(), name='hackathon-round-list'),

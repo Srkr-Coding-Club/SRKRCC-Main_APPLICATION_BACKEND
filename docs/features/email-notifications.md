@@ -63,7 +63,9 @@ flowchart LR
   — those remain the target design, not current behavior.
 
 ## Hackathon Announcement Emails
-A hackathon announcement created with **Also email the audience** (or re-sent with `POST /api/hackathons/{slug}/announcements/{id}/notify/`) is emailed to every user in its audience through the same `EmailJob` / `EmailDelivery` engine (`AnnouncementService.notify` in `apps/hackathons/services.py`). Because the background job rebuilds each recipient's context from their profile, the announcement text is baked into a dedicated template named `hackathon_announcement_<id>` (only `first_name` and `portal_url` are parameters; `{{` / `}}` typed by the admin are neutralised). Dispatch happens after the transaction commits, on the `run_in_background` daemon thread. Team invites themselves do not send email.
+A hackathon announcement created with **Also email the audience** (or re-sent with `POST /api/hackathons/{slug}/announcements/{id}/notify/`) is emailed to every user in its audience through the same `EmailJob` / `EmailDelivery` engine (`AnnouncementService.notify` in `apps/hackathons/services.py`). Because the background job rebuilds each recipient's context from their profile, the announcement text is baked into a dedicated template named `hackathon_announcement_<id>` (only `first_name` and `portal_url` are parameters; `{{` / `}}` typed by the admin are neutralised). Dispatch happens after the transaction commits, on the `run_in_background` daemon thread. Publishing a round's results with `email: true` uses the same path for its shortlisted-teams announcement.
+
+**Team invites** send a single direct email to the invitee (`send_invite_email` in `apps/hackathons/services.py`, via `EmailNotificationService.send_email`) after the invite commits, also on a background thread. These are not tracked as `EmailJob`s; a send failure is logged and never affects the invite.
 
 ## Common Automatic Notifications
 

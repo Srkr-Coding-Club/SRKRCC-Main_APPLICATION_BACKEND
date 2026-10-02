@@ -24,7 +24,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'visible_from', 'visible_until', 'is_hidden', 'registration_form',
             'form_slug', 'form_title', 'registration_count', 'team_count',
             'registration_opens_at', 'registration_closes_at', 'min_team_size', 'max_team_size',
-            'team_edits_locked', 'required_profile_fields', 'is_registration_open',
+            'team_edits_locked', 'allow_open_innovation', 'required_profile_fields', 'is_registration_open',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['status']
@@ -72,9 +72,11 @@ class ProblemStatementSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProblemStatement
         fields = [
-            'id', 'code', 'title', 'description', 'category', 'tags',
+            'id', 'code', 'title', 'description', 'domain', 'tags',
             'max_teams', 'is_active', 'order', 'team_count', 'slots_left',
         ]
+        # The ID is assigned by the application (ProblemStatementService), never typed by an admin.
+        read_only_fields = ['code']
 
     def _count(self, obj):
         annotated = getattr(obj, 'active_team_count', None)
@@ -90,16 +92,21 @@ class ProblemStatementSerializer(serializers.ModelSerializer):
             return None
         return max(obj.max_teams - self._count(obj), 0)
 
-    def validate_code(self, value):
-        value = (value or '').strip().upper()
+    def validate_domain(self, value):
+        value = (value or '').strip()
         if not value:
-            raise serializers.ValidationError('Code is required.')
-        hackathon = self.context['hackathon']
-        qs = hackathon.problem_statements.filter(code__iexact=value)
-        if self.instance is not None:
-            qs = qs.exclude(pk=self.instance.pk)
-        if qs.exists():
-            raise serializers.ValidationError('Another problem statement already uses this code.')
+            raise serializers.ValidationError('Domain is required.')
+        return value
+
+    def validate_description(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('Description is required.')
+        return value
+
+    def validate_max_teams(self, value):
+        if value is not None and value < 1:
+            raise serializers.ValidationError('Must be at least 1, or blank for unlimited.')
         return value
 
     def validate_title(self, value):
@@ -117,7 +124,7 @@ class ProblemStatementSerializer(serializers.ModelSerializer):
 class ProblemStatementBriefSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProblemStatement
-        fields = ['id', 'code', 'title', 'category']
+        fields = ['id', 'code', 'title', 'domain']
 
 
 # ---------------------------------------------------------------------------
@@ -160,13 +167,14 @@ class TeamInviteSerializer(serializers.ModelSerializer):
     invited_user = serializers.SerializerMethodField()
     invited_by_name = serializers.SerializerMethodField()
     problem_statement = ProblemStatementBriefSerializer(source='team.problem_statement', read_only=True)
+    is_open_innovation = serializers.BooleanField(source='team.is_open_innovation', read_only=True)
     member_count = serializers.SerializerMethodField()
 
     class Meta:
         model = TeamInvite
         fields = [
             'id', 'team_id', 'team_name', 'hackathon_slug', 'hackathon_title',
-            'invited_user', 'invited_by_name', 'problem_statement', 'member_count',
+            'invited_user', 'invited_by_name', 'problem_statement', 'is_open_innovation', 'member_count',
             'status', 'created_at', 'responded_at',
         ]
 
@@ -185,6 +193,7 @@ class TeamSerializer(serializers.ModelSerializer):
     """Participant-facing team view (members' contact details are not exposed)."""
     hackathon_slug = serializers.CharField(source='hackathon.slug', read_only=True)
     problem_statement = ProblemStatementBriefSerializer(read_only=True)
+    open_innovation = serializers.SerializerMethodField()
     members = serializers.SerializerMethodField()
     pending_invites = serializers.SerializerMethodField()
     leader_id = serializers.IntegerField(read_only=True)
@@ -195,9 +204,19 @@ class TeamSerializer(serializers.ModelSerializer):
     class Meta:
         model = Team
         fields = [
-            'id', 'name', 'hackathon_slug', 'status', 'problem_statement', 'leader_id',
+            'id', 'name', 'hackathon_slug', 'status', 'problem_statement', 'open_innovation', 'leader_id',
             'members', 'member_count', 'pending_invites', 'created_at', 'updated_at',
         ]
+
+    def get_open_innovation(self, obj):
+        if not obj.is_open_innovation:
+            return None
+        return {
+            'code': obj.open_innovation_code,
+            'title': obj.custom_problem_title,
+            'description': obj.custom_problem_description,
+            'domain': obj.custom_problem_domain,
+        }
 
     def get_members(self, obj):
         memberships = obj.memberships.select_related('user').all()
@@ -295,6 +314,7 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
     leader_email = serializers.EmailField(source='team.leader.email', read_only=True)
     member_count = serializers.SerializerMethodField()
     problem_statement = ProblemStatementBriefSerializer(source='team.problem_statement', read_only=True)
+    problem_code = serializers.SerializerMethodField()
     decided_by_name = serializers.SerializerMethodField()
     details_response_id = serializers.IntegerField(read_only=True)
 
@@ -302,12 +322,18 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
         model = RoundEntry
         fields = [
             'id', 'team_id', 'team_name', 'team_status', 'leader_email', 'member_count',
-            'problem_statement', 'status', 'admin_notes', 'feedback',
+            'problem_statement', 'problem_code', 'status', 'admin_notes', 'feedback',
             'decided_by_name', 'decided_at', 'details_response_id',
         ]
 
     def get_member_count(self, obj):
         return obj.team.memberships.count()
+
+    def get_problem_code(self, obj):
+        team = obj.team
+        if team.problem_statement_id:
+            return team.problem_statement.code
+        return team.open_innovation_code if team.is_open_innovation else None
 
     def get_decided_by_name(self, obj):
         return _user_name(obj.decided_by) if obj.decided_by else None

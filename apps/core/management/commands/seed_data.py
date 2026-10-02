@@ -7,7 +7,7 @@ from apps.accounts.models import UserRole
 from apps.feature_flags.models import FeatureFlag
 from apps.forms.models import Form, FormField, FormStatus, FieldType
 from apps.events.models import Event
-from apps.hackathons.models import Hackathon, Team, Submission
+from apps.hackathons.models import Hackathon, Team, TeamMember, TeamRole, TeamStatus, Submission
 from apps.codequest.models import Problem, Difficulty, UserStreak
 from apps.career.models import JobListing, JobType
 from apps.blogs.models import BlogPost
@@ -218,8 +218,13 @@ class Command(BaseCommand):
         t1, _ = Team.objects.get_or_create(
             name="Alpha Coders",
             hackathon=h1,
-            defaults={"leader": lead_user}
+            defaults={"leader": lead_user, "status": TeamStatus.REGISTERED}
         )
+        if t1.leader_id:
+            TeamMember.objects.get_or_create(
+                hackathon=h1, user_id=t1.leader_id,
+                defaults={"team": t1, "role": TeamRole.LEADER},
+            )
 
         Submission.objects.get_or_create(
             team=t1,
