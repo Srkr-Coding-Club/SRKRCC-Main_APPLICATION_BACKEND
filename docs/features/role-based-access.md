@@ -33,6 +33,19 @@ flowchart TD
 
 Permissions aren't just "yes/no by role" — some are **scoped**. Example: a Club Lead can edit events *they created or are assigned to*, but not necessarily every event on the platform, depending on how the club configures it.
 
+## Hackathon Team Permissions
+Hackathon teams add object-level roles on top of the platform roles (enforced in `apps/hackathons/services.py`):
+
+| Action | Team leader | Team member | Other member | Admin / Club Lead |
+|---|---|---|---|---|
+| View the team (`/api/hackathons/teams/{id}/`) | Yes | Yes | 404 | Yes, plus members' contact details |
+| Rename, change problem statement, invite, cancel invite, remove member, transfer leadership | Yes, while registration is open and edits aren't locked | No | No | Yes, bypasses the window and lock |
+| Leave the team | After transferring leadership (a sole member leaving withdraws the team) | Yes | — | — |
+| Submit a round's details form | If shortlisted in that published round | No | No | Can edit responses |
+| List all teams; manage rounds, shortlisting, announcements, problem statements | No | No | No | Yes |
+
+The teammate email lookup returns only name, email and Club ID, requires login and is throttled (30/min) to limit account enumeration.
+
 ## Example: Who Can See a Hackathon's Registrations?
 - **Public/Member**: cannot see the list at all.
 - **Volunteer** (assigned to that hackathon): can view the list, check people in, cannot export or delete.

@@ -16,6 +16,11 @@ The Forms & Data Management module powers dynamic registration forms, complex mu
 
 ### 2. `FormField`
 - **Fields**: `form` (FK), `label`, `type` (TEXT, EMAIL, NUMBER, DROPDOWN, RADIO, CHECKBOX, MATRIX_*, SIGNATURE, RATING, etc.), `placeholder`, `is_required`, `options`, `rows`, `min_value`, `max_value`, `conditional_logic`, `validation_rules`, `order`, `is_deleted`.
+- **`profile_field`** (nullable, `ProfileField` choice: `full_name`, `email`, `phone_number`, `branch`, `roll_number`, `year`, `club_id`): binds the question to an attribute of the submitter's profile. Such a question is **never answered by the user**:
+  - On a public (strict-mode) submission, `ResponseSerializer._resolve_profile_autofill` strips any client-sent value for every profile-bound field and injects the value from `request.user` instead (`PROFILE_FIELD_GETTERS` in `apps/forms/serializers.py`).
+  - Anonymous callers get `PROFILE_FIELD_REQUIRES_LOGIN`; a required profile-bound field whose profile value is blank gets `PROFILE_FIELD_MISSING` (replacing the engine's generic `REQUIRED` error for that field). An optional one with no profile value is simply left unanswered.
+  - Admin manual entry / CSV import (partial mode) skip this — the record being entered usually isn't the authenticated admin, so the value comes from the payload like any other answer.
+  - Unlike `enable_prefill` (a client-side, label-guessing convenience the user can still edit), this binding is explicit and server-authoritative. Admins add these fields from the **Profile Auto-fill** group in the Form Builder palette; the public form renders them read-only ("From your profile").
 
 ### 3. `Response` & `Answer`
 - **Response**: `form` (FK), `user` (FK, nullable), `form_version`, `is_test_submission`, `is_manual_entry`, `created_by_admin` (FK), `submitted_at`.
@@ -42,6 +47,9 @@ The Forms & Data Management module powers dynamic registration forms, complex mu
 | `/api/forms/data-health/` | GET | Staff / Admin | Diagnostic statistics, active system warnings, and recent activity log. |
 | `/api/forms/{slug}/responses/` | GET | Staff / Admin | Paginated response viewer with search, date range, and flag filters. |
 | `/api/members/` | GET | Staff / Admin | Aggregated member submissions directory with search and form filtering. |
+
+### Hackathon round details forms
+A form attached to a hackathon round as its `details_form` (see [hackathon.md](hackathon.md)) is gated on `POST /api/forms/submissions/` and on response edits: only the leader of a team shortlisted in that round, after the round's results are published, may submit (`403`, `code: ROUND_FORM_RESTRICTED` otherwise). The saved response is linked to the team's `RoundEntry.details_response`. Attaching a form to a round sets `allow_multiple_responses=False` on it. Forms not attached to any round are unaffected.
 
 ---
 
