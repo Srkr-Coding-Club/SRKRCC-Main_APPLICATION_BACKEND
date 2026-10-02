@@ -86,7 +86,7 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
         return list(PARTICIPANT_COLS), [_hackathon_title_filter()]
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
-        teams = Team.objects.select_related("hackathon", "leader").prefetch_related("members")
+        teams = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user")
         for f in query_req.filters:
             if f.field == "hackathon_title":
                 teams = teams.filter(hackathon_id=f.value)
@@ -111,17 +111,15 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
         return None  # Composite rows don't have a single DB primary key to look up
 
     def stream_records(self, query_req: QueryRequest, user: Any, selected_ids: list[str] | None = None) -> Generator[dict[str, CanonicalValue], None, None]:
-        for team in Team.objects.select_related("hackathon", "leader").prefetch_related("members").iterator(chunk_size=100):
+        for team in Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user").iterator(chunk_size=100):
             for row in self._expand_team(team):
                 yield self._to_record(row)
 
     def _expand_team(self, team: Team) -> list[dict]:
         rows = []
-        leader = team.leader
-        if leader is not None:
-            rows.append({"id": f"t{team.id}_l{leader.id}", "name": f"{leader.first_name} {leader.last_name}".strip(), "email": leader.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Leader", "roll_number": getattr(leader, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
-        for m in team.members.all():
-            rows.append({"id": f"t{team.id}_m{m.id}", "name": f"{m.first_name} {m.last_name}".strip(), "email": m.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Member", "roll_number": getattr(m, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
+        for ms in team.memberships.all():
+            m = ms.user
+            rows.append({"id": f"t{team.id}_u{m.id}", "name": f"{m.first_name} {m.last_name}".strip(), "email": m.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Leader" if ms.role == "LEADER" else "Member", "roll_number": getattr(m, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
         return rows
 
     def _to_record(self, row: dict) -> dict[str, CanonicalValue]:
@@ -148,7 +146,7 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
         return list(TEAMS_COLS), [_hackathon_title_filter()]
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
-        qs = Team.objects.select_related("hackathon", "leader").prefetch_related("members", "submission")
+        qs = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships", "submission")
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(name__icontains=q) | Q(leader__email__icontains=q) | Q(hackathon__title__icontains=q))
@@ -167,13 +165,13 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
 
     def get_record(self, record_id: str, user: Any) -> dict[str, CanonicalValue] | None:
         try:
-            t = Team.objects.select_related("hackathon", "leader").prefetch_related("members", "submission").get(pk=record_id)
+            t = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships", "submission").get(pk=record_id)
         except (Team.DoesNotExist, ValueError):
             return None
         return self._normalize(t)
 
     def stream_records(self, query_req: QueryRequest, user: Any, selected_ids: list[str] | None = None) -> Generator[dict[str, CanonicalValue], None, None]:
-        qs = Team.objects.select_related("hackathon", "leader").prefetch_related("members", "submission")
+        qs = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships", "submission")
         if selected_ids:
             qs = qs.filter(pk__in=selected_ids)
         for t in qs.iterator(chunk_size=200):
@@ -188,7 +186,7 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
             "hackathon_title":  self._val(t.hackathon.title,                              "text",     "hackathons.Hackathon.title"),
             "leader_name":      self._val(f"{leader.first_name} {leader.last_name}".strip() if leader else None, "text", "hackathons.Team.leader"),
             "leader_email":     self._val(leader.email if leader else None,               "email",    "hackathons.Team.leader.email"),
-            "member_count":     self._val(t.members.count(),                              "number",   "hackathons.Team.members.count"),
+            "member_count":     self._val(t.memberships.count(),                              "number",   "hackathons.Team.members.count"),
             "project_title":    self._val(sub.project_title if sub else None,             "text",     "hackathons.Submission.project_title"),
             "submission_score": self._val(sub.score if sub else None,                     "number",   "hackathons.Submission.score"),
             "created_at":       self._val(t.created_at.isoformat() if t.created_at else None, "datetime", "hackathons.Team.created_at"),

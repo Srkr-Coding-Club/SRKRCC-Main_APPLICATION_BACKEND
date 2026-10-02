@@ -1,5 +1,6 @@
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response as DRFResponse
 from rest_framework.pagination import PageNumberPagination
 from django.utils import timezone
@@ -1014,6 +1015,14 @@ class ResponseViewSet(viewsets.ModelViewSet):
         # the form's own mapped email field rather than trusting a client-supplied ID.
         user_to_assign = request.user if request.user and request.user.is_authenticated else None
 
+        # A form attached to a hackathon round as its "details" form only
+        # accepts the leaders of teams shortlisted in that round.
+        from apps.hackathons.services import check_round_form_access
+        try:
+            round_entry = check_round_form_access(form_obj, request.user)
+        except PermissionDenied as ex:
+            return DRFResponse({"error": str(ex.detail), "code": "ROUND_FORM_RESTRICTED"}, status=status.HTTP_403_FORBIDDEN)
+
         resp_status = status.HTTP_201_CREATED
         resolved_user = None
         response_obj = None
@@ -1084,6 +1093,10 @@ class ResponseViewSet(viewsets.ModelViewSet):
                     resp_status = status.HTTP_201_CREATED
 
                 submission_warnings = getattr(serializer, '_validation_warnings', [])
+
+                if round_entry is not None and round_entry.details_response_id != response_obj.pk:
+                    round_entry.details_response = response_obj
+                    round_entry.save(update_fields=['details_response', 'updated_at'])
 
                 # Club Member ID automation: find-or-create the club member by the
                 # form's mapped email field and allocate a permanent Club ID if they
@@ -1158,6 +1171,14 @@ class ResponseViewSet(viewsets.ModelViewSet):
         if form_obj.allow_edits_until and now > form_obj.allow_edits_until:
             return DRFResponse({"error": "The edit window for this form has closed.",
                                 "code": "EDIT_WINDOW_CLOSED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.hackathons.services import check_round_form_access
+        if not _is_admin_or_club_lead(request.user):
+            try:
+                check_round_form_access(form_obj, request.user)
+            except PermissionDenied as ex:
+                return DRFResponse({"error": str(ex.detail), "code": "ROUND_FORM_RESTRICTED"},
+                                   status=status.HTTP_403_FORBIDDEN)
 
         serializer = self.get_serializer(
             instance, data=request.data, partial=partial,

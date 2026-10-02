@@ -33,6 +33,21 @@ class FieldType(models.TextChoices):
     SIGNATURE = 'SIGNATURE', 'Signature Capture'
     CLUB_ID = 'CLUB_ID', 'Club ID'
 
+class ProfileField(models.TextChoices):
+    """
+    Profile attributes a FormField can be mapped to via FormField.profile_field.
+    Mirrors the subset of the User model that's meaningful to auto-fill into a
+    registration — kept separate from the User model's own field names so this
+    stays a stable, curated wire contract even if User gains unrelated fields.
+    """
+    FULL_NAME = 'full_name', 'Full Name'
+    EMAIL = 'email', 'Email'
+    PHONE_NUMBER = 'phone_number', 'Phone Number'
+    BRANCH = 'branch', 'Branch'
+    ROLL_NUMBER = 'roll_number', 'Roll Number'
+    YEAR = 'year', 'Year'
+    CLUB_ID = 'club_id', 'Club ID'
+
 class Form(TimeStampedModel):
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
@@ -213,6 +228,16 @@ class FormField(TimeStampedModel):
         )
     )
     validation_rules = models.JSONField(default=dict, blank=True, help_text="Validation rules e.g. {'max_size_mb': 10, 'allowed_extensions': ['pdf']}")
+    profile_field = models.CharField(
+        max_length=20, choices=ProfileField.choices, blank=True, null=True,
+        help_text=(
+            "When set, this question is never asked of the user — it's resolved "
+            "server-side from the submitter's own profile at submission time "
+            "(any client-supplied value for it is discarded) and shown read-only "
+            "in the registration confirmation. Leave blank for an ordinary "
+            "user-answered question."
+        ),
+    )
     order = models.IntegerField(default=0)
     is_deleted = models.BooleanField(default=False, help_text="Soft-deleted fields preserved for historical response export")
 

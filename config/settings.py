@@ -206,6 +206,9 @@ REST_FRAMEWORK = {
         # Public form submission — anonymous-writable, so scope-limit it below
         # the global anon rate to blunt flooding of a single form.
         'form_submit': '20/minute',
+        # Hackathon teammate lookup by exact email — authenticated, but
+        # limited so it can't be used to enumerate which emails have accounts.
+        'hackathon_lookup': '30/minute',
     },
 }
 

@@ -53,6 +53,17 @@ def save_signature_to_storage(base64_string: str) -> str:
 EMAIL_RE = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
 User = get_user_model()
 
+# Value getters for FormField.profile_field — keys match apps.forms.models.ProfileField.
+PROFILE_FIELD_GETTERS = {
+    'full_name': lambda u: f'{u.first_name} {u.last_name}'.strip(),
+    'email': lambda u: u.email,
+    'phone_number': lambda u: u.phone_number,
+    'branch': lambda u: u.branch,
+    'roll_number': lambda u: u.roll_number,
+    'year': lambda u: u.year,
+    'club_id': lambda u: u.club_id,
+}
+
 
 class FormValidationError(APIException):
     """
@@ -83,7 +94,7 @@ class FormFieldSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'label', 'type', 'placeholder', 'is_required',
             'options', 'rows', 'min_value', 'max_value',
-            'conditional_logic', 'validation_rules', 'order',
+            'conditional_logic', 'validation_rules', 'order', 'profile_field',
         ]
 
     def validate(self, attrs):
@@ -543,6 +554,87 @@ class ResponseSerializer(serializers.ModelSerializer):
                     rule='clubIdVerification',
                 ))
 
+    def _resolve_profile_autofill(self, form, mode):
+        """
+        STRICT-mode only: for each FormField mapped to a profile attribute
+        (``FormField.profile_field``), resolve its value from the authenticated
+        submitter's own profile rather than the client, so it can never be
+        retyped incorrectly or tampered with. Admin manual entry / CSV import
+        (mode=PARTIAL) skip this entirely — the record being entered there
+        often isn't the authenticated caller, so those fields behave like any
+        ordinary answer supplied directly in the payload.
+
+        Returns ``(managed_ids, overrides, errors)``:
+          managed_ids — every FormField id mapped to a profile attribute on
+                      this form, resolved or not. The caller strips ALL of
+                      these from the client's payload unconditionally — a
+                      profile-bound field never has a real input for the user
+                      to answer, so nothing it "submitted" for one is trusted,
+                      even where the profile itself has nothing to offer.
+          overrides — {field_id: value} for the subset that resolved to a
+                      real value, to inject in place of what was stripped.
+          errors    — FieldError entries for a profile-mapped field that can't
+                      be resolved (not logged in, or the profile itself is
+                      missing that data and the field is required).
+        """
+        managed_ids = set()
+        overrides = {}
+        errors = []
+        if mode != STRICT:
+            return managed_ids, overrides, errors
+
+        profile_fields = list(
+            form.fields.filter(is_deleted=False).exclude(profile_field='').exclude(profile_field__isnull=True)
+        )
+        if not profile_fields:
+            return managed_ids, overrides, errors
+        managed_ids = {f.id for f in profile_fields}
+
+        request = self.context.get('request')
+        user = request.user if request and request.user and request.user.is_authenticated else None
+        if user is None:
+            for f in profile_fields:
+                errors.append(FieldError(
+                    code='PROFILE_FIELD_REQUIRES_LOGIN', field_id=f.id, label=f.label,
+                    message=f"'{f.label}' is filled in from your profile — please log in to continue.",
+                    rule='profileAutofill',
+                ))
+            return managed_ids, overrides, errors
+
+        for f in profile_fields:
+            getter = PROFILE_FIELD_GETTERS.get(f.profile_field)
+            value = getter(user) if getter else None
+            if value in (None, ''):
+                if f.is_required:
+                    errors.append(FieldError(
+                        code='PROFILE_FIELD_MISSING', field_id=f.id, label=f.label,
+                        message=f"Your profile is missing '{f.label}' — please update your profile before registering.",
+                        rule='profileAutofill',
+                    ))
+                continue
+            overrides[f.id] = value
+        return managed_ids, overrides, errors
+
+    @staticmethod
+    def _merge_answer_overrides(raw_answers, managed_ids, overrides):
+        """Strip any client-supplied answer for a profile-managed field id
+        (whether or not it resolved to a value), then append the
+        server-resolved overrides — same wire shape either input takes (a
+        dict, or the normal ``[{"field": id, "value": v}, ...]`` list)."""
+        if not managed_ids:
+            return raw_answers
+        managed_str_ids = {str(fid) for fid in managed_ids}
+        if isinstance(raw_answers, dict):
+            merged = {k: v for k, v in raw_answers.items() if str(k) not in managed_str_ids}
+            merged.update({str(fid): val for fid, val in overrides.items()})
+            return merged
+        merged = [
+            item for item in (raw_answers or [])
+            if not (isinstance(item, dict) and str(item.get('field', item.get('field_id'))) in managed_str_ids)
+        ]
+        merged.extend({'field': fid, 'value': val} for fid, val in overrides.items())
+        return merged
+
     def validate(self, data):
         form = self._resolve_form(data)
         if form is None:
@@ -556,9 +648,20 @@ class ResponseSerializer(serializers.ModelSerializer):
         if is_edit:
             existing = {a.field_id: a.value for a in self.instance.answers.all()}
 
+        managed_ids, overrides, profile_errors = self._resolve_profile_autofill(form, mode)
+        raw_answers = self._merge_answer_overrides(raw_answers, managed_ids, overrides)
+
         report = validate_submission(
             form, raw_answers, mode=mode, is_edit=is_edit, existing_answers=existing,
         )
+
+        if profile_errors:
+            # Replace the engine's generic REQUIRED/etc. error for these same
+            # field ids with our more actionable "update your profile" one,
+            # rather than surfacing both for the same field.
+            managed_ids = {e.field_id for e in profile_errors}
+            report.errors = [e for e in report.errors if e.field_id not in managed_ids]
+            report.errors.extend(profile_errors)
 
         if form.prevent_duplicate_email_answers and not report.errors:
             self._check_duplicate_emails(form, report)
