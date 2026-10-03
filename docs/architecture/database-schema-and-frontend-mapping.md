@@ -19,8 +19,7 @@ This document provides a comprehensive, production-grade reference for the entir
 erDiagram
     %% Core & Accounts
     USER ||--o{ RESPONSE : "submits"
-    USER ||--o{ TEAM_LEADER : "leads"
-    USER }o--o{ TEAM_MEMBER : "participates_in"
+    USER |o--o{ TEAM : "leads"
     USER ||--o{ CODEQUEST_SUBMISSION : "writes"
     USER ||--o| USER_STREAK : "tracks"
     USER ||--o{ BLOG_POST : "authors"
@@ -43,6 +42,17 @@ erDiagram
 
     %% Hackathons App
     HACKATHON ||--o{ TEAM : "hosts"
+    HACKATHON ||--o{ PROBLEM_STATEMENT : "offers"
+    PROBLEM_STATEMENT |o--o{ TEAM : "picked_by"
+    TEAM ||--o{ TEAM_MEMBER : "has"
+    USER ||--o{ TEAM_MEMBER : "joins"
+    TEAM ||--o{ TEAM_INVITE : "sends"
+    HACKATHON ||--o{ ROUND : "runs"
+    ROUND ||--o{ ROUND_ENTRY : "includes"
+    TEAM ||--o{ ROUND_ENTRY : "competes_in"
+    FORM |o--o{ ROUND : "details_form"
+    RESPONSE |o--o| ROUND_ENTRY : "details_response"
+    HACKATHON ||--o{ HACKATHON_ANNOUNCEMENT : "posts"
     TEAM ||--o| HACKATHON_SUBMISSION : "submits"
 
     %% Codequest App
@@ -182,10 +192,72 @@ erDiagram
     TEAM {
         int id PK
         int hackathon_id FK
-        string name
-        int leader_id FK
+        string name "unique per hackathon, case-insensitive"
+        int leader_id FK "nullable"
+        int problem_statement_id FK "nullable"
+        bool is_open_innovation
+        string custom_problem_title
+        string custom_problem_domain
+        string status "FORMING, REGISTERED, DISQUALIFIED, WITHDRAWN"
         datetime created_at
         datetime updated_at
+    }
+
+    TEAM_MEMBER {
+        int id PK
+        int team_id FK
+        int hackathon_id FK "unique with user_id"
+        int user_id FK
+        string role "LEADER or MEMBER"
+        datetime joined_at
+    }
+
+    TEAM_INVITE {
+        int id PK
+        int team_id FK
+        int hackathon_id FK
+        int invited_user_id FK
+        int invited_by_id FK "nullable"
+        string status "PENDING, ACCEPTED, DECLINED, CANCELLED"
+        datetime created_at
+        datetime responded_at
+    }
+
+    PROBLEM_STATEMENT {
+        int id PK
+        int hackathon_id FK
+        string code "generated, unique per hackathon"
+        string title
+        string domain
+        int max_teams "nullable"
+        bool is_active
+    }
+
+    ROUND {
+        int id PK
+        int hackathon_id FK
+        int order "unique per hackathon"
+        string name
+        string status "UPCOMING, ACTIVE, COMPLETED"
+        int details_form_id FK "nullable"
+        bool results_published
+    }
+
+    ROUND_ENTRY {
+        int id PK
+        int round_id FK
+        int team_id FK
+        string status "PENDING, SHORTLISTED, REJECTED"
+        int details_response_id FK "nullable"
+    }
+
+    HACKATHON_ANNOUNCEMENT {
+        int id PK
+        int hackathon_id FK
+        string audience "PUBLIC, PARTICIPANTS, ROUND_ALL, ROUND_SHORTLISTED, TEAMS"
+        int round_id FK "nullable"
+        datetime publish_at
+        datetime expires_at "nullable"
     }
 
     HACKATHON_SUBMISSION {
@@ -347,6 +419,7 @@ Configurable form element definition with conditional routing logic.
 - `validation_rules` (`JSONField`, default: `dict`, e.g. `{"max_size_mb": 10, "allowed_extensions": ["pdf"]}`)
 - `order` (`IntegerField`, default: 0)
 - `is_deleted` (`BooleanField`, default: False, soft-delete preserving historical responses)
+- `profile_field` (`CharField(20)`, nullable; `full_name`, `email`, `phone_number`, `branch`, `roll_number`, `year`, `club_id`) — server-side profile auto-fill binding, see [Forms module](../modules/forms.md)
 
 #### `Response` (Table: `forms_response`)
 Submission transaction header.
@@ -421,16 +494,53 @@ API-only (not DB columns — annotated in `EventViewSet.get_queryset()` / serial
 - `banner_image` (`URLField`, nullable, blank)
 - `start_date` / `end_date` (`DateTimeField`)
 - `visible_from` / `visible_until` (`DateTimeField`, nullable, blank)
-- `registration_form_id` (`ForeignKey -> forms.Form`, `on_delete=SET_NULL`, nullable, blank)
+- `registration_form_id` (`ForeignKey -> forms.Form`, `on_delete=SET_NULL`, nullable, blank) — legacy registration link, not used by team registration
+- `registration_opens_at` / `registration_closes_at` (`DateTimeField`, nullable)
+- `min_team_size` / `max_team_size` (`PositiveIntegerField`, defaults 1 / 4)
+- `team_edits_locked` (`BooleanField`, default: False)
+- `allow_open_innovation` (`BooleanField`, default: True)
+- `required_profile_fields` (`JSONField`, default: `list` of `forms.ProfileField` keys)
 
-API-only (not DB columns — annotated in `HackathonViewSet.get_queryset()` / serialized from `registration_form`): `form_slug`, `form_title`, `registration_count` (non-test `Form.responses` count for the linked `registration_form`), `team_count` (`teams` reverse count).
+API-only: `is_registration_open` (property: `status == LIVE` and now within the registration window). Also API-only (not DB columns — annotated in `HackathonViewSet.get_queryset()` / serialized from `registration_form`): `form_slug`, `form_title`, `registration_count` (non-test `Form.responses` count for the linked `registration_form`), `team_count` (`teams` reverse count).
+
+#### `ProblemStatement` (Table: `hackathons_problemstatement`)
+- `hackathon_id` (`ForeignKey -> Hackathon`, `on_delete=CASCADE`, `related_name='problem_statements'`)
+- `code` (`CharField(30)`, unique per hackathon; **generated** as `PS-001`, `PS-002`, … by `ProblemStatementService`), `title`, `description` (Markdown), `domain` (`CharField(100)`, renamed from `category` in migration 0008), `tags` (`JSONField` list)
+- `max_teams` (`PositiveIntegerField`, nullable = unlimited), `is_active`, `order`
 
 #### `Team` (Table: `hackathons_team`)
 - `id` (`BigAutoField`, PK)
 - `hackathon_id` (`ForeignKey -> Hackathon`, `on_delete=CASCADE`, `related_name='teams'`)
-- `name` (`CharField(150)`)
+- `name` (`CharField(150)`; `UniqueConstraint(Lower('name'), 'hackathon')`)
 - `leader_id` (`ForeignKey -> User`, `on_delete=SET_NULL`, nullable, `related_name='led_teams'`) — a deleted user never takes the rest of the team or its Submission with them
-- `members` (`ManyToManyField -> User`, `related_name='hackathon_teams'`, blank)
+- `members` (`ManyToManyField -> User` **through `TeamMember`**, `related_name='hackathon_teams'`)
+- `problem_statement_id` (`ForeignKey -> ProblemStatement`, `on_delete=SET_NULL`, nullable, `related_name='teams'`)
+- `is_open_innovation` (`BooleanField`), `custom_problem_title` (`CharField(255)`), `custom_problem_description` (`TextField`), `custom_problem_domain` (`CharField(100)`) — the team's own problem when it goes open innovation; mutually exclusive with `problem_statement`. The derived ID is `OI-<team id>`.
+- `status` (`FORMING` / `REGISTERED` / `DISQUALIFIED` / `WITHDRAWN`)
+
+#### `TeamMember` (Table: `hackathons_teammember`)
+- `team_id` (CASCADE, `related_name='memberships'`), `hackathon_id` (CASCADE, denormalized), `user_id` (CASCADE, `related_name='hackathon_memberships'`)
+- `role` (`LEADER` / `MEMBER`), `joined_at`
+- `UniqueConstraint(hackathon, user)` — one team per user per hackathon
+
+#### `TeamInvite` (Table: `hackathons_teaminvite`)
+- `team_id`, `hackathon_id`, `invited_user_id` (CASCADE), `invited_by_id` (SET_NULL)
+- `status` (`PENDING` / `ACCEPTED` / `DECLINED` / `CANCELLED`), `created_at`, `responded_at`
+- Partial unique constraint on `(team, invited_user)` where `status = 'PENDING'`
+
+#### `Round` (Table: `hackathons_round`)
+- `hackathon_id` (CASCADE, `related_name='rounds'`), `order` (unique per hackathon), `name`, `description`, `starts_at` / `ends_at`
+- `status` (`UPCOMING` / `ACTIVE` / `COMPLETED`), `details_form_id` (`ForeignKey -> forms.Form`, SET_NULL), `results_published`
+
+#### `RoundEntry` (Table: `hackathons_roundentry`)
+- `round_id`, `team_id` (CASCADE; unique together)
+- `status` (`PENDING` / `SHORTLISTED` / `REJECTED`), `feedback` (team-visible after publish), `admin_notes` (internal)
+- `decided_by_id`, `decided_at`, `details_response_id` (`ForeignKey -> forms.Response`, SET_NULL)
+
+#### `HackathonAnnouncement` (Table: `hackathons_hackathonannouncement`)
+- `hackathon_id` (CASCADE), `title`, `message` (Markdown), `type` (`announcements.AnnouncementType`)
+- `audience` (`PUBLIC` / `PARTICIPANTS` / `ROUND_ALL` / `ROUND_SHORTLISTED` / `TEAMS`), `round_id` (CASCADE, nullable), `target_teams` (M2M `Team`)
+- `is_active`, `publish_at`, `expires_at` (nullable), `send_email`, `created_by_id`
 
 #### `Submission` (Table: `hackathons_submission`)
 - `id` (`BigAutoField`, PK)

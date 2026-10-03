@@ -15,7 +15,7 @@ def _is_admin_or_club_lead(user) -> bool:
 
 class AnnouncementViewSet(viewsets.ModelViewSet):
     """
-    Public GET is filtered to is_active=True (what the landing page shows) —
+    Public GET is filtered to is_active=True (what the landing page shows) -
     an admin/club-lead viewer sees everything, including inactive ones they're
     managing, the same asymmetric-queryset pattern Event/Hackathon use for
     their visibility windows.

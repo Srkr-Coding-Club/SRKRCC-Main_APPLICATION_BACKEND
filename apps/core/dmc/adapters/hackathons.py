@@ -1,12 +1,13 @@
 """
 dmc/adapters/hackathons.py
 --------------------------
-Three granular DMC adapters for the Hackathons module.
+Granular DMC adapters for the Hackathons module.
 
 datasets:
-  hackathon_participants → 1 row = 1 team member (or team leader)
-  hackathon_teams        → 1 row = 1 team + project submission summary
-  hackathon_submissions  → 1 row = 1 project submission
+  hackathon_participants  → 1 row = 1 team member (or team leader)
+  hackathon_teams         → 1 row = 1 team + project submission summary
+  hackathon_submissions   → 1 row = 1 project submission
+  hackathon_round_entries → 1 row = 1 team in 1 round (shortlisting outcome)
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from django.db.models import Q
 
 from apps.core.dmc.adapters.base import BaseDatasetAdapter
 from apps.core.dmc.contracts import CanonicalValue, ColumnDefinition, FilterDefinition, FilterOption, QueryRequest, QueryResult
-from apps.hackathons.models import Hackathon, Team, Submission
+from apps.hackathons.models import Hackathon, RoundEntry, Team, Submission
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +37,24 @@ def _hackathon_title_filter() -> FilterDefinition:
     ]
     return FilterDefinition(key="hackathon_title", label="Hackathon", type="select", operators=["eq"], options=options)
 
+def _problem_id(team: Team) -> str | None:
+    if team.problem_statement_id:
+        return team.problem_statement.code
+    return team.open_innovation_code if team.is_open_innovation else None
+
+
+def _problem_title(team: Team) -> str | None:
+    if team.problem_statement_id:
+        return team.problem_statement.title
+    return team.custom_problem_title or None
+
+
+def _problem_domain(team: Team) -> str | None:
+    if team.problem_statement_id:
+        return team.problem_statement.domain or None
+    return team.custom_problem_domain or None
+
+
 PARTICIPANT_COLS: list[ColumnDefinition] = [
     _hackathon_col("id",               "ID",            "number",   "meta",       visible=False,  source="hackathons.Team.id+member"),
     _hackathon_col("name",             "Full Name",      "text",                   renderer="text",  source="accounts.User.first_name+last_name"),
@@ -54,6 +73,10 @@ TEAMS_COLS: list[ColumnDefinition] = [
     _hackathon_col("leader_name",       "Leader",            "text",               renderer="text", source="hackathons.Team.leader"),
     _hackathon_col("leader_email",      "Leader Email",      "email",              renderer="email", source="hackathons.Team.leader.email"),
     _hackathon_col("member_count",      "Members",           "number",             renderer="text", source="hackathons.Team.members.count"),
+    _hackathon_col("problem_id",        "Problem ID",        "text",               renderer="text", source="hackathons.ProblemStatement.code"),
+    _hackathon_col("problem_title",     "Problem Title",     "text",               renderer="text", source="hackathons.Team.problem"),
+    _hackathon_col("problem_domain",    "Problem Domain",    "text",               renderer="text", source="hackathons.Team.problem"),
+    _hackathon_col("open_innovation",   "Open Innovation",   "boolean",            renderer="boolean", source="hackathons.Team.is_open_innovation"),
     _hackathon_col("project_title",     "Project",           "text",               renderer="text", source="hackathons.Submission.project_title"),
     _hackathon_col("submission_score",  "Score",             "number",             renderer="text", source="hackathons.Submission.score"),
     _hackathon_col("created_at",        "Created At",        "datetime", "meta",   renderer="date", source="hackathons.Team.created_at"),
@@ -86,7 +109,7 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
         return list(PARTICIPANT_COLS), [_hackathon_title_filter()]
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
-        teams = Team.objects.select_related("hackathon", "leader").prefetch_related("members")
+        teams = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user")
         for f in query_req.filters:
             if f.field == "hackathon_title":
                 teams = teams.filter(hackathon_id=f.value)
@@ -111,17 +134,15 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
         return None  # Composite rows don't have a single DB primary key to look up
 
     def stream_records(self, query_req: QueryRequest, user: Any, selected_ids: list[str] | None = None) -> Generator[dict[str, CanonicalValue], None, None]:
-        for team in Team.objects.select_related("hackathon", "leader").prefetch_related("members").iterator(chunk_size=100):
+        for team in Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user").iterator(chunk_size=100):
             for row in self._expand_team(team):
                 yield self._to_record(row)
 
     def _expand_team(self, team: Team) -> list[dict]:
         rows = []
-        leader = team.leader
-        if leader is not None:
-            rows.append({"id": f"t{team.id}_l{leader.id}", "name": f"{leader.first_name} {leader.last_name}".strip(), "email": leader.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Leader", "roll_number": getattr(leader, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
-        for m in team.members.all():
-            rows.append({"id": f"t{team.id}_m{m.id}", "name": f"{m.first_name} {m.last_name}".strip(), "email": m.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Member", "roll_number": getattr(m, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
+        for ms in team.memberships.all():
+            m = ms.user
+            rows.append({"id": f"t{team.id}_u{m.id}", "name": f"{m.first_name} {m.last_name}".strip(), "email": m.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Leader" if ms.role == "LEADER" else "Member", "roll_number": getattr(m, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
         return rows
 
     def _to_record(self, row: dict) -> dict[str, CanonicalValue]:
@@ -148,7 +169,7 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
         return list(TEAMS_COLS), [_hackathon_title_filter()]
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
-        qs = Team.objects.select_related("hackathon", "leader").prefetch_related("members", "submission")
+        qs = Team.objects.select_related("hackathon", "leader", "problem_statement").prefetch_related("memberships", "submission")
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(name__icontains=q) | Q(leader__email__icontains=q) | Q(hackathon__title__icontains=q))
@@ -167,13 +188,13 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
 
     def get_record(self, record_id: str, user: Any) -> dict[str, CanonicalValue] | None:
         try:
-            t = Team.objects.select_related("hackathon", "leader").prefetch_related("members", "submission").get(pk=record_id)
+            t = Team.objects.select_related("hackathon", "leader", "problem_statement").prefetch_related("memberships", "submission").get(pk=record_id)
         except (Team.DoesNotExist, ValueError):
             return None
         return self._normalize(t)
 
     def stream_records(self, query_req: QueryRequest, user: Any, selected_ids: list[str] | None = None) -> Generator[dict[str, CanonicalValue], None, None]:
-        qs = Team.objects.select_related("hackathon", "leader").prefetch_related("members", "submission")
+        qs = Team.objects.select_related("hackathon", "leader", "problem_statement").prefetch_related("memberships", "submission")
         if selected_ids:
             qs = qs.filter(pk__in=selected_ids)
         for t in qs.iterator(chunk_size=200):
@@ -188,7 +209,11 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
             "hackathon_title":  self._val(t.hackathon.title,                              "text",     "hackathons.Hackathon.title"),
             "leader_name":      self._val(f"{leader.first_name} {leader.last_name}".strip() if leader else None, "text", "hackathons.Team.leader"),
             "leader_email":     self._val(leader.email if leader else None,               "email",    "hackathons.Team.leader.email"),
-            "member_count":     self._val(t.members.count(),                              "number",   "hackathons.Team.members.count"),
+            "member_count":     self._val(t.memberships.count(),                              "number",   "hackathons.Team.members.count"),
+            "problem_id":       self._val(_problem_id(t),                                     "text",     "hackathons.ProblemStatement.code"),
+            "problem_title":    self._val(_problem_title(t),                                  "text",     "hackathons.Team.problem"),
+            "problem_domain":   self._val(_problem_domain(t),                                 "text",     "hackathons.Team.problem"),
+            "open_innovation":  self._val(t.is_open_innovation,                               "boolean",  "hackathons.Team.is_open_innovation"),
             "project_title":    self._val(sub.project_title if sub else None,             "text",     "hackathons.Submission.project_title"),
             "submission_score": self._val(sub.score if sub else None,                     "number",   "hackathons.Submission.score"),
             "created_at":       self._val(t.created_at.isoformat() if t.created_at else None, "datetime", "hackathons.Team.created_at"),
@@ -247,4 +272,99 @@ class HackathonSubmissionsAdapter(BaseDatasetAdapter):
             "demo_url":        self._val(s.demo_url,            "url",      "hackathons.Submission.demo_url"),
             "score":           self._val(s.score,               "number",   "hackathons.Submission.score"),
             "created_at":      self._val(s.created_at.isoformat() if s.created_at else None, "datetime", "hackathons.Submission.created_at"),
+        }
+
+
+# ---------------------------------------------------------------------------
+# HackathonRoundEntriesAdapter
+# ---------------------------------------------------------------------------
+
+ROUND_ENTRY_COLS: list[ColumnDefinition] = [
+    _hackathon_col("id",                "Entry ID",          "number",   "meta",   visible=False, source="hackathons.RoundEntry.id"),
+    _hackathon_col("hackathon_title",   "Hackathon",         "text",               renderer="text",    source="hackathons.Hackathon.title", filterable=True),
+    _hackathon_col("round_order",       "Round #",           "number",             renderer="text",    source="hackathons.Round.order"),
+    _hackathon_col("round_name",        "Round",             "text",               renderer="text",    source="hackathons.Round.name"),
+    _hackathon_col("team_name",         "Team",              "text",               renderer="text",    source="hackathons.Team.name"),
+    _hackathon_col("leader_email",      "Leader Email",      "email",              renderer="email",   source="hackathons.Team.leader.email"),
+    _hackathon_col("problem_statement", "Problem Statement", "text",               renderer="text",    source="hackathons.ProblemStatement.code"),
+    _hackathon_col("status",            "Result",            "badge",              renderer="badge",   source="hackathons.RoundEntry.status"),
+    _hackathon_col("results_published", "Published",         "boolean",            renderer="boolean", source="hackathons.Round.results_published"),
+    _hackathon_col("details_submitted", "Details Submitted", "boolean",            renderer="boolean", source="hackathons.RoundEntry.details_response"),
+    _hackathon_col("feedback",          "Feedback",          "text",               renderer="text",    source="hackathons.RoundEntry.feedback", visible=False),
+    _hackathon_col("decided_at",        "Decided At",        "datetime", "meta",   renderer="date",    source="hackathons.RoundEntry.decided_at"),
+]
+
+ALLOWED_SORT_ROUND_ENTRIES = {"id", "round_order", "team_name", "status", "decided_at"}
+_ROUND_ENTRY_SORT_MAP = {
+    "id": "id", "round_order": "round__order", "team_name": "team__name",
+    "status": "status", "decided_at": "decided_at",
+}
+
+
+def _round_entry_hackathon_filter() -> FilterDefinition:
+    options = [
+        FilterOption(title, str(hid))
+        for hid, title in Hackathon.objects.filter(rounds__isnull=False).distinct().order_by("title").values_list("id", "title")
+    ]
+    return FilterDefinition(key="hackathon_title", label="Hackathon", type="select", operators=["eq"], options=options)
+
+
+class HackathonRoundEntriesAdapter(BaseDatasetAdapter):
+    """1 row = 1 team in 1 hackathon round (shortlisting outcome)."""
+
+    def _base_qs(self):
+        return RoundEntry.objects.select_related("round__hackathon", "team__leader", "team__problem_statement")
+
+    def _filtered(self, query_req: QueryRequest):
+        qs = self._base_qs()
+        if query_req.search:
+            q = query_req.search.strip()
+            qs = qs.filter(Q(team__name__icontains=q) | Q(team__leader__email__icontains=q) | Q(round__name__icontains=q))
+        for f in query_req.filters:
+            if f.field == "hackathon_title":
+                qs = qs.filter(round__hackathon_id=f.value)
+        return qs
+
+    def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
+        return list(ROUND_ENTRY_COLS), [_round_entry_hackathon_filter()]
+
+    def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
+        sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_ROUND_ENTRIES else "round_order"
+        prefix = "-" if query_req.sort.direction == "desc" else ""
+        qs = self._filtered(query_req).order_by(f"{prefix}{_ROUND_ENTRY_SORT_MAP[sort_field]}", "team__name")
+
+        total = qs.count()
+        offset = (query_req.page - 1) * query_req.page_size
+        page = list(qs[offset: offset + query_req.page_size])
+        return QueryResult(records=[self._normalize(e) for e in page], total=total, page=query_req.page, page_size=query_req.page_size, dataset_id="hackathon_round_entries")
+
+    def get_record(self, record_id: str, user: Any) -> dict[str, CanonicalValue] | None:
+        try:
+            return self._normalize(self._base_qs().get(pk=record_id))
+        except (RoundEntry.DoesNotExist, ValueError):
+            return None
+
+    def stream_records(self, query_req: QueryRequest, user: Any, selected_ids: list[str] | None = None) -> Generator[dict[str, CanonicalValue], None, None]:
+        qs = self._filtered(query_req)
+        if selected_ids:
+            qs = qs.filter(pk__in=selected_ids)
+        for e in qs.order_by("round__hackathon_id", "round__order", "team__name").iterator(chunk_size=200):
+            yield self._normalize(e)
+
+    def _normalize(self, e: RoundEntry) -> dict[str, CanonicalValue]:
+        team = e.team
+        problem_id = _problem_id(team)
+        return {
+            "id":                self._val(str(e.pk),                                          "number",   "hackathons.RoundEntry.id"),
+            "hackathon_title":   self._val(e.round.hackathon.title,                            "text",     "hackathons.Hackathon.title"),
+            "round_order":       self._val(e.round.order,                                      "number",   "hackathons.Round.order"),
+            "round_name":        self._val(e.round.name,                                       "text",     "hackathons.Round.name"),
+            "team_name":         self._val(team.name,                                          "text",     "hackathons.Team.name"),
+            "leader_email":      self._val(team.leader.email if team.leader else None,         "email",    "hackathons.Team.leader.email"),
+            "problem_statement": self._val(f"{problem_id}: {_problem_title(team)}" if problem_id else None, "text", "hackathons.ProblemStatement.code"),
+            "status":            self._val(e.get_status_display(),                             "badge",    "hackathons.RoundEntry.status"),
+            "results_published": self._val(e.round.results_published,                          "boolean",  "hackathons.Round.results_published"),
+            "details_submitted": self._val(e.details_response_id is not None,                  "boolean",  "hackathons.RoundEntry.details_response"),
+            "feedback":          self._val(e.feedback or None,                                 "text",     "hackathons.RoundEntry.feedback"),
+            "decided_at":        self._val(e.decided_at.isoformat() if e.decided_at else None, "datetime", "hackathons.RoundEntry.decided_at"),
         }

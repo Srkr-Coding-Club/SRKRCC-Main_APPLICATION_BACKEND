@@ -17,7 +17,7 @@ class Event(TimeStampedModel):
     status = models.CharField(max_length=20, choices=EventStatus.choices, default=EventStatus.LIVE)
 
     # Nullable: an event can be created before its schedule is finalized
-    # (e.g. announced with a venue TBD) — the public card/detail page shows
+    # (e.g. announced with a venue TBD) - the public card/detail page shows
     # "Date to be announced" instead of forcing a placeholder date.
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)

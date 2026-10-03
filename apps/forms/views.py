@@ -1,5 +1,6 @@
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response as DRFResponse
 from rest_framework.pagination import PageNumberPagination
 from django.utils import timezone
@@ -58,11 +59,11 @@ class FormViewSet(viewsets.ModelViewSet):
 
         if _is_admin_or_club_lead(self.request.user):
             return queryset
-        # DRAFT forms are unfinished/internal — the builder's own "Preview"
+        # DRAFT forms are unfinished/internal - the builder's own "Preview"
         # link only ever needs this while logged in as ADMIN/CLUB_LEAD, so
         # hiding DRAFT from everyone else closes off both the public list
         # endpoint and a guessed/shared slug leaking an unpublished form's
-        # structure. PUBLISHED/SCHEDULED/CLOSED stay visible — the public form
+        # structure. PUBLISHED/SCHEDULED/CLOSED stay visible - the public form
         # page renders a dedicated message for each of those.
         return queryset.exclude(status=FormStatus.DRAFT)
 
@@ -178,7 +179,7 @@ class FormViewSet(viewsets.ModelViewSet):
         report = validate_form_definition(form)
         if not report.publishable:
             return DRFResponse({
-                "detail": "This form cannot be published — its definition has blocking problems.",
+                "detail": "This form cannot be published because its definition has blocking problems.",
                 "code": "FORM_DEFINITION_INVALID",
                 "errors": [e.as_dict() for e in report.errors],
                 "warnings": [w.as_dict() for w in report.warnings],
@@ -874,7 +875,7 @@ class FormViewSet(viewsets.ModelViewSet):
         Body: {"response_ids": [1, 2, 3]}
 
         Deletes the given responses in one transaction. Every id must belong
-        to this form — if any don't (or don't exist at all), nothing is
+        to this form - if any don't (or don't exist at all), nothing is
         deleted and a 400 lists the offending ids.
         """
         form = self.get_object()
@@ -977,7 +978,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
             return DRFResponse(
                 {
                     "status": "SUCCESS",
-                    "message": "Test mode simulation complete — no DB record written.",
+                    "message": "Test mode simulation complete. No DB record written.",
                     "payload": request.data,
                 },
                 status=status.HTTP_200_OK,
@@ -1005,7 +1006,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
         if form_obj.close_at and now > form_obj.close_at:
             return DRFResponse({"error": f"Submissions for this form closed on {form_obj.close_at.isoformat()}."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Only the authenticated caller's own identity is ever trusted here — an
+        # Only the authenticated caller's own identity is ever trusted here - an
         # anonymous submitter cannot attribute a response to an arbitrary user by
         # passing a `user` ID in the body (that was an IDOR: it let anyone hijack
         # another member's single-submission response or response quota). Linking
@@ -1014,12 +1015,20 @@ class ResponseViewSet(viewsets.ModelViewSet):
         # the form's own mapped email field rather than trusting a client-supplied ID.
         user_to_assign = request.user if request.user and request.user.is_authenticated else None
 
+        # A form attached to a hackathon round as its "details" form only
+        # accepts the leaders of teams shortlisted in that round.
+        from apps.hackathons.services import check_round_form_access
+        try:
+            round_entry = check_round_form_access(form_obj, request.user)
+        except PermissionDenied as ex:
+            return DRFResponse({"error": str(ex.detail), "code": "ROUND_FORM_RESTRICTED"}, status=status.HTTP_403_FORBIDDEN)
+
         resp_status = status.HTTP_201_CREATED
         resolved_user = None
         response_obj = None
 
         # Note: a plain `return` from inside `transaction.atomic()` COMMITS (Django
-        # only rolls back on a propagating exception) — so the Club ID conflict
+        # only rolls back on a propagating exception) - so the Club ID conflict
         # exceptions below are deliberately left to propagate out of this block
         # instead of being caught-and-returned from inside it, and are only turned
         # into an HTTP response in the `except` after the block (and its automatic
@@ -1035,11 +1044,11 @@ class ResponseViewSet(viewsets.ModelViewSet):
                     if existing:
                         now = timezone.now()
                         # Only meaningful in the allow_multiple_responses=False branch
-                        # below — "edit my one response in place" is a single-response
+                        # below - "edit my one response in place" is a single-response
                         # concept. When multiple responses ARE allowed, a prior response
                         # must never block or redirect a new one (the frontend used to
-                        # get this wrong too: it forced edit mode — PATCHing the first
-                        # response — the moment any response existed, regardless of this
+                        # get this wrong too: it forced edit mode - PATCHing the first
+                        # response - the moment any response existed, regardless of this
                         # flag, so a second independent submission was never reachable
                         # through the UI even though this endpoint already supported it
                         # via the max_responses_per_user cap below).
@@ -1065,7 +1074,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
                             response_obj = serializer.instance
                             resp_status = status.HTTP_200_OK
                         else:
-                            # Multiple submissions allowed — enforce max_responses_per_user.
+                            # Multiple submissions allowed - enforce max_responses_per_user.
                             cap = self._effective_max_responses(form_obj)
                             if cap is not None and user_responses.count() >= cap:
                                 return DRFResponse(
@@ -1085,11 +1094,15 @@ class ResponseViewSet(viewsets.ModelViewSet):
 
                 submission_warnings = getattr(serializer, '_validation_warnings', [])
 
+                if round_entry is not None and round_entry.details_response_id != response_obj.pk:
+                    round_entry.details_response = response_obj
+                    round_entry.save(update_fields=['details_response', 'updated_at'])
+
                 # Club Member ID automation: find-or-create the club member by the
                 # form's mapped email field and allocate a permanent Club ID if they
                 # don't already have one. Runs inside this same atomic block so a
                 # conflict (e.g. ClubIdImmutableError) rolls back the response with it
-                # — "all or nothing," matching the requirement that a Club ID is only
+                # - "all or nothing," matching the requirement that a Club ID is only
                 # ever persisted once the response itself is fully completed.
                 if form_obj.club_id_enabled:
                     answers_by_field_id = {
@@ -1109,7 +1122,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
                     issue_badge(response_obj)
 
                 # Auto-close once the form-wide response cap is reached. Only a
-                # genuine new response (201) counts toward the total — editing an
+                # genuine new response (201) counts toward the total - editing an
                 # existing one in place (200, the `allow_multiple_responses=False`
                 # auto-update branch above) doesn't change the total response count.
                 if resp_status == status.HTTP_201_CREATED and form_obj.max_total_responses is not None:
@@ -1125,7 +1138,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
         except (ClubIdImmutableError, ClubIdConflictError, RollNumberConflictError) as ex:
             return DRFResponse({"error": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Confirmation email dispatch happens AFTER the transaction commits — never
+        # Confirmation email dispatch happens AFTER the transaction commits - never
         # from inside an open transaction, so a slow/failed send can't hold a DB lock
         # or roll back an otherwise-successful submission.
         if form_obj.confirmation_email_enabled:
@@ -1137,7 +1150,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         """
-        PUT/PATCH /api/forms/submissions/{id}/ — direct response edit.
+        PUT/PATCH /api/forms/submissions/{id}/ - direct response edit.
 
         Previously this inherited path skipped validation entirely (the serializer
         had no ``form`` in context). It now injects the form and fully
@@ -1158,6 +1171,14 @@ class ResponseViewSet(viewsets.ModelViewSet):
         if form_obj.allow_edits_until and now > form_obj.allow_edits_until:
             return DRFResponse({"error": "The edit window for this form has closed.",
                                 "code": "EDIT_WINDOW_CLOSED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.hackathons.services import check_round_form_access
+        if not _is_admin_or_club_lead(request.user):
+            try:
+                check_round_form_access(form_obj, request.user)
+            except PermissionDenied as ex:
+                return DRFResponse({"error": str(ex.detail), "code": "ROUND_FORM_RESTRICTED"},
+                                   status=status.HTTP_403_FORBIDDEN)
 
         serializer = self.get_serializer(
             instance, data=request.data, partial=partial,

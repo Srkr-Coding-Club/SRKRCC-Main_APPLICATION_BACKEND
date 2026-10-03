@@ -53,6 +53,17 @@ def save_signature_to_storage(base64_string: str) -> str:
 EMAIL_RE = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
 User = get_user_model()
 
+# Value getters for FormField.profile_field - keys match apps.forms.models.ProfileField.
+PROFILE_FIELD_GETTERS = {
+    'full_name': lambda u: f'{u.first_name} {u.last_name}'.strip(),
+    'email': lambda u: u.email,
+    'phone_number': lambda u: u.phone_number,
+    'branch': lambda u: u.branch,
+    'roll_number': lambda u: u.roll_number,
+    'year': lambda u: u.year,
+    'club_id': lambda u: u.club_id,
+}
+
 
 class FormValidationError(APIException):
     """
@@ -60,7 +71,7 @@ class FormValidationError(APIException):
     to the client verbatim.
 
     A plain ``APIException`` (not ``serializers.ValidationError``) so it is NOT
-    caught-and-rewrapped by ``serializer.is_valid()`` — it propagates straight to
+    caught-and-rewrapped by ``serializer.is_valid()`` - it propagates straight to
     DRF's exception handler, which returns a dict ``detail`` as-is. Result: the
     client gets exactly ``report.as_dict()`` with a 400.
     """
@@ -83,7 +94,7 @@ class FormFieldSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'label', 'type', 'placeholder', 'is_required',
             'options', 'rows', 'min_value', 'max_value',
-            'conditional_logic', 'validation_rules', 'order',
+            'conditional_logic', 'validation_rules', 'order', 'profile_field',
         ]
 
     def validate(self, attrs):
@@ -118,7 +129,7 @@ class FormSerializer(serializers.ModelSerializer):
         ]
 
     def validate_title(self, value):
-        # DRF's CharField only rejects a literal "" ("may not be blank") — a
+        # DRF's CharField only rejects a literal "" ("may not be blank") - a
         # whitespace-only title like "   " passes that check as a non-empty
         # string, so a form can end up with a title that renders as a blank
         # row wherever it's listed (e.g. the admin's "Select a form" dropdown
@@ -152,7 +163,7 @@ class FormSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data):
-        # DRAFT saves stay lenient (a form is built incrementally — the builder
+        # DRAFT saves stay lenient (a form is built incrementally - the builder
         # itself tells the admin to enable Club ID / confirmation email, save
         # once to get real field IDs, *then* come back to finish the field
         # mapping / template pick). Only PUBLISHED / SCHEDULED must have this
@@ -167,21 +178,21 @@ class FormSerializer(serializers.ModelSerializer):
         )
         if club_id_enabled and club_id_verification_enabled:
             raise serializers.ValidationError({
-                'club_id_verification_enabled': "A form either generates a new Club ID or verifies an existing one, not both — disable 'Generate Club Member ID' first.",
+                'club_id_verification_enabled': "A form either generates a new Club ID or verifies an existing one, not both. Disable 'Generate Club Member ID' first.",
             })
 
         if club_id_enabled and going_live:
             mapping = data.get('club_id_field_mapping', getattr(self.instance, 'club_id_field_mapping', None) or {})
             if not mapping.get('email'):
                 raise serializers.ValidationError({
-                    'club_id_field_mapping': "Club ID generation requires an 'email' field mapping — pick which form field supplies the member's email.",
+                    'club_id_field_mapping': "Club ID generation requires an 'email' field mapping. Pick which form field supplies the member's email.",
                 })
 
         if club_id_verification_enabled and going_live:
             mapping = data.get('club_id_field_mapping', getattr(self.instance, 'club_id_field_mapping', None) or {})
             if not mapping.get('club_id'):
                 raise serializers.ValidationError({
-                    'club_id_field_mapping': "Club ID verification requires a 'club_id' field mapping — pick which form field collects the member's Club ID.",
+                    'club_id_field_mapping': "Club ID verification requires a 'club_id' field mapping. Pick which form field collects the member's Club ID.",
                 })
 
         confirmation_email_enabled = data.get('confirmation_email_enabled', getattr(self.instance, 'confirmation_email_enabled', False))
@@ -207,7 +218,7 @@ class FormSerializer(serializers.ModelSerializer):
             report = validate_form_definition({'fields': data.get('fields') or []})
             if not report.publishable:
                 raise FormValidationError({
-                    'detail': 'This form cannot be published — its definition has blocking problems.',
+                    'detail': 'This form cannot be published because its definition has blocking problems.',
                     'code': 'FORM_DEFINITION_INVALID',
                     'errors': [e.as_dict() for e in report.errors],
                     'warnings': [w.as_dict() for w in report.warnings],
@@ -272,7 +283,7 @@ class FormSerializer(serializers.ModelSerializer):
 
         # Re-sync attendance sessions whenever the form (and possibly its
         # attendance_* config) is saved. Idempotent and non-destructive of
-        # already-scanned sessions — see apps.attendance.services.generate_sessions.
+        # already-scanned sessions - see apps.attendance.services.generate_sessions.
         from apps.attendance.services import generate_sessions
         self._attendance_undeletable_sessions = generate_sessions(instance)
         return instance
@@ -355,7 +366,7 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
     def get_confirmation_email(self, obj):
         # `.all()` here reads from the prefetch cache (Response queryset uses
         # Prefetch(..., queryset=EmailDelivery.objects.order_by('-created_at')))
-        # rather than issuing a new query per row — do not call .order_by()/
+        # rather than issuing a new query per row - do not call .order_by()/
         # .first() on the manager directly, that would bypass the cache.
         deliveries = list(obj.confirmation_email_deliveries.all())
         if not deliveries:
@@ -386,8 +397,8 @@ class ResponseSerializer(serializers.ModelSerializer):
     ``validate()`` and its normalized output is what actually gets persisted.
 
     Context keys the caller may pass:
-      ``form``   — the target Form (falls back to ``instance.form`` on edit)
-      ``mode``   — "strict" (default) or "partial" (admin manual entry / import)
+      ``form``   - the target Form (falls back to ``instance.form`` on edit)
+      ``mode``   - "strict" (default) or "partial" (admin manual entry / import)
       ``request``
     """
     answers = serializers.SerializerMethodField()
@@ -418,7 +429,7 @@ class ResponseSerializer(serializers.ModelSerializer):
     def _check_duplicate_emails(self, form, report):
         """
         Opt-in (Form.prevent_duplicate_email_answers) cross-response uniqueness
-        check for EMAIL-type fields — rejects a submission whose email value has
+        check for EMAIL-type fields - rejects a submission whose email value has
         already been used to answer this same form. Off by default: some forms
         legitimately expect one email to submit more than once (e.g. a parent
         registering several children), so this is only enforced when an admin
@@ -443,7 +454,7 @@ class ResponseSerializer(serializers.ModelSerializer):
                     rule='uniqueEmail',
                 ))
 
-    # Human-readable labels for the mismatch message — keyed the same as
+    # Human-readable labels for the mismatch message - keyed the same as
     # club_id_field_mapping (minus 'club_id' itself, which is the lookup key,
     # not something compared against).
     _CLUB_ID_VERIFY_LABELS = {
@@ -457,7 +468,7 @@ class ResponseSerializer(serializers.ModelSerializer):
     def _check_club_id_verification(self, form, report):
         """
         Opt-in (Form.club_id_verification_enabled) check: the submitter claims
-        an existing Club ID (via the mapped 'club_id' field) — reject the
+        an existing Club ID (via the mapped 'club_id' field) - reject the
         submission if that Club ID isn't registered, or if any other mapped
         field (name/email/phone/branch/roll number) doesn't match that
         member's actual record. Catches both typos and someone submitting
@@ -483,14 +494,14 @@ class ResponseSerializer(serializers.ModelSerializer):
             ).order_by('order', 'id').first()
             club_id_field_id = dedicated_field.id if dedicated_field else None
         if club_id_field_id is None:
-            # Not configured — same leniency as resolve_club_member() when its
+            # Not configured - same leniency as resolve_club_member() when its
             # email mapping is missing; the publish gate is what actually
             # enforces this is set before the form can go live.
             return
 
         submitted_club_id = report.cleaned_answers.get(club_id_field_id)
         if not submitted_club_id or not str(submitted_club_id).strip():
-            # Blank — required-field validation already flagged this if the
+            # Blank - required-field validation already flagged this if the
             # field is required; nothing more to check here.
             return
 
@@ -531,7 +542,7 @@ class ResponseSerializer(serializers.ModelSerializer):
                 continue
             if not member_value:
                 # Nothing on file to compare against (e.g. member has no phone
-                # number saved) — skip rather than reject over missing data
+                # number saved) - skip rather than reject over missing data
                 # that isn't the submitter's fault.
                 continue
             if normalize(submitted_value) != normalize(member_value):
@@ -542,6 +553,87 @@ class ResponseSerializer(serializers.ModelSerializer):
                     label=field_labels.get(field_id),
                     rule='clubIdVerification',
                 ))
+
+    def _resolve_profile_autofill(self, form, mode):
+        """
+        STRICT-mode only: for each FormField mapped to a profile attribute
+        (``FormField.profile_field``), resolve its value from the authenticated
+        submitter's own profile rather than the client, so it can never be
+        retyped incorrectly or tampered with. Admin manual entry / CSV import
+        (mode=PARTIAL) skip this entirely - the record being entered there
+        often isn't the authenticated caller, so those fields behave like any
+        ordinary answer supplied directly in the payload.
+
+        Returns ``(managed_ids, overrides, errors)``:
+          managed_ids - every FormField id mapped to a profile attribute on
+                      this form, resolved or not. The caller strips ALL of
+                      these from the client's payload unconditionally - a
+                      profile-bound field never has a real input for the user
+                      to answer, so nothing it "submitted" for one is trusted,
+                      even where the profile itself has nothing to offer.
+          overrides - {field_id: value} for the subset that resolved to a
+                      real value, to inject in place of what was stripped.
+          errors    - FieldError entries for a profile-mapped field that can't
+                      be resolved (not logged in, or the profile itself is
+                      missing that data and the field is required).
+        """
+        managed_ids = set()
+        overrides = {}
+        errors = []
+        if mode != STRICT:
+            return managed_ids, overrides, errors
+
+        profile_fields = list(
+            form.fields.filter(is_deleted=False).exclude(profile_field='').exclude(profile_field__isnull=True)
+        )
+        if not profile_fields:
+            return managed_ids, overrides, errors
+        managed_ids = {f.id for f in profile_fields}
+
+        request = self.context.get('request')
+        user = request.user if request and request.user and request.user.is_authenticated else None
+        if user is None:
+            for f in profile_fields:
+                errors.append(FieldError(
+                    code='PROFILE_FIELD_REQUIRES_LOGIN', field_id=f.id, label=f.label,
+                    message=f"'{f.label}' is filled in from your profile. Please log in to continue.",
+                    rule='profileAutofill',
+                ))
+            return managed_ids, overrides, errors
+
+        for f in profile_fields:
+            getter = PROFILE_FIELD_GETTERS.get(f.profile_field)
+            value = getter(user) if getter else None
+            if value in (None, ''):
+                if f.is_required:
+                    errors.append(FieldError(
+                        code='PROFILE_FIELD_MISSING', field_id=f.id, label=f.label,
+                        message=f"Your profile is missing '{f.label}'. Please update your profile before registering.",
+                        rule='profileAutofill',
+                    ))
+                continue
+            overrides[f.id] = value
+        return managed_ids, overrides, errors
+
+    @staticmethod
+    def _merge_answer_overrides(raw_answers, managed_ids, overrides):
+        """Strip any client-supplied answer for a profile-managed field id
+        (whether or not it resolved to a value), then append the
+        server-resolved overrides - same wire shape either input takes (a
+        dict, or the normal ``[{"field": id, "value": v}, ...]`` list)."""
+        if not managed_ids:
+            return raw_answers
+        managed_str_ids = {str(fid) for fid in managed_ids}
+        if isinstance(raw_answers, dict):
+            merged = {k: v for k, v in raw_answers.items() if str(k) not in managed_str_ids}
+            merged.update({str(fid): val for fid, val in overrides.items()})
+            return merged
+        merged = [
+            item for item in (raw_answers or [])
+            if not (isinstance(item, dict) and str(item.get('field', item.get('field_id'))) in managed_str_ids)
+        ]
+        merged.extend({'field': fid, 'value': val} for fid, val in overrides.items())
+        return merged
 
     def validate(self, data):
         form = self._resolve_form(data)
@@ -556,9 +648,20 @@ class ResponseSerializer(serializers.ModelSerializer):
         if is_edit:
             existing = {a.field_id: a.value for a in self.instance.answers.all()}
 
+        managed_ids, overrides, profile_errors = self._resolve_profile_autofill(form, mode)
+        raw_answers = self._merge_answer_overrides(raw_answers, managed_ids, overrides)
+
         report = validate_submission(
             form, raw_answers, mode=mode, is_edit=is_edit, existing_answers=existing,
         )
+
+        if profile_errors:
+            # Replace the engine's generic REQUIRED/etc. error for these same
+            # field ids with our more actionable "update your profile" one,
+            # rather than surfacing both for the same field.
+            managed_ids = {e.field_id for e in profile_errors}
+            report.errors = [e for e in report.errors if e.field_id not in managed_ids]
+            report.errors.extend(profile_errors)
 
         if form.prevent_duplicate_email_answers and not report.errors:
             self._check_duplicate_emails(form, report)
@@ -598,7 +701,7 @@ class ResponseSerializer(serializers.ModelSerializer):
             validated_data['form_version'] = form.version
 
         # Deliberately does NOT fall back to a client-supplied `user` ID from
-        # request.data for anonymous callers — that was an IDOR letting anyone
+        # request.data for anonymous callers - that was an IDOR letting anyone
         # attribute a response to an arbitrary user by ID (hijacking their
         # single-submission response / consuming their response quota).
         # ResponseViewSet.create() already passes the correct `user` via

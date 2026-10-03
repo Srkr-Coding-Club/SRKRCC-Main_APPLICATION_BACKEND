@@ -50,6 +50,13 @@ existed — string / number / list / dict — so every downstream consumer (CSV
 dedupe, the DMC forms adapter, `FormAutomationService`, response export) keeps
 working.
 
+## Before the engine: profile auto-fill and round gating
+
+Two steps run in `ResponseSerializer.validate()` / `apps/forms/views.py` around the pipeline above:
+
+- **Profile auto-fill (strict mode only).** For every active field with `profile_field` set, the client-sent answer is discarded and the submitter's profile value is injected before step 1, so it then passes through coercion, type and rule checks like any other answer. Unresolvable fields produce `PROFILE_FIELD_REQUIRES_LOGIN` (anonymous) or `PROFILE_FIELD_MISSING` (required and blank on the profile); these replace any generic error the engine raised for the same field id.
+- **Hackathon round gate.** If the form is a hackathon round's `details_form`, `apps.hackathons.services.check_round_form_access` rejects anyone but the leader of a team shortlisted in that published round (`403 ROUND_FORM_RESTRICTED`) before validation runs.
+
 ## Strict vs. partial mode
 
 | Mode | Used by | Behaviour |

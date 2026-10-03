@@ -21,6 +21,11 @@ Plain-language definitions for terms used throughout these docs.
 | **Celery / Redis** | **Not currently used.** Referenced in older docs and in `.env.example` (`CELERY_BROKER_URL`, `REDIS_URL`) as a possible future upgrade, but no Celery worker or Redis instance is deployed or required today — see [architecture/tech-stack.md](architecture/tech-stack.md#background-jobs--caching-current-state). |
 | **Background thread** | The actual mechanism behind "async" work today (bulk emails, large exports): `apps/core/tasks.py::run_in_background` spawns a plain daemon `threading.Thread` — no task queue, no broker, no persistence across a process restart. |
 | **Cloudflare R2** | Where all uploaded files/images are stored, served via CDN. |
+| **Team leader** | The member who created a hackathon team (or was handed leadership). Only the leader can rename the team, change its problem statement and manage members. See [modules/hackathon.md](modules/hackathon.md). |
+| **Problem statement** | An admin-defined track/problem a hackathon team picks at registration; can be capped with `max_teams`. |
+| **Round / shortlisting** | A hackathon stage. Admins mark each team in a round *Shortlisted* or *Not shortlisted*; only shortlisted teams enter the next round. Results are hidden from teams until the round is published. |
+| **Details form** | A Form Builder form attached to a round to re-collect information from shortlisted teams' leaders. |
+| **Profile-bound field** | A form question with `profile_field` set — filled server-side from the submitter's profile instead of being answered. |
 
 ## Related Docs
 - [README.md](README.md) — start here

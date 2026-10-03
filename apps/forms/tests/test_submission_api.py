@@ -28,7 +28,7 @@ class SubmissionEndpointTests(APITestCase):
         self.foreign_field = add_field(self.other_form, FieldType.TEXT, label="Foreign", order=1)
         # Response attribution comes strictly from the authenticated caller now
         # (a client-supplied `user` ID in the body used to be trusted for
-        # anonymous requests — an IDOR that let anyone submit as any user ID).
+        # anonymous requests - an IDOR that let anyone submit as any user ID).
         self.client.force_authenticate(self.user)
 
     def _submit(self, answers, **extra):

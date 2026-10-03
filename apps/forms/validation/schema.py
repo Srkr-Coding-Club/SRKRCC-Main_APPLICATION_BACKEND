@@ -1,6 +1,6 @@
 """
 The canonical schema for ``FormField.validation_rules`` and
-``FormField.conditional_logic`` — plus the normalizers that turn whatever the
+``FormField.conditional_logic`` - plus the normalizers that turn whatever the
 frontend (or a legacy form) stored into that canonical shape.
 
 Design rules:
@@ -9,7 +9,7 @@ Design rules:
     so every existing form keeps working untouched.
   * Keys are camelCase (matching the frontend) so the eventual frontend/backend
     "merge" is additive.
-  * ``normalize_*`` never raises — it best-effort canonicalizes. Genuine
+  * ``normalize_*`` never raises - it best-effort canonicalizes. Genuine
     misconfiguration is reported by ``definition.validate_form_definition``.
 """
 
@@ -21,7 +21,7 @@ from apps.forms.models import FieldType
 
 
 # ---------------------------------------------------------------------------
-# validation_rules — which keys each field type accepts
+# validation_rules - which keys each field type accepts
 # ---------------------------------------------------------------------------
 
 # Keys every field type may carry.
@@ -213,7 +213,7 @@ def normalize_validation_rules(field_type: str, raw: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# conditional_logic — operators, actions, normalizer
+# conditional_logic - operators, actions, normalizer
 # ---------------------------------------------------------------------------
 
 CONDITIONAL_OPERATORS = frozenset({
@@ -234,7 +234,7 @@ CONDITIONAL_OPERATORS = frozenset({
 # Actions the backend actually enforces on submission validity.
 ENFORCED_ACTIONS = frozenset({"show", "hide", "require", "optional"})
 # Actions the schema accepts and stores but the backend does not act on yet
-# (pure frontend flow — skip to section, end the form, prefill, restrict options).
+# (pure frontend flow - skip to section, end the form, prefill, restrict options).
 DEFERRED_ACTIONS = frozenset({
     "skip", "skip_to_section", "end_form", "set_value", "restrict_options",
     "display_message",
@@ -283,7 +283,7 @@ def _normalize_rule_node(node: Any) -> dict[str, Any] | None:
             return None
         return {"logic": str(node.get("logic", "AND")).upper() or "AND", "rules": sub}
 
-    # Leaf rule — accept both {field, operator, value} and legacy {if, operator|equals, value}
+    # Leaf rule - accept both {field, operator, value} and legacy {if, operator|equals, value}
     ref_raw = node.get("field", node.get("if"))
     field_ref = _coerce_ref(ref_raw)
 

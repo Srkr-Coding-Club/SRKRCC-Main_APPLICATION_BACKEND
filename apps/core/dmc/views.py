@@ -104,7 +104,7 @@ def _serialize_dataset_def(d) -> dict:
 # ---------------------------------------------------------------------------
 
 class DatasetCatalogView(APIView):
-    """GET /api/admin/dmc/datasets/ — list all datasets accessible to the current user."""
+    """GET /api/admin/dmc/datasets/ - list all datasets accessible to the current user."""
     permission_classes = [DMCBasePermission]
 
     def get(self, request: Request) -> Response:

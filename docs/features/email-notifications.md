@@ -12,7 +12,7 @@ Manually emailing every registrant for every event would be unmanageable at any 
 flowchart LR
     A[Admin picks/edits a template] --> B[Chooses a smart filter\ne.g. 'registered for Event X']
     B --> C[Sends immediately or schedules]
-    C --> D[Resend / Brevo delivers email]
+    C --> D[Resend or Gmail SMTP delivers email]
 ```
 
 1. **Templates** — reusable email layouts (confirmation, reminder, results, custom announcement) so admins don't rewrite emails from scratch each time.
@@ -25,8 +25,9 @@ flowchart LR
 > The section above describes the target design. What's actually built and wired
 > up today, precisely:
 
-- **Sending**: Django's `EmailMultiAlternatives` (console backend in dev, SMTP in
-  production per `EMAIL_BACKEND`/`EMAIL_HOST`) — not yet Resend/Brevo.
+- **Sending**: Django's `EmailMultiAlternatives` through the provider chosen by
+  `EMAIL_PROVIDER`: console in development, **Resend** on staging, **Gmail SMTP** in
+  production. See [Email Providers](#email-providers) below.
 - **Templating**: `EmailTemplate` (`apps/core/models.py`) stores a subject +
   HTML/text body with `{{param}}` placeholders. Rendering
   (`EmailNotificationService.render_template`,
@@ -61,6 +62,56 @@ flowchart LR
 - **Not yet built**: smart filters beyond "the rows I selected," scheduled sends,
   and the automatic hackathon-results/role-change/blog-alert triggers listed below
   — those remain the target design, not current behavior.
+
+## Email Providers
+
+`EMAIL_PROVIDER` decides who delivers mail. The choice is resolved in
+`config/email_config.py` and exposed as the usual Django `EMAIL_*` settings, so every
+send in the app (`EmailMultiAlternatives`, `send_mail`, the bulk email jobs) uses it
+without any code change.
+
+| `EMAIL_PROVIDER` | Used for | Delivery | Variables |
+|---|---|---|---|
+| `console` | local development (default when `DEBUG=True`) | printed to the terminal | none |
+| `resend` | staging | Resend HTTPS API (`apps/core/email_backends.py`) | `RESEND_API_KEY`, `DEFAULT_FROM_EMAIL` |
+| `gmail` | production (default when `DEBUG=False`) | Gmail SMTP, `smtp.gmail.com:587` with TLS | `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` |
+
+Every provider also reads `FRONTEND_URL`, the public address of the frontend that
+links inside emails (password setup, form confirmations, hackathon invites) are built
+from. It defaults to `http://localhost:3000`, so it must be set on staging and production.
+A value other than the three above stops the app at startup with an error listing the valid ones.
+
+The old `EMAIL_BACKEND`, `EMAIL_HOST`, `EMAIL_PORT` and `EMAIL_USE_TLS` variables are no
+longer read. Templates for each environment live in `.env.example` (local),
+`.env.staging.example` and `.env.production.example`.
+
+**Resend (staging)**
+- Sends over HTTPS, so it works on hosts that block outbound SMTP. Standard library only, no extra dependency.
+- Resend limits each team to 2 requests per second. The backend spaces sends about 0.6 seconds apart and retries a rate-limited request (up to 3 times, honouring `Retry-After`), so a bulk job runs at roughly 1.5 emails per second.
+- Failures raise `ResendError` with Resend's reason. The API key is never included in an error message, an audit entry or a delivery record.
+- The sender must be on a domain verified at resend.com/domains. Until then use the sandbox sender `onboarding@resend.dev`, which can only deliver to the email address that owns the Resend account. Free-mailbox senders such as `@gmail.com` are rejected.
+
+**Gmail SMTP (production)**
+- Use a Google **app password** (turn on 2-Step Verification, then create one at myaccount.google.com/apppasswords). The normal account password does not work. The spaces Google displays in it are ignored.
+- Gmail replaces the From address with `EMAIL_HOST_USER` unless the sender is a verified "Send mail as" alias, so set `DEFAULT_FROM_EMAIL` to the same address.
+- Gmail caps sending at about 500 recipients per day on a free account and 2,000 on Google Workspace, which matters for large announcement emails.
+- It needs outbound access to port 587. Some hosts block SMTP, so confirm the production host allows it before relying on this.
+- Connections time out after 20 seconds so a stalled send cannot pin a web worker.
+
+**Startup checks.** `python manage.py check` reports misconfiguration instead of letting sends fail silently: `core.W001` Resend without an API key, `core.W002` Resend with a free-mailbox sender, `core.W003` Gmail without credentials, `core.W004` the console provider outside development, `core.W005` a real provider with a localhost `FRONTEND_URL`, and the informational `core.I001` when Gmail's From address differs from the account.
+
+**Trying a provider.** From a shell with the environment loaded:
+
+```
+python manage.py shell -c "from django.core.mail import send_mail; print(send_mail('Test', 'It works.', None, ['you@example.com']))"
+```
+
+It prints `1` when the provider accepted the message.
+
+## Hackathon Announcement Emails
+A hackathon announcement created with **Also email the audience** (or re-sent with `POST /api/hackathons/{slug}/announcements/{id}/notify/`) is emailed to every user in its audience through the same `EmailJob` / `EmailDelivery` engine (`AnnouncementService.notify` in `apps/hackathons/services.py`). Because the background job rebuilds each recipient's context from their profile, the announcement text is baked into a dedicated template named `hackathon_announcement_<id>` (only `first_name` and `portal_url` are parameters; `{{` / `}}` typed by the admin are neutralised). Dispatch happens after the transaction commits, on the `run_in_background` daemon thread. Publishing a round's results with `email: true` uses the same path for its shortlisted-teams announcement.
+
+**Team invites** send a single direct email to the invitee (`send_invite_email` in `apps/hackathons/services.py`, via `EmailNotificationService.send_email`) after the invite commits, also on a background thread. These are not tracked as `EmailJob`s; a send failure is logged and never affects the invite.
 
 ## Common Automatic Notifications
 

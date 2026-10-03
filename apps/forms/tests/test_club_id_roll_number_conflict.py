@@ -15,7 +15,7 @@ class ClubIdRollNumberConflictTests(APITestCase):
     UserAccountService.upsert_member() for the anonymous submitter (see
     apps/forms/views.py ResponseViewSet.create -> FormAutomationService.
     resolve_club_member). roll_number carries a DB-level unique constraint
-    (migration 0005) — an ordinary submitter who typos someone else's roll
+    (migration 0005) - an ordinary submitter who typos someone else's roll
     number must get back a clean 400, not an unhandled 500. Regression
     coverage for RollNumberConflictError in
     apps/accounts/services/user_account_service.py.

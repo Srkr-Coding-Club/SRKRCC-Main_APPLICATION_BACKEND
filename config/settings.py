@@ -4,6 +4,8 @@ import dj_database_url
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 
+from config.email_config import resolve_email_settings
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -203,9 +205,12 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/minute',
         'user': '1000/minute',
-        # Public form submission — anonymous-writable, so scope-limit it below
+        # Public form submission - anonymous-writable, so scope-limit it below
         # the global anon rate to blunt flooding of a single form.
         'form_submit': '20/minute',
+        # Hackathon teammate lookup by exact email - authenticated, but
+        # limited so it can't be used to enumerate which emails have accounts.
+        'hackathon_lookup': '30/minute',
     },
 }
 
@@ -247,7 +252,7 @@ CORS_EXPOSE_HEADERS = [
     'content-length',
 ]
 
-# Background jobs run on plain Python threads (apps/core/tasks.py), not Celery —
+# Background jobs run on plain Python threads (apps/core/tasks.py), not Celery -
 # no broker/worker process to configure.
 
 # SimpleJWT Authentication Lifetimes & Configuration
@@ -265,12 +270,21 @@ SIMPLE_JWT = {
     'USER_ID_CLAIM': 'user_id',
 }
 
-# Email Backend Configuration
-EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend' if DEBUG else 'django.core.mail.backends.smtp.EmailBackend')
-EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
-EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'SRKR Coding Club <noreply@srkrcc.in>')
+# Public URL of the frontend. Links inside emails (password setup, confirmations,
+# hackathon invites) are built from it.
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000').strip().rstrip('/')
+
+# Email: EMAIL_PROVIDER picks console (local), resend (staging) or gmail (production).
+# See config/email_config.py.
+_email = resolve_email_settings(os.environ, DEBUG)
+EMAIL_PROVIDER = _email['EMAIL_PROVIDER']
+EMAIL_BACKEND = _email['EMAIL_BACKEND']
+EMAIL_HOST = _email['EMAIL_HOST']
+EMAIL_PORT = _email['EMAIL_PORT']
+EMAIL_USE_TLS = _email['EMAIL_USE_TLS']
+EMAIL_HOST_USER = _email['EMAIL_HOST_USER']
+EMAIL_HOST_PASSWORD = _email['EMAIL_HOST_PASSWORD']
+EMAIL_TIMEOUT = _email['EMAIL_TIMEOUT']
+RESEND_API_KEY = _email['RESEND_API_KEY']
+DEFAULT_FROM_EMAIL = _email['DEFAULT_FROM_EMAIL']
 

@@ -1,5 +1,5 @@
 """
-Per-field-type validators — the "does this value make sense for a field of this
+Per-field-type validators - the "does this value make sense for a field of this
 type at all" layer, independent of any configured ``validation_rules``.
 
 Each validator receives ``(field, value)`` where ``value`` has already been
@@ -7,7 +7,7 @@ coerced by ``values.coerce_value`` and is known non-empty, and returns a list of
 ``FieldError``. Registered in ``FIELD_VALIDATORS`` keyed by ``FieldType``.
 
 This is where option-membership for choice fields, matrix row/column checks and
-the RATING / LINEAR_SCALE range live — things that come from the field's own
+the RATING / LINEAR_SCALE range live - things that come from the field's own
 ``options`` / ``rows`` / ``min_value`` / ``max_value`` rather than
 ``validation_rules``.
 """
@@ -91,7 +91,7 @@ def _validate_number(field, value: Decimal) -> list[FieldError]:
 
 
 def _validate_scale(field, value: Decimal) -> list[FieldError]:
-    """RATING / LINEAR_SCALE — range comes from the model columns min_value/max_value."""
+    """RATING / LINEAR_SCALE - range comes from the model columns min_value/max_value."""
     out: list[FieldError] = []
     lo = field.min_value if field.min_value is not None else 1
     hi = field.max_value if field.max_value is not None else 5

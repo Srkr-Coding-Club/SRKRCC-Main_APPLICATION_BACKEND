@@ -52,7 +52,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
 class UserListView(generics.ListCreateAPIView):
     """
-    Admin/club-lead member directory. Not for public consumption — returns
+    Admin/club-lead member directory. Not for public consumption - returns
     every member's email, phone, roll number, branch, and social links.
     """
     queryset = User.objects.all().order_by('-created_at')
@@ -73,7 +73,7 @@ class UserListView(generics.ListCreateAPIView):
 
 class UserDetailView(generics.RetrieveUpdateAPIView):
     """
-    PATCH /auth/users/{id}/ — backs the admin Users tab's role dropdown and
+    PATCH /auth/users/{id}/ - backs the admin Users tab's role dropdown and
     membership-status control. `role` and `membership_status` are writable
     (see UserRoleUpdateSerializer). Elevation to ADMIN/CLUB_LEAD via `role` is
     restricted to existing ADMINs, since IsAdminOrClubLead alone would let a
@@ -94,7 +94,7 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
         if target.id == requester.id:
             raise PermissionDenied("You cannot change your own role.")
 
-        # Escalation check applies only when `role` is actually being changed —
+        # Escalation check applies only when `role` is actually being changed -
         # scoped to serializer.validated_data (not target.role) so that a
         # membership_status-only PATCH on a user who already holds an elevated
         # role doesn't get wrongly blocked as a "role escalation".
@@ -105,7 +105,7 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
                 raise PermissionDenied("Only an Admin can assign the Admin or Club Lead role.")
             # AFFILIATE always has a club_id. This endpoint doesn't accept
             # club_id in its own payload (UserRoleUpdateSerializer only writes
-            # role/membership_status) — the admin must assign one first via
+            # role/membership_status) - the admin must assign one first via
             # the existing Club ID tooling, then set the role.
             if new_role == 'AFFILIATE' and not target.club_id:
                 raise ValidationError({

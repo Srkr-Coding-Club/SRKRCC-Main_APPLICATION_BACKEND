@@ -66,7 +66,7 @@ DEFAULT_USERS = [
 
 def seed_users():
     print("=" * 60)
-    print("SRKRCC Platform — Default Users & Credentials Seeder")
+    print("SRKRCC Platform - Default Users & Credentials Seeder")
     print("=" * 60)
 
     for user_data in DEFAULT_USERS:

@@ -11,7 +11,7 @@ The exact technologies used to build and run the platform, and why each was pick
 | **Background jobs** | Plain Python `threading.Thread` (`apps/core/tasks.py::run_in_background`) | Runs bulk email sends and large DMC exports off the request/response cycle. Not a task queue — no broker, no retry, no cross-process persistence. See note below. |
 | **File Storage** | Cloudflare R2 (S3-compatible) | Stores images, PDFs, resumes, posters. Served via CDN for fast loading. |
 | **Authentication** | Django AllAuth, JWT | Handles login/signup and issues tokens the frontend uses to call the API securely. |
-| **Email Service** | Resend / Brevo | Sends transactional emails (confirmations, reminders, results) and bulk notifications. |
+| **Email Service** | Resend (staging), Gmail SMTP (production) | Sends transactional emails (confirmations, reminders, results) and bulk notifications. Chosen per environment with `EMAIL_PROVIDER`, see [email-notifications.md](../features/email-notifications.md#email-providers). |
 | **Analytics (optional)** | PostHog | Tracks page views and engagement, feeds the Analytics & Insights dashboards. |
 
 ## How a request flows through the stack
@@ -20,7 +20,7 @@ The exact technologies used to build and run the platform, and why each was pick
 2. The page calls the **Django REST API** to fetch data (e.g. hackathon details, registration form).
 3. Django checks **Role Based Access** rules, reads/writes **PostgreSQL**, and reads files from **Cloudflare R2** if needed.
 4. If an action needs to happen off the request (e.g. "email everyone who registered"), the view starts a **background thread** and returns immediately — see the note below. "Auto-hide this event page after its end date" isn't a live background job at all: the next read of that item re-checks its timestamps and flips its status if needed (see [../features/scheduling.md](../features/scheduling.md)).
-5. Emails go out through Django's `EmailMultiAlternatives` (console backend in dev; SMTP in production — Resend/Brevo integration is planned, not yet wired up); analytics events are captured by **PostHog** (if enabled).
+5. Emails go out through Django's `EmailMultiAlternatives` using the provider named by `EMAIL_PROVIDER` (console in dev, Resend on staging, Gmail SMTP in production); analytics events are captured by **PostHog** (if enabled).
 
 ## Background Jobs & Caching (current state)
 

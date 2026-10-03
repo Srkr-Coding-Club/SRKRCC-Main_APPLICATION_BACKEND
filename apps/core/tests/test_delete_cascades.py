@@ -23,7 +23,7 @@ from apps.events.models import Event
 from apps.forms.models import (
     Answer, BulkIngestSession, FieldType, Form, FormField, FormStatus, MemberNote, Response,
 )
-from apps.hackathons.models import Hackathon, Submission as HackSubmission, Team
+from apps.hackathons.models import Hackathon, Submission as HackSubmission, Team, TeamMember
 from apps.accounts.models import PasswordSetupToken
 
 User = get_user_model()
@@ -78,7 +78,8 @@ class _Fixture(TestCase):
             start_date=_later(), end_date=_later(8),
         )
         self.team = Team.objects.create(hackathon=self.hackathon, name='T', leader=self.member)
-        self.team.members.add(self.teammate)
+        TeamMember.objects.create(team=self.team, user=self.member, role='LEADER')
+        TeamMember.objects.create(team=self.team, user=self.teammate)
         self.hack_submission = HackSubmission.objects.create(
             team=self.team, project_title='P', description='d', repo_url='https://github.com/x/y',
         )

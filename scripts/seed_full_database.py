@@ -19,7 +19,7 @@ from apps.audit.models import AuditLog
 
 def seed_database():
     print("=" * 70)
-    print("SRKRCC Platform — Master Database Seeder (Live DB Population)")
+    print("SRKRCC Platform - Master Database Seeder (Live DB Population)")
     print("=" * 70)
 
     # 1. Seed Core Platform Users

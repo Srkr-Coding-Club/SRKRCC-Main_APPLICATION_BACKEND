@@ -15,7 +15,7 @@ def _dates():
 
 
 class HackathonsApiTests(TestCase):
-    """POST/GET /api/hackathons/ — admin panel hackathon creation + form linking + metrics."""
+    """POST/GET /api/hackathons/ - admin panel hackathon creation + form linking + metrics."""
 
     def setUp(self):
         self.client = APIClient()

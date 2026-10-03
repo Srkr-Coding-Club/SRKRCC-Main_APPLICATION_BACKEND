@@ -12,7 +12,7 @@ itself conditionally shown), reusing the same cycle guard the original
 Operator evaluation is intentionally forgiving with types: the trigger value is
 whatever was submitted (already coerced where possible); comparisons fall back to
 string comparison when a numeric/date interpretation is not possible, and an
-un-interpretable comparison is simply ``False`` rather than an error — a
+un-interpretable comparison is simply ``False`` rather than an error - a
 misconfigured rule must never break a submission.
 """
 
@@ -166,8 +166,8 @@ _EMPTY_OK_OPERATORS = frozenset({"is_empty", "is_not_empty"})
 def _evaluate_node(node: dict[str, Any], values: dict[int, Any]) -> bool | None:
     """
     Evaluate one node. Returns:
-      True / False  — the node's truth value
-      None          — the node can't be evaluated (unresolved field ref) and
+      True / False  - the node's truth value
+      None          - the node can't be evaluated (unresolved field ref) and
                       should be ignored by its parent group.
     """
     if "rules" in node:
@@ -180,10 +180,10 @@ def _evaluate_node(node: dict[str, Any], values: dict[int, Any]) -> bool | None:
 
     field_ref = node.get("field")
     if field_ref is None:
-        return None  # broken {"if": "parent"} placeholder — ignore
+        return None  # broken {"if": "parent"} placeholder - ignore
     left = values.get(int(field_ref))
     operator = node.get("operator", "equals")
-    # A rule whose trigger field is still blank stays dormant — a `show` /
+    # A rule whose trigger field is still blank stays dormant - a `show` /
     # `require` condition should only fire once the user has actually answered
     # that field, not on first render. `is_empty` / `is_not_empty` are the
     # exceptions: they are explicitly about the blank state.
@@ -224,8 +224,8 @@ class Layout:
 
 def compute_layout(active_fields, values: dict[int, Any]) -> Layout:
     """
-    ``active_fields`` — the form's non-deleted FormField rows.
-    ``values``        — {field_id: submitted value} (coerced where possible).
+    ``active_fields`` - the form's non-deleted FormField rows.
+    ``values``        - {field_id: submitted value} (coerced where possible).
 
     Bounded fixpoint: at most ``len(fields) + 1`` passes so a cyclic dependency
     (A shows if B, B shows if A) terminates.
@@ -295,7 +295,7 @@ def _has_show_rule(norm: dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Backward-compat shims — the module-level names the rest of the codebase
+# Backward-compat shims - the module-level names the rest of the codebase
 # already imports from apps.forms.serializers.
 # ---------------------------------------------------------------------------
 

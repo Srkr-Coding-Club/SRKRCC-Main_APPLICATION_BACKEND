@@ -263,14 +263,14 @@ class UniversalBackupService:
         # Strict 50% Rule & Required Fields (AGENTS.md): structured domain import
         # is prohibited unless required fields are satisfied AND schema match
         # confidence is >= 50%. Per-row validity (checked by each importer's
-        # commit()) only screens individual rows for data errors — it says
+        # commit()) only screens individual rows for data errors - it says
         # nothing about whether the overall column mapping was ever adequate,
         # so this attempt-level invariant must be enforced here, once, for
         # every domain. UNKNOWN_RAW is exempt: the Raw Vault enforces zero
         # schema constraints by design and never reaches this commit path.
         if not (import_attempt.required_fields_satisfied and import_attempt.schema_confidence_percentage >= Decimal('50.00')):
             raise BackupError(
-                "This import cannot be committed — required fields are missing or the column "
+                "This import cannot be committed because required fields are missing or the column "
                 "mapping matches less than 50% of the target schema. Adjust the mapping and "
                 "generate a new preview, or save this backup to the Raw Vault instead."
             )

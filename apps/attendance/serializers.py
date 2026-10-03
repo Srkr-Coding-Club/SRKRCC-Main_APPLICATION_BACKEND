@@ -18,7 +18,7 @@ class AttendanceSessionSerializer(serializers.ModelSerializer):
 class AttendanceBadgeSerializer(serializers.ModelSerializer):
     # `response` is a OneToOneField; expose the plain id rather than nesting
     # the full Response representation here (thin serializer, per this
-    # codebase's convention — see apps/forms/serializers.py's ResponseSerializer).
+    # codebase's convention - see apps/forms/serializers.py's ResponseSerializer).
     response_id = serializers.IntegerField(read_only=True)
 
     class Meta:

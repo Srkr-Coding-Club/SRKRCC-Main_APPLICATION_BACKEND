@@ -6,7 +6,7 @@ lenient, PUBLISHED/SCHEDULED must be fully configured.
 
 Regression coverage for a bug where the Form Builder's own UI told admins to
 "enable Club ID generation, save once, then come back to map the email field"
-— but the very first Save Draft was rejected with 400, because the backend
+- but the very first Save Draft was rejected with 400, because the backend
 required the mapping to already exist regardless of target status. Same class
 of bug for confirmation_email_template and attendance_start_date.
 """

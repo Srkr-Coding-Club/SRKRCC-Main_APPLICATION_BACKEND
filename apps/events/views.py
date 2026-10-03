@@ -28,7 +28,7 @@ class EventViewSet(viewsets.ModelViewSet):
             return queryset
 
         # Public/anonymous viewers only ever see events inside their visibility
-        # window — admins still see everything (including hidden ones) so they
+        # window - admins still see everything (including hidden ones) so they
         # can find and re-show them. visible_from/visible_until are nullable:
         # a null bound means "no restriction on that side".
         now = timezone.now()
@@ -49,7 +49,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='close')
     def close(self, request, slug=None):
-        """POST /api/events/{slug}/close/ — marks the event CLOSED (hides the Register CTA)."""
+        """POST /api/events/{slug}/close/ - marks the event CLOSED (hides the Register CTA)."""
         event = self.get_object()
         event.status = EventStatus.CLOSED
         event.save(update_fields=['status', 'updated_at'])
@@ -62,7 +62,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='reopen')
     def reopen(self, request, slug=None):
-        """POST /api/events/{slug}/reopen/ — reverts a CLOSED event back to LIVE."""
+        """POST /api/events/{slug}/reopen/ - reverts a CLOSED event back to LIVE."""
         event = self.get_object()
         event.status = EventStatus.LIVE
         event.save(update_fields=['status', 'updated_at'])
@@ -76,12 +76,12 @@ class EventViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='hide')
     def hide(self, request, slug=None):
         """
-        POST /api/events/{slug}/hide/ — removes the event from the public
+        POST /api/events/{slug}/hide/ - removes the event from the public
         list/detail entirely (get_queryset above excludes it for non-admins).
         Distinct from `close`: closing only stops registration but keeps the
         event listed; hiding is for an event that shouldn't be publicly
         findable at all (e.g. still being drafted, or fully retired).
-        Implemented via visible_until rather than a new field — it already
+        Implemented via visible_until rather than a new field - it already
         existed on the model for exactly this and was previously unused.
         """
         event = self.get_object()
@@ -95,7 +95,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='show')
     def show(self, request, slug=None):
-        """POST /api/events/{slug}/show/ — undoes `hide`, clearing visible_until."""
+        """POST /api/events/{slug}/show/ - undoes `hide`, clearing visible_until."""
         event = self.get_object()
         event.visible_until = None
         event.save(update_fields=['visible_until', 'updated_at'])

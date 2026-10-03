@@ -1,7 +1,7 @@
 """
-dmc/adapters/events.py — Event Registrations adapter (via linked form responses)
-dmc/adapters/codequest.py — CodeQuest submissions adapter
-dmc/adapters/careers.py — Career applications & job listings adapters
+dmc/adapters/events.py - Event Registrations adapter (via linked form responses)
+dmc/adapters/codequest.py - CodeQuest submissions adapter
+dmc/adapters/careers.py - Career applications & job listings adapters
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from apps.codequest.models import Submission as CQSubmission, Difficulty as CQDi
 from apps.career.models import JobListing, JobType
 
 # ============================================================================
-# Events — EventRegistrationsAdapter
+# Events - EventRegistrationsAdapter
 # 1 row = 1 event registration (Response tied to an event's registration_form)
 # ============================================================================
 
@@ -100,7 +100,7 @@ class EventRegistrationsAdapter(BaseDatasetAdapter):
 
 
 # ============================================================================
-# CodeQuest — CodequestSubmissionsAdapter
+# CodeQuest - CodequestSubmissionsAdapter
 # 1 row = 1 codequest.Submission
 # ============================================================================
 
@@ -175,7 +175,7 @@ class CodequestSubmissionsAdapter(BaseDatasetAdapter):
 
 
 # ============================================================================
-# Careers — CareerApplicationsAdapter & CareerJobsAdapter
+# Careers - CareerApplicationsAdapter & CareerJobsAdapter
 # ============================================================================
 
 CAREER_APP_COLS: list[ColumnDefinition] = [

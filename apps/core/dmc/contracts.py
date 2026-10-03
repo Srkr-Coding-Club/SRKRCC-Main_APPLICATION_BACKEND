@@ -4,7 +4,7 @@ dmc/contracts.py
 Formal dataclass contracts that form the central data exchange specification
 between the Dataset Registry, Dataset Adapters, Views, and ExportService.
 
-These are plain Python dataclasses — no Django models, no serializers.
+These are plain Python dataclasses - no Django models, no serializers.
 They define what every layer of the DMC must produce and accept.
 """
 
@@ -38,7 +38,7 @@ class CanonicalValue:
 
     States:
         value          → Valid data; rendered via type-specific formatter.
-        not_applicable → Field does not exist for this dataset/entity (renders as '—').
+        not_applicable → Field does not exist for this dataset/entity (renders as '-').
         empty          → Field exists but was left blank by the respondent (renders as '(empty)').
         unknown        → Expected relation/data could not be resolved (renders as '[Unavailable]').
     """
@@ -103,7 +103,7 @@ class DatasetCapabilities:
 
 
 # ---------------------------------------------------------------------------
-# Dataset Definition — registered in the DATASET_REGISTRY
+# Dataset Definition - registered in the DATASET_REGISTRY
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -181,5 +181,5 @@ class ExportRequest:
     column_scope: ExportColumnScope = "visible"
     selected_record_ids: list[str] = field(default_factory=list)
     visible_column_keys: list[str] = field(default_factory=list)
-    # Query snapshot — must be captured server-side at export initiation
+    # Query snapshot - must be captured server-side at export initiation
     query_snapshot: QueryRequest | None = None

@@ -214,3 +214,10 @@ Machine-readable `code` values on each `FieldError` are the constants in
 `apps/forms/validation/codes.py` — e.g. `REQUIRED`, `INVALID_EMAIL`, `MIN_LENGTH`,
 `OPTION_NOT_ALLOWED`, `MIN_SELECTIONS`, `DATE_TOO_EARLY`, `FILE_TOO_LARGE`,
 `CROSS_FIELD_MISMATCH`, `UNKNOWN_FIELD`, `DELETED_FIELD`, `DUPLICATE_ANSWER`.
+
+Profile-bound fields (`FormField.profile_field`) add two codes:
+
+| Code | When |
+|---|---|
+| `PROFILE_FIELD_REQUIRES_LOGIN` | The form has profile-bound fields and the submitter isn't logged in |
+| `PROFILE_FIELD_MISSING` | A required profile-bound field has no value on the submitter's profile — the user must update their profile, since the field can't be typed in |

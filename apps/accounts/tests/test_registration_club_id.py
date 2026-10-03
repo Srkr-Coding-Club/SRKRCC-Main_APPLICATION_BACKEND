@@ -6,7 +6,7 @@ User = get_user_model()
 
 
 class RegistrationClubIdTests(TestCase):
-    """POST /api/auth/register/ — optional 'Affiliate ID' (club_id) field.
+    """POST /api/auth/register/ - optional 'Affiliate ID' (club_id) field.
 
     A club representative sometimes hands a prospective member their Club ID
     before they ever touch the site. Signup should accept it if given, and

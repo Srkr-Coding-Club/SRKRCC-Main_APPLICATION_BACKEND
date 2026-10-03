@@ -41,7 +41,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     default_error_messages = {
         # simplejwt's stock wording ("No active account found with the given
         # credentials") reads like a system fault. The sign-in form shows this
-        # verbatim, so keep it actionable — and deliberately ambiguous between
+        # verbatim, so keep it actionable - and deliberately ambiguous between
         # "wrong email" and "wrong password" so it can't be used to enumerate
         # which emails are registered.
         'no_active_account': 'Incorrect email or password. Please check your details and try again.',
@@ -110,7 +110,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class UserRoleUpdateSerializer(serializers.ModelSerializer):
     """
-    Narrow PATCH surface for the admin Users tab — `role`, `membership_status`,
+    Narrow PATCH surface for the admin Users tab - `role`, `membership_status`,
     and `roll_number` are writable here (everything else on User stays
     read-only). Cross-role escalation rules (ADMIN-vs-CLUB_LEAD) apply only to
     `role` and are enforced in the view (UserDetailView.perform_update), since
@@ -120,7 +120,7 @@ class UserRoleUpdateSerializer(serializers.ModelSerializer):
 
     `roll_number` is deliberately writable here but NOT on the self-service
     PATCH /api/auth/me/ path once a member has already set it (see
-    UserProfileDetailSerializer.validate_roll_number) — a member can add
+    UserProfileDetailSerializer.validate_roll_number) - a member can add
     their own roll number once, but only an admin can add/correct/clear it
     after that.
     """
@@ -174,7 +174,7 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
             'registered_events', 'badges'
         ]
         # `email` is the account's identity (USERNAME_FIELD, login identifier,
-        # and what every notification is addressed to) — it must never change
+        # and what every notification is addressed to) - it must never change
         # through this self-service endpoint. It used to be missing from this
         # list, meaning a user could silently PATCH their own email here with
         # no validation and no re-verification step.
@@ -188,7 +188,7 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
     # `first_name`/`last_name`/`roll_number`/`phone_number` are writable
     # through this self-service PATCH /api/auth/me/ endpoint (only
     # id/role/created_at/club_id/email are read-only above), so they must be
-    # held to the exact same rules RegisterSerializer enforces at signup —
+    # held to the exact same rules RegisterSerializer enforces at signup -
     # otherwise a user could PATCH their own name to contain digits, or their
     # roll number to a malformed value, bypassing every signup-time check.
     # These reuse the same shared helpers/constants from
@@ -212,15 +212,15 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"{label} must be at most {NAME_MAX_LENGTH} characters long.")
         if not NAME_REGEX.match(name):
             raise serializers.ValidationError(
-                f"{label} may only contain letters, spaces, hyphens and apostrophes — no digits or symbols."
+                f"{label} may only contain letters, spaces, hyphens and apostrophes, with no digits or symbols."
             )
         return name
 
     def validate_roll_number(self, value):
-        # Optional field — a user can leave it unset at signup and fill it in
+        # Optional field - a user can leave it unset at signup and fill it in
         # later from their profile (the model column is null=True precisely
         # for this). But once they've self-set it, this self-service endpoint
-        # locks it — only an admin (via UserRoleUpdateSerializer / the Users
+        # locks it - only an admin (via UserRoleUpdateSerializer / the Users
         # tab) can change or clear it after that, so a member can't edit away
         # their own official record once volunteers/attendance have started
         # relying on it.
@@ -242,7 +242,7 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Roll number must be alphanumeric only (letters A-Z and digits 0-9), e.g. 21B91A0501."
             )
-        # Exclude the current user's own row — otherwise re-saving an
+        # Exclude the current user's own row - otherwise re-saving an
         # unchanged roll number would be rejected as "already taken by
         # themselves."
         existing = User.objects.filter(roll_number__iexact=roll)
@@ -256,7 +256,7 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
         return roll
 
     def validate_phone_number(self, value):
-        # blank/null is allowed (the model field is optional) — a user can
+        # blank/null is allowed (the model field is optional) - a user can
         # still clear a previously-set phone number.
         if not value or not value.strip():
             return ""
@@ -320,7 +320,7 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
                     'badgeBg': 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400' if form.status == 'PUBLISHED' else 'bg-orange-50 dark:bg-orange-950/40 text-[#FF7A00]',
                     # Drives the "View QR Badge" action on the profile page's
                     # registered-events list (Profile → Registered Events →
-                    # select event) — the attendance QR pass moved here from
+                    # select event) - the attendance QR pass moved here from
                     # the form page, so the profile needs to know which
                     # registrations actually have a badge to show.
                     'attendance_enabled': bool(form.attendance_enabled),
@@ -373,7 +373,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     page as `email.split('@')[0]`, which meant two people with the same local
     part at different domains ("a@srkr.ac.in", "a@gmail.com") collided on the
     unique username column and the second signup failed with "A user with that
-    username already exists." — an error naming a field the user never filled
+    username already exists." - an error naming a field the user never filled
     in. It is now derived server-side and de-duplicated.
 
     Field rules live in apps/accounts/validators.py and are mirrored by the
@@ -395,30 +395,30 @@ class RegisterSerializer(serializers.ModelSerializer):
     username = serializers.CharField(read_only=True)
 
     # This endpoint is called by two things: the public signup form (which
-    # only ever sends AFFILIATE or NON_AFFILIATE — its "are you an affiliate?"
+    # only ever sends AFFILIATE or NON_AFFILIATE - its "are you an affiliate?"
     # checkbox) and the admin's "Create New User" modal (which can also
-    # directly create a VOLUNTEER, same as it could before this role split —
+    # directly create a VOLUNTEER, same as it could before this role split -
     # that capability isn't being removed here, just kept working under the
     # new names). JUDGE/CLUB_LEAD/ADMIN can only be granted by an existing
-    # admin via the Users-tab PATCH — role was previously unrestricted here,
+    # admin via the Users-tab PATCH - role was previously unrestricted here,
     # letting an anonymous POST with {"role": "ADMIN"} create a full admin
     # account. VOLUNTEER must go through the same gate: this endpoint has no
     # permission_classes restriction (AllowAny, since it's also the public
     # signup form), so without a caller check here, anyone could self-grant
-    # VOLUNTEER — which is enough to reach the attendance-scan endpoint
-    # (apps.attendance.permissions.IsVolunteerOrAbove) — via a direct API call.
+    # VOLUNTEER - which is enough to reach the attendance-scan endpoint
+    # (apps.attendance.permissions.IsVolunteerOrAbove) - via a direct API call.
     SELF_REGISTERABLE_ROLES = {'AFFILIATE', 'NON_AFFILIATE'}
     ADMIN_GRANTABLE_ROLES = SELF_REGISTERABLE_ROLES | {'VOLUNTEER'}
     role = serializers.CharField(required=False, allow_blank=True)
 
     # Branches offered on the signup form, kept in sync with the <select> in
-    # src/app/signup/page.tsx — free-text branches would poison the admin
+    # src/app/signup/page.tsx - free-text branches would poison the admin
     # directory's branch filter and the per-branch analytics.
     ALLOWED_BRANCHES = {'CSE', 'IT', 'AIML', 'AIDS', 'CIC', 'CSBS', 'CSIT', 'CSD', 'ECE', 'EEE', 'MECH', 'CIVIL'}
     MIN_YEAR = 1
     MAX_YEAR = 4
 
-    # Optional "Affiliate ID" on the signup form — a club representative sometimes
+    # Optional "Affiliate ID" on the signup form - a club representative sometimes
     # hands a prospective member their Club ID before they ever touch the site
     # (e.g. at an offline recruitment drive). If they have one, it's attached to
     # the account they create here; if not, this stays blank and club_id is
@@ -461,12 +461,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"{label} must be at most {NAME_MAX_LENGTH} characters long.")
         if not NAME_REGEX.match(name):
             raise serializers.ValidationError(
-                f"{label} may only contain letters, spaces, hyphens and apostrophes — no digits or symbols."
+                f"{label} may only contain letters, spaces, hyphens and apostrophes, with no digits or symbols."
             )
         return name
 
     def validate_roll_number(self, value):
-        # Optional at signup — a member can add it later from their profile.
+        # Optional at signup - a member can add it later from their profile.
         roll = normalize_roll_number(value)
         if not roll:
             return None
@@ -500,7 +500,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return int(value)
 
     def validate_phone_number(self, value):
-        # Optional at signup, same as roll_number — a member can add it later
+        # Optional at signup, same as roll_number - a member can add it later
         # from their profile (UserProfileDetailSerializer.validate_phone_number
         # applies the identical rule there).
         if not value or not value.strip():
@@ -556,7 +556,7 @@ class RegisterSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'password': list(ex.messages)})
 
         # AFFILIATE always has a club_id (validate_club_id() above has already
-        # normalized it to canonical form, or to None if blank/omitted — this
+        # normalized it to canonical form, or to None if blank/omitted - this
         # runs after both validate_role() and validate_club_id() since DRF
         # calls per-field validators before this object-level one).
         if attrs.get('role') == 'AFFILIATE' and not attrs.get('club_id'):
@@ -572,7 +572,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         Builds a unique username from the email local part.
 
         Collisions are resolved with a numeric suffix rather than surfaced to the
-        applicant — username is an internal artifact of AbstractUser here, not
+        applicant - username is an internal artifact of AbstractUser here, not
         something the signup form ever asks for.
         """
         base = re.sub(r'[^a-z0-9._-]', '', email.split('@')[0].lower()) or 'member'
@@ -594,7 +594,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         username = self._derive_username(email)
         try:
             # atomic() so an IntegrityError rolls back to this savepoint rather
-            # than leaving the outer transaction aborted — without it, the
+            # than leaving the outer transaction aborted - without it, the
             # exists() lookups in the except block below would themselves fail
             # with "current transaction is aborted" on Postgres.
             with transaction.atomic():
@@ -613,7 +613,7 @@ class RegisterSerializer(serializers.ModelSerializer):
                 )
         except IntegrityError:
             # Two requests can both pass the pre-save exists() checks above and
-            # then race each other to INSERT — the unique DB constraints are the
+            # then race each other to INSERT - the unique DB constraints are the
             # real backstop, this just turns that race into the same friendly,
             # field-anchored error the normal path returns instead of a 500.
             if email and User.objects.filter(email__iexact=email).exists():

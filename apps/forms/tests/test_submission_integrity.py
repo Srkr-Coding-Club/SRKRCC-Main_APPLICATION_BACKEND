@@ -10,7 +10,7 @@ User = get_user_model()
 
 class EditInPlaceTests(APITestCase):
     """PATCH /api/forms/submissions/{id}/ must update the same row, even when
-    the form allows multiple responses — it must never create a new one."""
+    the form allows multiple responses - it must never create a new one."""
 
     def setUp(self):
         cache.clear()

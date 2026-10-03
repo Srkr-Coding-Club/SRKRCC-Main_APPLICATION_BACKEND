@@ -1,4 +1,4 @@
-"""Small builders for form-validation tests — no external factory lib."""
+"""Small builders for form-validation tests - no external factory lib."""
 
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ def make_form(*, status=FormStatus.PUBLISHED, **kwargs) -> Form:
 
 def add_field(form: Form, ftype=FieldType.TEXT, *, label=None, required=False,
               options=None, rows=None, order=None, conditional_logic=None,
-              validation_rules=None, min_value=None, max_value=None) -> FormField:
+              validation_rules=None, min_value=None, max_value=None,
+              profile_field=None) -> FormField:
     if order is None:
         order = form.fields.count() + 1
     return FormField.objects.create(
@@ -35,6 +36,7 @@ def add_field(form: Form, ftype=FieldType.TEXT, *, label=None, required=False,
         validation_rules=validation_rules or {},
         min_value=min_value,
         max_value=max_value,
+        profile_field=profile_field,
     )
 
 

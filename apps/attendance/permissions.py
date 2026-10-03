@@ -15,7 +15,7 @@ class IsVolunteerOrAbove(permissions.BasePermission):
     - Superusers / Django staff
     - Assigned the 'ADMIN', 'CLUB_LEAD', or 'VOLUNTEER' role
 
-    Intentionally broader than apps.core.permissions.IsAdminOrClubLead — used
+    Intentionally broader than apps.core.permissions.IsAdminOrClubLead - used
     only for the attendance scan endpoint, since event volunteers need to
     scan registrant QR codes without any other admin capability.
     """

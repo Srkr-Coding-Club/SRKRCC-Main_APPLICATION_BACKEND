@@ -9,8 +9,8 @@ Responsibilities:
   - get_record()       → Single canonical record for the detail drawer
   - stream_records()   → Generator of records for ExportService consumption
 
-Adapters MUST NOT handle CSV/XLSX/JSON formatting — that belongs in ExportService.
-Adapters MUST NOT store/send sensitive columns — permission filtering is applied
+Adapters MUST NOT handle CSV/XLSX/JSON formatting - that belongs in ExportService.
+Adapters MUST NOT store/send sensitive columns - permission filtering is applied
   by the calling view layer before returning anything to the client.
 """
 
@@ -38,7 +38,7 @@ class BaseDatasetAdapter(ABC):
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
         """
         Returns:
-            (columns, filters) — column and filter definitions for this dataset.
+            (columns, filters) - column and filter definitions for this dataset.
 
         Implementations must respect the caller's `user` for any column-level
         permission checks that are dataset-specific (e.g. hiding an internal note
@@ -116,7 +116,7 @@ class BaseDatasetAdapter(ABC):
             return CanonicalValue(
                 state="not_applicable",
                 value=None,
-                display_value="—",
+                display_value="-",
                 type=col_type,
                 source=None,
             )

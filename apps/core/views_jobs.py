@@ -1,8 +1,8 @@
 """
 apps/core/views_jobs.py
 ------------------------
-Unified read-only view over every "bulk job" type in the app — bulk email
-campaigns, DMC data exports, and CSV/backup member imports — so an admin can
+Unified read-only view over every "bulk job" type in the app - bulk email
+campaigns, DMC data exports, and CSV/backup member imports - so an admin can
 see everything queued/running/done/failed in one place instead of hunting
 through four separate models.
 
@@ -57,7 +57,7 @@ def _serialize_email_job(job) -> dict:
         "id": str(job.id),
         "type": "email",
         "type_label": "Bulk Email",
-        "title": job.campaign_name or f"Email — {job.template.name}",
+        "title": job.campaign_name or f"Email: {job.template.name}",
         "status": job.status,
         "status_group": _status_group(job.status),
         "created_at": job.created_at,
@@ -77,7 +77,7 @@ def _serialize_export_job(job) -> dict:
         "id": str(job.pk),
         "type": "export",
         "type_label": "Data Export",
-        "title": f"{job.dataset_id} — {job.format.upper()} export",
+        "title": f"{job.dataset_id}: {job.format.upper()} export",
         "status": job.status,
         "status_group": _status_group(job.status),
         "created_at": job.created_at,
@@ -143,7 +143,7 @@ class BackgroundJobsOverviewView(APIView):
     Aggregates the four bulk-job models into one sorted, optionally-filtered
     list. Each model is queried independently (they're unrelated tables, so
     there's no single SQL query to run across all of them) and merged in
-    Python — fine at this app's scale (dozens to low hundreds of jobs total,
+    Python - fine at this app's scale (dozens to low hundreds of jobs total,
     not millions), and avoids the complexity of a heterogeneous UNION.
     """
     permission_classes = [IsAdminOrClubLead]
