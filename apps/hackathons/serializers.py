@@ -30,7 +30,7 @@ class HackathonSerializer(serializers.ModelSerializer):
         read_only_fields = ['status']
 
     def get_is_hidden(self, obj) -> bool:
-        """See EventSerializer.get_is_hidden — identical window logic."""
+        """See EventSerializer.get_is_hidden - identical window logic."""
         now = timezone.now()
         if obj.visible_from and obj.visible_from > now:
             return True
@@ -344,7 +344,7 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 
 class HackathonAnnouncementSerializer(serializers.ModelSerializer):
-    """Participant/public view — no audience internals beyond a label."""
+    """Participant/public view - no audience internals beyond a label."""
     audience_label = serializers.CharField(source='get_audience_display', read_only=True)
     round_name = serializers.CharField(source='round.name', read_only=True)
 

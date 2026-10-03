@@ -1,7 +1,7 @@
 """
 dmc/tasks.py
 ------------
-Background job function for large (async) DMC exports — run on a plain
+Background job function for large (async) DMC exports - run on a plain
 Python thread via apps.core.tasks.run_in_background, not a task queue.
 
 ExportService._run_async() creates a QUEUED ExportJob and dispatches this via

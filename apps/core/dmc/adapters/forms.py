@@ -52,7 +52,7 @@ ALLOWED_SORT_FIELDS_FORMS = {"id", "submitted_at", "form_title", "is_manual_entr
 
 
 # ---------------------------------------------------------------------------
-# FormsAllAdapter — cross-form bounded common view
+# FormsAllAdapter - cross-form bounded common view
 # ---------------------------------------------------------------------------
 
 class FormsAllAdapter(BaseDatasetAdapter):
@@ -121,7 +121,7 @@ class FormsAllAdapter(BaseDatasetAdapter):
         Resolves (name, email) with the same 3-tier fallback as
         ResponseDetailSerializer.get_user/get_user_name/get_user_email
         (apps/forms/serializers.py), so manual-entry and CSV-imported
-        responses — which have no `r.user` — don't render blank:
+        responses - which have no `r.user` - don't render blank:
           1. Real r.user.
           2. Manual entry created by an admin (r.created_by_admin).
           3. Search r.answers for a name/email-shaped field.
@@ -172,7 +172,7 @@ class FormsAllAdapter(BaseDatasetAdapter):
 
 
 # ---------------------------------------------------------------------------
-# FormIndividualAdapter — full dynamic schema for a specific form
+# FormIndividualAdapter - full dynamic schema for a specific form
 # ---------------------------------------------------------------------------
 
 class FormIndividualAdapter(BaseDatasetAdapter):

@@ -112,7 +112,7 @@ class HackathonViewSet(viewsets.ModelViewSet):
             return queryset
 
         # Public/anonymous viewers only see hackathons inside their visibility
-        # window — see the matching comment in apps.events.views.EventViewSet.
+        # window - see the matching comment in apps.events.views.EventViewSet.
         now = timezone.now()
         return queryset.filter(
             Q(visible_from__isnull=True) | Q(visible_from__lte=now)
@@ -160,22 +160,22 @@ class HackathonViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='close')
     def close(self, request, slug=None):
-        """POST /api/hackathons/{slug}/close/ — marks the hackathon CLOSED (stops registration)."""
+        """POST /api/hackathons/{slug}/close/ - marks the hackathon CLOSED (stops registration)."""
         return self._set(request, "Closed Hackathon", status=HackathonStatus.CLOSED)
 
     @action(detail=True, methods=['post'], url_path='reopen')
     def reopen(self, request, slug=None):
-        """POST /api/hackathons/{slug}/reopen/ — reverts a CLOSED hackathon back to LIVE."""
+        """POST /api/hackathons/{slug}/reopen/ - reverts a CLOSED hackathon back to LIVE."""
         return self._set(request, "Reopened Hackathon", status=HackathonStatus.LIVE)
 
     @action(detail=True, methods=['post'], url_path='hide')
     def hide(self, request, slug=None):
-        """POST /api/hackathons/{slug}/hide/ — removes the hackathon from the public list entirely."""
+        """POST /api/hackathons/{slug}/hide/ - removes the hackathon from the public list entirely."""
         return self._set(request, "Hid Hackathon From Public", visible_until=timezone.now())
 
     @action(detail=True, methods=['post'], url_path='show')
     def show(self, request, slug=None):
-        """POST /api/hackathons/{slug}/show/ — undoes `hide`, clearing visible_until."""
+        """POST /api/hackathons/{slug}/show/ - undoes `hide`, clearing visible_until."""
         return self._set(request, "Made Hackathon Publicly Visible Again", visible_until=None)
 
 
@@ -210,7 +210,7 @@ class ProblemStatementListView(APIView):
 
 
 class ProblemStatementUploadView(APIView):
-    """POST (admin) /api/hackathons/{slug}/problem-statements/upload/ — multipart `file`.
+    """POST (admin) /api/hackathons/{slug}/problem-statements/upload/ - multipart `file`.
 
     CSV with title, description and domain columns; the application assigns each
     statement's ID. Responds with how many were created, skipped and which rows failed.
@@ -254,7 +254,7 @@ class ProblemStatementDetailView(APIView):
         code = ps.code
         if ps.teams.exists():
             raise HackathonError(
-                'Teams have picked this problem statement — deactivate it instead of deleting.',
+                'Teams have picked this problem statement. Deactivate it instead of deleting.',
                 'PROBLEM_STATEMENT_IN_USE',
             )
         ps.delete()
@@ -292,7 +292,7 @@ def _round_payload(round_obj, entry, *, viewer_is_leader, user):
 
 
 class MyTeamView(APIView):
-    """GET /api/hackathons/{slug}/my-team/ — everything the participant dashboard needs."""
+    """GET /api/hackathons/{slug}/my-team/ - everything the participant dashboard needs."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, slug):
@@ -327,8 +327,8 @@ class MyTeamView(APIView):
 
 class HackathonTeamsView(APIView):
     """
-    POST /api/hackathons/{slug}/teams/ — create a team (any authenticated user).
-    GET  /api/hackathons/{slug}/teams/ — admin: every team with contact details.
+    POST /api/hackathons/{slug}/teams/ - create a team (any authenticated user).
+    GET  /api/hackathons/{slug}/teams/ - admin: every team with contact details.
          Filters: ?status=, ?problem_statement=, ?round=&entry_status=, ?search=
     """
     permission_classes = [permissions.IsAuthenticated]
@@ -369,7 +369,7 @@ class HackathonTeamsView(APIView):
 
 class UserLookupView(APIView):
     """
-    GET /api/hackathons/{slug}/user-lookup/?email= — exact-email teammate lookup.
+    GET /api/hackathons/{slug}/user-lookup/?email= - exact-email teammate lookup.
     Returns only name/email/club ID plus whether the caller's team can invite
     them; never phone, roll number or other profile data. Throttled.
     """
@@ -402,7 +402,7 @@ class UserLookupView(APIView):
 
 
 class MyInvitesView(APIView):
-    """GET /api/hackathons/my-invites/ — the caller's pending invites across all hackathons."""
+    """GET /api/hackathons/my-invites/ - the caller's pending invites across all hackathons."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -413,7 +413,7 @@ class MyInvitesView(APIView):
 
 
 class MyTeamsView(APIView):
-    """GET /api/hackathons/my-teams/ — every hackathon team the caller belongs to (profile page)."""
+    """GET /api/hackathons/my-teams/ - every hackathon team the caller belongs to (profile page)."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -488,7 +488,7 @@ class TeamActionView(APIView):
       cancel-invite       {invite_id}      leader
       remove-member       {user_id}        leader / admin
       transfer-leadership {user_id}        leader / admin
-      leave               —                member
+      leave               -                member
       admin-add-member    {email}          admin
       admin-set-status    {status}         admin
     """
@@ -577,7 +577,7 @@ class RoundDetailView(APIView):
     def delete(self, request, slug, pk):
         hackathon, round_obj = self._get(request, slug, pk)
         if hackathon.rounds.filter(order__gt=round_obj.order).exists():
-            raise HackathonError('Delete later rounds first — they depend on this round\'s shortlist.', 'ROUND_HAS_LATER')
+            raise HackathonError('Delete later rounds first, since they depend on this round\'s shortlist.', 'ROUND_HAS_LATER')
         name = round_obj.name
         round_obj.delete()
         log_audit_event(actor=request.user, action="Deleted Hackathon Round", target_model="HackathonRound",
@@ -647,9 +647,9 @@ class RoundActionView(APIView):
 
 class AnnouncementListView(APIView):
     """
-    GET  /api/hackathons/{slug}/announcements/ — what the caller may see
+    GET  /api/hackathons/{slug}/announcements/ - what the caller may see
          (anonymous: public only). Admins add ?all=true for every announcement.
-    POST (admin) — create; send_email=true emails the audience.
+    POST (admin) - create; send_email=true emails the audience.
     """
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
 
@@ -713,7 +713,7 @@ class AnnouncementDetailView(APIView):
 
 
 class AnnouncementNotifyView(APIView):
-    """POST (admin) /api/hackathons/{slug}/announcements/{id}/notify/ — (re)send the email."""
+    """POST (admin) /api/hackathons/{slug}/announcements/{id}/notify/ - (re)send the email."""
     permission_classes = [IsAdminOrClubLead]
 
     def post(self, request, slug, pk):

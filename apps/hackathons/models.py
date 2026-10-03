@@ -85,7 +85,7 @@ class ProblemStatement(TimeStampedModel):
         ]
 
     def __str__(self):
-        return f"{self.code} — {self.title}"
+        return f"{self.code}: {self.title}"
 
 
 class TeamStatus(models.TextChoices):
@@ -216,7 +216,7 @@ class Round(TimeStampedModel):
         ]
 
     def __str__(self):
-        return f"{self.hackathon.title} — Round {self.order}: {self.name}"
+        return f"{self.hackathon.title}, Round {self.order}: {self.name}"
 
 
 class EntryStatus(models.TextChoices):
@@ -229,7 +229,7 @@ class RoundEntry(TimeStampedModel):
     round = models.ForeignKey(Round, on_delete=models.CASCADE, related_name='entries')
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='round_entries')
     status = models.CharField(max_length=12, choices=EntryStatus.choices, default=EntryStatus.PENDING)
-    admin_notes = models.TextField(blank=True, help_text="Internal — never shown to the team.")
+    admin_notes = models.TextField(blank=True, help_text="Internal only, never shown to the team.")
     feedback = models.TextField(blank=True, help_text="Shown to the team once results are published.")
     decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     decided_at = models.DateTimeField(blank=True, null=True)

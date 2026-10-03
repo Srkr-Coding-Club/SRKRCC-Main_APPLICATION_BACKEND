@@ -51,7 +51,7 @@ ADMIN_ONLY_DATASETS: frozenset[str] = frozenset([
 
 
 # ---------------------------------------------------------------------------
-# DRF permission class — base gate for all DMC views
+# DRF permission class - base gate for all DMC views
 # ---------------------------------------------------------------------------
 
 class DMCBasePermission(drf_permissions.BasePermission):
@@ -79,7 +79,7 @@ def can_view_dataset(user, dataset_id: str) -> bool:
 
     Super Admins / Django staff: full access.
     ADMIN role: full access to all datasets.
-    CLUB_LEAD role: restricted — cannot access admin-only datasets.
+    CLUB_LEAD role: restricted - cannot access admin-only datasets.
     """
     if not (user and user.is_authenticated):
         return False
@@ -96,7 +96,7 @@ def can_view_dataset(user, dataset_id: str) -> bool:
 
 def can_export_dataset(user, dataset_id: str) -> bool:
     """
-    Export authorization — currently mirrors dataset view access.
+    Export authorization - currently mirrors dataset view access.
     Can be made stricter (e.g. require export-specific role grants) as needed.
     """
     return can_view_dataset(user, dataset_id)

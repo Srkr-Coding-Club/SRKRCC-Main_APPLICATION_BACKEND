@@ -2,8 +2,8 @@
 Business rules for hackathon team formation, rounds and announcements.
 
 Every state change goes through here (never through a raw serializer save) so
-the rules — registration window, team size, one team per user per hackathon,
-leader-only edits, problem-statement capacity — live in one place and are
+the rules - registration window, team size, one team per user per hackathon,
+leader-only edits, problem-statement capacity - live in one place and are
 enforced identically for every endpoint. Mutations run inside
 ``transaction.atomic`` with the Team row locked, so two concurrent invite
 accepts can't both squeeze past the size limit.
@@ -107,7 +107,7 @@ def _require_profile_complete(hackathon: Hackathon, user, *, who='your'):
     missing = missing_profile_fields(hackathon, user)
     if missing:
         raise HackathonError(
-            f"Complete {who} profile first — missing: {', '.join(missing)}.",
+            f"Complete {who} profile first. Missing: {', '.join(missing)}.",
             'PROFILE_INCOMPLETE',
         )
 
@@ -125,7 +125,7 @@ def _check_problem_statement(hackathon: Hackathon, ps: ProblemStatement, *, excl
         if exclude_team is not None:
             taken = taken.exclude(pk=exclude_team.pk)
         if taken.count() >= ps.max_teams:
-            raise HackathonError('That problem statement is full — pick another.', 'PROBLEM_STATEMENT_FULL', field='problem_statement')
+            raise HackathonError('That problem statement is full. Pick another.', 'PROBLEM_STATEMENT_FULL', field='problem_statement')
 
 
 def _clean_open_innovation(data: dict) -> dict:
@@ -150,12 +150,12 @@ def _resolve_problem(hackathon: Hackathon, problem_statement, open_innovation, *
     """Turn the team's problem choice into Team field values, enforcing the rules.
 
     A team either picks one admin-defined statement or goes open innovation with
-    its own title/description/domain — never both. With neither, a problem is only
+    its own title/description/domain - never both. With neither, a problem is only
     mandatory once the hackathon actually has statements to pick from.
     """
     if problem_statement is not None and open_innovation:
         raise HackathonError(
-            'Pick a problem statement or go open innovation — not both.', 'PROBLEM_CHOICE_CONFLICT', field='problem_statement',
+            'Pick a problem statement or go open innovation, not both.', 'PROBLEM_CHOICE_CONFLICT', field='problem_statement',
         )
     blank_custom = {'custom_problem_title': '', 'custom_problem_description': '', 'custom_problem_domain': ''}
 
@@ -203,7 +203,7 @@ def _run_in_background(fn):
 
 
 def send_invite_email(invite_id: int) -> bool:
-    """Tell the invitee they've been invited. Looked up by id — runs on a background thread."""
+    """Tell the invitee they've been invited. Looked up by id - runs on a background thread."""
     from django.conf import settings
     from django.utils.html import escape
     from apps.core.services.email_service import EmailNotificationService
@@ -877,7 +877,7 @@ class AnnouncementService:
 
         # The background job re-derives each recipient's context from their
         # profile (EmailNotificationService.process_email_job), so per-call
-        # context can't carry the message — it's baked into a template of its
+        # context can't carry the message - it's baked into a template of its
         # own instead. `{{` is defused so admin-typed text can't be read as a
         # template parameter.
         def defuse(text):

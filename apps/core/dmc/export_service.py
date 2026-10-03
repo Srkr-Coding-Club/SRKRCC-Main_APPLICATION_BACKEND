@@ -10,7 +10,7 @@ Cross-cutting concerns handled here:
   - Sync vs async job dispatch based on DMC_SYNC_EXPORT_MAX_ROWS
   - Audit logging
 
-Adapters are NEVER responsible for formatting — they provide stream_records().
+Adapters are NEVER responsible for formatting - they provide stream_records().
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def _format_cell(cv: CanonicalValue | Any) -> str:
     if not isinstance(cv, CanonicalValue):
         return str(cv) if cv is not None else ""
     if cv.state == "not_applicable":
-        return "—"
+        return "-"
     if cv.state == "empty":
         return ""
     if cv.state == "unknown":
@@ -82,7 +82,7 @@ def _generate_csv(
 
 
 # ---------------------------------------------------------------------------
-# XLSX generator (write-only mode — no full workbook in memory)
+# XLSX generator (write-only mode - no full workbook in memory)
 # ---------------------------------------------------------------------------
 
 def _generate_xlsx(
@@ -217,7 +217,7 @@ class ExportService:
         )
 
         # Run off the request/response cycle on a background thread (no task
-        # queue in this app — see apps/core/tasks.py) so a large export doesn't
+        # queue in this app - see apps/core/tasks.py) so a large export doesn't
         # hold the web worker for the full generation time.
         from apps.core.dmc.tasks import run_export_job
         from apps.core.tasks import run_in_background
@@ -235,7 +235,7 @@ class ExportService:
         raise ValueError(f"Unsupported export format: {fmt}")
 
     def _execute_job(self, job: Any, export_cols: list, export_req: ExportRequest, query_req: QueryRequest, filename: str):
-        """Synchronous execution — called directly for small exports, and by
+        """Synchronous execution - called directly for small exports, and by
         the background-job function (apps/core/dmc/tasks.py) for large ones."""
         from apps.core.dmc.models import ExportJob
 
@@ -272,7 +272,7 @@ class ExportService:
 
         log_audit_event(
             actor=self.user,
-            action=f"DMC Export Job ({job.format.upper()}) — {job.status}",
+            action=f"DMC Export Job ({job.format.upper()}): {job.status}",
             target_model="ExportJob",
             target_id=str(job.pk),
             details={"dataset": job.dataset_id, "format": job.format, "rows": job.row_count, "status": job.status},

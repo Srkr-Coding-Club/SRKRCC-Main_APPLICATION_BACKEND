@@ -20,7 +20,7 @@ def generate_badge_token() -> str:
 class AttendanceSession(TimeStampedModel):
     """
     One scannable attendance window for a Form's workshop/hackathon registrants
-    — e.g. "Day 2, Morning". Generated and kept in sync with the owning Form's
+    - e.g. "Day 2, Morning". Generated and kept in sync with the owning Form's
     attendance_* config by apps.attendance.services.generate_sessions, which
     runs whenever the Form is saved (see apps/forms/serializers.py).
     """

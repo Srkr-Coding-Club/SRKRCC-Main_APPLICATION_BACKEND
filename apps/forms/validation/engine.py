@@ -1,21 +1,21 @@
 """
-``validate_submission`` — the submission validation orchestrator.
+``validate_submission`` - the submission validation orchestrator.
 
 Pipeline (each step feeds the next):
 
-  1. Structural   — every answer references a real, non-deleted field of THIS
+  1. Structural   - every answer references a real, non-deleted field of THIS
                     form; no duplicate answers; SECTION fields not answered.
-  2. Coerce       — raw value -> typed value (str / Decimal / date / list / …).
-  3. Layout       — conditional show/hide + required overrides. Answers for
+  2. Coerce       - raw value -> typed value (str / Decimal / date / list / …).
+  3. Layout       - conditional show/hide + required overrides. Answers for
                     hidden fields are dropped.
-  4. Required     — visible + effectively-required + empty  -> REQUIRED.
-  5. Type         — field-type sanity (option membership, matrix shape, …).
-  6. Rules        — configured ``validation_rules`` constraints.
-  7. Cross-field  — comparisons against other answers.
+  4. Required     - visible + effectively-required + empty  -> REQUIRED.
+  5. Type         - field-type sanity (option membership, matrix shape, …).
+  6. Rules        - configured ``validation_rules`` constraints.
+  7. Cross-field  - comparisons against other answers.
 
 Modes:
-  "strict"   — public submission / response edit. Every failure is an error.
-  "partial"  — admin manual-entry / CSV import / backup importer. Structural,
+  "strict"   - public submission / response edit. Every failure is an error.
+  "partial"  - admin manual-entry / CSV import / backup importer. Structural,
                type and option-membership failures stay errors; required and
                constraint failures are downgraded to warnings so partial legacy
                data can still be stored.
@@ -186,8 +186,8 @@ def _place(report: ValidationReport, err: FieldError, partial: bool) -> None:
 def _serialize_for_storage(field, value: Any) -> Any:
     """
     Return the JSON-safe value to persist in ``Answer.value``. Shapes match what
-    the codebase already stores today (string / number / list / dict) — no
-    wrapping — so every downstream consumer keeps working.
+    the codebase already stores today (string / number / list / dict) - no
+    wrapping - so every downstream consumer keeps working.
     """
     import datetime as _dt
     from decimal import Decimal

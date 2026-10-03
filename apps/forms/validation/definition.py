@@ -1,5 +1,5 @@
 """
-``validate_form_definition`` — checks a form's own configuration.
+``validate_form_definition`` - checks a form's own configuration.
 
 Runs on two shapes:
   * a saved ``Form`` instance (its ``fields`` relation), used by the publish
@@ -257,7 +257,7 @@ def _check_conditional(report: DefinitionReport, f: _FieldView, by_id: dict[int,
 
     normalized = normalize_conditional_logic(raw)
     if not normalized:
-        # non-empty but unusable — e.g. the {"if": "parent"} placeholder
+        # non-empty but unusable - e.g. the {"if": "parent"} placeholder
         if str(raw.get("if", "")).strip().lower() == "parent" or "parent" in raw:
             report.add_warning(_err(codes.WARN_LEGACY_CONDITION_PLACEHOLDER,
                                     f"'{f.label}' has an unfinished conditional rule (no field selected).", f))

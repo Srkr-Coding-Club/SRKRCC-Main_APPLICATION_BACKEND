@@ -203,10 +203,10 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/minute',
         'user': '1000/minute',
-        # Public form submission — anonymous-writable, so scope-limit it below
+        # Public form submission - anonymous-writable, so scope-limit it below
         # the global anon rate to blunt flooding of a single form.
         'form_submit': '20/minute',
-        # Hackathon teammate lookup by exact email — authenticated, but
+        # Hackathon teammate lookup by exact email - authenticated, but
         # limited so it can't be used to enumerate which emails have accounts.
         'hackathon_lookup': '30/minute',
     },
@@ -250,7 +250,7 @@ CORS_EXPOSE_HEADERS = [
     'content-length',
 ]
 
-# Background jobs run on plain Python threads (apps/core/tasks.py), not Celery —
+# Background jobs run on plain Python threads (apps/core/tasks.py), not Celery -
 # no broker/worker process to configure.
 
 # SimpleJWT Authentication Lifetimes & Configuration

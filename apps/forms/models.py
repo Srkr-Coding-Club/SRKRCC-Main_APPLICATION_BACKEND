@@ -37,7 +37,7 @@ class ProfileField(models.TextChoices):
     """
     Profile attributes a FormField can be mapped to via FormField.profile_field.
     Mirrors the subset of the User model that's meaningful to auto-fill into a
-    registration — kept separate from the User model's own field names so this
+    registration - kept separate from the User model's own field names so this
     stays a stable, curated wire contract even if User gains unrelated fields.
     """
     FULL_NAME = 'full_name', 'Full Name'
@@ -66,7 +66,7 @@ class Form(TimeStampedModel):
     )
     prevent_duplicate_email_answers = models.BooleanField(
         default=False,
-        help_text="Reject a submission if any EMAIL-type field's value has already been used to answer this same form (excluding test submissions). Off by default — some forms legitimately expect one email to submit more than once (e.g. a parent registering several children).",
+        help_text="Reject a submission if any EMAIL-type field's value has already been used to answer this same form (excluding test submissions). Off by default. Some forms legitimately expect one email to submit more than once (e.g. a parent registering several children).",
     )
     allow_edits_until = models.DateTimeField(blank=True, null=True, help_text="Deadline after which responses are locked")
     open_at = models.DateTimeField(blank=True, null=True)
@@ -91,7 +91,7 @@ class Form(TimeStampedModel):
     # submitter who doesn't have one yet; this one *checks* a Club ID the
     # submitter claims to already have, rejecting the submission if it isn't
     # registered or if the other mapped details (name/email/phone/branch/roll
-    # number) don't match that member's actual record — e.g. someone using a
+    # number) don't match that member's actual record - e.g. someone using a
     # club-mate's valid Club ID with their own details. Mutually exclusive with
     # club_id_enabled (enforced in FormSerializer.validate()), since a form
     # either generates a new ID or verifies an existing one, not both.
@@ -231,7 +231,7 @@ class FormField(TimeStampedModel):
     profile_field = models.CharField(
         max_length=20, choices=ProfileField.choices, blank=True, null=True,
         help_text=(
-            "When set, this question is never asked of the user — it's resolved "
+            "When set, this question is never asked of the user: it's resolved "
             "server-side from the submitter's own profile at submission time "
             "(any client-supplied value for it is discarded) and shown read-only "
             "in the registration confirmation. Leave blank for an ordinary "

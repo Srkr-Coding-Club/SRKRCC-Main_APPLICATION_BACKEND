@@ -2,7 +2,7 @@
 Single source of truth for account field rules.
 
 These are mirrored verbatim by the frontend in
-`src/lib/validation/auth.ts` — if a rule changes here, change it there too,
+`src/lib/validation/auth.ts` - if a rule changes here, change it there too,
 otherwise the signup form accepts input the API then rejects.
 """
 import re
@@ -11,7 +11,7 @@ from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 
 # Letters (incl. accented), spaces, hyphens, apostrophes and periods only.
-# Explicitly excludes digits — the signup form previously accepted "John123".
+# Explicitly excludes digits - the signup form previously accepted "John123".
 NAME_REGEX = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ]+(?:[ '\-.][A-Za-zÀ-ÖØ-öø-ÿ]+)*$")
 NAME_MIN_LENGTH = 2
 NAME_MAX_LENGTH = 60
@@ -20,7 +20,7 @@ NAME_MAX_LENGTH = 60
 ROLL_NUMBER_REGEX = re.compile(r"^[0-9]{2}[A-Z0-9]{8}$")
 ROLL_NUMBER_LENGTH = 10
 
-# Digits only, exactly 10 characters (e.g. 9876543210) — no country code,
+# Digits only, exactly 10 characters (e.g. 9876543210) - no country code,
 # spaces, or symbols.
 PHONE_NUMBER_REGEX = re.compile(r"^\d{10}$")
 PHONE_NUMBER_LENGTH = 10
@@ -64,8 +64,8 @@ class ComplexPasswordValidator:
     Requires a mix of character classes.
 
     Registered in AUTH_PASSWORD_VALIDATORS so it applies to every path that
-    sets a password — self-registration, the one-time password-setup link,
-    and `manage.py changepassword` — not just the signup serializer.
+    sets a password - self-registration, the one-time password-setup link,
+    and `manage.py changepassword` - not just the signup serializer.
     """
 
     def validate(self, password, user=None):

@@ -333,5 +333,5 @@ class ExportTests(TestCase):
     def test_round_results_label_open_innovation_teams(self):
         adapter = get_dataset('hackathon_round_entries').adapter_class()
         records = {r['team_name'].value: r for r in adapter.query(QueryRequest(page=1, page_size=50), None).records}
-        self.assertEqual(records['Alpha']['problem_statement'].value, 'PS-001 — Smart Attendance')
-        self.assertEqual(records['Beta']['problem_statement'].value, f'OI-{self.beta.pk:03d} — Smart bin')
+        self.assertEqual(records['Alpha']['problem_statement'].value, 'PS-001: Smart Attendance')
+        self.assertEqual(records['Beta']['problem_statement'].value, f'OI-{self.beta.pk:03d}: Smart bin')

@@ -140,7 +140,7 @@ class PasswordSetupService:
                 f"Please click the secure link below within 24 hours to set up your password:\n"
                 f"{setup_url}\n\n"
                 f"If you did not request this link, please ignore this email.\n\n"
-                f"— SRKR Coding Club Team"
+                f"SRKR Coding Club Team"
             )
 
             EmailNotificationService.send_email(
@@ -199,7 +199,7 @@ class PasswordSetupService:
             raise InvalidSetupTokenError("Token and new password are required.")
 
         # Mirrors the strength meter shown on the setup-password page (length, mixed
-        # case, number/symbol) — the UI's own submit handler previously only checked
+        # case, number/symbol) - the UI's own submit handler previously only checked
         # length, so a weak password satisfying none of the visible requirements could
         # still be submitted. Enforced here too since this API can be called directly.
         if len(new_password) < 8:

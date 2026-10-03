@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 def _coerce_field_id(raw) -> int | None:
     """club_id_field_mapping values should always be real FormField pks (ints), but
-    tolerate a non-numeric value defensively rather than raising — e.g. a stray
+    tolerate a non-numeric value defensively rather than raising - e.g. a stray
     client-side placeholder id that was never actually a saved field."""
     if raw is None:
         return None
@@ -22,8 +22,8 @@ def _coerce_field_id(raw) -> int | None:
 
 class FormAutomationService:
     """
-    Wires the two per-Form automations configured in the Form Builder — Club Member
-    ID generation and submission confirmation email — into the Response submission
+    Wires the two per-Form automations configured in the Form Builder - Club Member
+    ID generation and submission confirmation email - into the Response submission
     flow (apps/forms/views.py ResponseViewSet.create).
     """
 
@@ -35,9 +35,9 @@ class FormAutomationService:
         and return the resolved User. Returns None if the form has no email mapping
         configured or the submitter left the mapped email field blank.
 
-        Reuses UserAccountService.upsert_member — the same atomic, race-safe,
+        Reuses UserAccountService.upsert_member - the same atomic, race-safe,
         find-or-create-by-email operation the CSV member-import pipeline already
-        uses — so a person keeps exactly one Club ID no matter how many forms they
+        uses - so a person keeps exactly one Club ID no matter how many forms they
         fill out. May raise ClubIdImmutableError / ClubIdConflictError, which the
         caller should let propagate so the whole response is rolled back together.
         """
@@ -46,7 +46,7 @@ class FormAutomationService:
         if email_field_id is None:
             # Missing, or a non-numeric leftover from a field that was never
             # actually persisted (e.g. the Form Builder UI captured a field before
-            # the form's first save) — treat as "not configured" rather than crash
+            # the form's first save) - treat as "not configured" rather than crash
             # the whole submission over a stale admin-side configuration mistake.
             return None
 
@@ -75,7 +75,7 @@ class FormAutomationService:
         response's send status can be queried and the email re-triggered later
         from the admin responses viewer), and dispatches it.
 
-        Raises on failure/misconfiguration — callers that must not fail the
+        Raises on failure/misconfiguration - callers that must not fail the
         surrounding request (the auto-fire path right after a public submission)
         should go through `dispatch_confirmation_email` instead, which wraps
         this in a swallow-and-log. A manual admin "resend" action should call
@@ -93,7 +93,7 @@ class FormAutomationService:
             recipient_email = answers_by_field_id.get(email_field_id) if email_field_id is not None else None
             if not recipient_email or not str(recipient_email).strip():
                 # No club-id mapping (or club-id disabled) and no other configured
-                # email source on this form — nothing to send a confirmation to.
+                # email source on this form - nothing to send a confirmation to.
                 raise ValueError("No recipient email could be resolved for this response.")
 
             full_name_field_id = _coerce_field_id(mapping.get('full_name'))
@@ -124,7 +124,7 @@ class FormAutomationService:
         if response is not None:
             job.deliveries.update(response=response)
 
-        # Synchronous — a single-recipient send is fast, and the admin "resend"
+        # Synchronous - a single-recipient send is fast, and the admin "resend"
         # action (the other caller of this method) needs the real outcome back
         # immediately rather than a job that's still PENDING when the response
         # is returned.
@@ -136,7 +136,7 @@ class FormAutomationService:
         """
         Best-effort wrapper around `send_confirmation_email` for the auto-fire path
         right after a public submission. Must be called AFTER the response's
-        transaction has committed — never from inside an open transaction (mirrors
+        transaction has committed - never from inside an open transaction (mirrors
         MemberImportService.commit_import's existing convention) so a failed send
         can never roll back an otherwise-successful submission. Runs on a
         background thread (see apps.core.tasks.run_in_background) so the

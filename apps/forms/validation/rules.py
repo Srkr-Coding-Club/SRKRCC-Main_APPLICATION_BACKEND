@@ -1,10 +1,10 @@
 """
-``validation_rules`` enforcement — one small function per rule key.
+``validation_rules`` enforcement - one small function per rule key.
 
 Every function signature is ``fn(field, value, rule_value, rules) -> FieldError | None``:
-  * ``value``      — the coerced submitted value (str / Decimal / list / date / …)
-  * ``rule_value`` — the configured value for this rule key
-  * ``rules``      — the whole normalized ``validation_rules`` dict (for custom
+  * ``value``      - the coerced submitted value (str / Decimal / list / date / …)
+  * ``rule_value`` - the configured value for this rule key
+  * ``rules``      - the whole normalized ``validation_rules`` dict (for custom
                      messages and rules that reference siblings)
 
 ``apply_rules(field, value)`` walks the field's configured rules and returns all
@@ -135,7 +135,7 @@ def _pattern(field, value, rv, rules):
             return _err(field, codes.PATTERN_MISMATCH,
                         "Value does not match the required format.", "pattern")
     except re.error:
-        return None  # invalid admin pattern — definition validator flags it; don't block here
+        return None  # invalid admin pattern - definition validator flags it; don't block here
 
 
 _FORMAT_CHECKS: dict[str, Callable[[str], bool]] = {

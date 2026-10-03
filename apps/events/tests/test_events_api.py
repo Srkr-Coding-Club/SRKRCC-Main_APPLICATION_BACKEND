@@ -16,7 +16,7 @@ def _times():
 
 
 class EventsApiTests(TestCase):
-    """POST/GET /api/events/ — admin panel event creation + form linking + metrics."""
+    """POST/GET /api/events/ - admin panel event creation + form linking + metrics."""
 
     def setUp(self):
         self.client = APIClient()
@@ -112,7 +112,7 @@ class EventsApiTests(TestCase):
 
     def test_description_markdown_source_is_stored_verbatim(self):
         """Markdown (and any raw text, incl. angle brackets) is stored as opaque
-        text server-side — rendering/escaping is the frontend MarkdownRenderer's
+        text server-side - rendering/escaping is the frontend MarkdownRenderer's
         job, so the API must not mutate or interpret it."""
         self.client.force_authenticate(self.admin)
         payload = self._payload(description='<script>alert(1)</script>\n## Heading')
@@ -159,7 +159,7 @@ class EventsApiTests(TestCase):
         self.assertEqual(event.status, 'LIVE')
 
     def test_status_is_not_client_settable_on_create(self):
-        """status is read_only — the close/reopen actions are the only path to change it."""
+        """status is read_only - the close/reopen actions are the only path to change it."""
         self.client.force_authenticate(self.admin)
         resp = self.client.post('/api/events/', self._payload(status='CLOSED'), format='json')
         self.assertEqual(resp.status_code, 201, resp.data)
@@ -271,7 +271,7 @@ class EventsApiTests(TestCase):
 
     def test_is_hidden_reflects_future_visible_from_without_explicit_hide(self):
         """A scheduled-but-not-yet-open event (visible_from in the future) is
-        just as hidden as one explicitly hidden — same public-facing effect,
+        just as hidden as one explicitly hidden - same public-facing effect,
         even though no one clicked "Hide"."""
         event = Event.objects.create(
             title='E', slug='not-yet', description='d',

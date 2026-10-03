@@ -20,11 +20,11 @@ class AttendanceSessionListView(APIView):
     """
     GET /api/forms/<form_id>/attendance/sessions/
     Lists the form's AttendanceSession rows (generated from its attendance_*
-    config — see apps.attendance.services.generate_sessions).
+    config - see apps.attendance.services.generate_sessions).
 
     IsVolunteerOrAbove, not IsAdminOrClubLead: the scanner UI calls this to
     populate its "Session" picker before a volunteer can scan anything, so it
-    has to carry the same permission as the scan endpoint itself — a
+    has to carry the same permission as the scan endpoint itself - a
     volunteer who can POST /api/attendance/scan/ but can't GET the session
     list to pick a session_id for it is blocked from scanning either way.
     """

@@ -1,7 +1,7 @@
 """
 Verifies the cleanup rule the 0005_cleanup_duplicate_roll_numbers data
 migration applies, ahead of 0006_roll_number_unique's DB-level unique
-constraint — written after that constraint failed applying to a real
+constraint - written after that constraint failed applying to a real
 deployment because of a shared placeholder value ("xyz") in production data.
 Tests the rule directly against the current model, following the same
 pattern as test_role_migration.py (Django migrations aren't easily
@@ -11,7 +11,7 @@ Complication unique to this migration: by the time these tests run, the
 CURRENT schema already has the very unique constraint this cleanup exists to
 protect (0006_roll_number_unique has already applied to the test database).
 Simulating "two rows already share a value" therefore has to drop that
-constraint first — done with a raw SQL DROP inside each test's own
+constraint first - done with a raw SQL DROP inside each test's own
 transaction, which TestCase rolls back automatically at teardown, so nothing
 about the schema actually changes outside the test.
 """
@@ -33,7 +33,7 @@ _spec.loader.exec_module(_cleanup_module)
 
 
 class _RealAppsShim:
-    """Stands in for the historical-model `apps` argument RunPython receives —
+    """Stands in for the historical-model `apps` argument RunPython receives -
     the migration's own code only calls .get_model(), so proxying straight to
     the real current model (identical shape, no schema changes since) is a
     faithful substitute without needing Django's full migration-state machinery."""
@@ -49,7 +49,7 @@ def run_cleanup():
 
 def drop_roll_number_unique_constraint():
     """Simulates pre-0006 schema state within the current test's own
-    transaction only — rolled back automatically when the test ends."""
+    transaction only - rolled back automatically when the test ends."""
     with connection.cursor() as cursor:
         cursor.execute('ALTER TABLE accounts_user DROP CONSTRAINT accounts_user_roll_number_d4c665ff_uniq')
 
@@ -84,7 +84,7 @@ class RollNumberCleanupMigrationTests(TestCase):
     def test_safety_net_clears_genuine_duplicate_among_well_formed_values(self):
         """Covers the second pass: two accounts share a value that DOES match
         the 10-char-alphanumeric format, so the placeholder pass alone
-        wouldn't catch it — this is the unanticipated-duplicate case the
+        wouldn't catch it - this is the unanticipated-duplicate case the
         deploy's own error log couldn't reveal (Postgres only reports the
         first violation it hits)."""
         drop_roll_number_unique_constraint()
@@ -103,7 +103,7 @@ class RollNumberCleanupMigrationTests(TestCase):
 
     def test_result_has_no_duplicates_left_for_the_unique_index(self):
         """End-to-end sanity check: whatever mess goes in, nothing collides
-        on the way out — this is what 0006_roll_number_unique's AlterField
+        on the way out - this is what 0006_roll_number_unique's AlterField
         depends on being true."""
         drop_roll_number_unique_constraint()
         User.objects.create_user(username='u7', email='u7@srkr.ac.in', password='pw12345!', roll_number='xyz')

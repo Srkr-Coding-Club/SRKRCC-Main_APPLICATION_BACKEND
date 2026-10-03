@@ -1,4 +1,4 @@
-"""Small builders for form-validation tests — no external factory lib."""
+"""Small builders for form-validation tests - no external factory lib."""
 
 from __future__ import annotations
 

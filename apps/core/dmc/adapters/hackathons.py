@@ -361,7 +361,7 @@ class HackathonRoundEntriesAdapter(BaseDatasetAdapter):
             "round_name":        self._val(e.round.name,                                       "text",     "hackathons.Round.name"),
             "team_name":         self._val(team.name,                                          "text",     "hackathons.Team.name"),
             "leader_email":      self._val(team.leader.email if team.leader else None,         "email",    "hackathons.Team.leader.email"),
-            "problem_statement": self._val(f"{problem_id} — {_problem_title(team)}" if problem_id else None, "text", "hackathons.ProblemStatement.code"),
+            "problem_statement": self._val(f"{problem_id}: {_problem_title(team)}" if problem_id else None, "text", "hackathons.ProblemStatement.code"),
             "status":            self._val(e.get_status_display(),                             "badge",    "hackathons.RoundEntry.status"),
             "results_published": self._val(e.round.results_published,                          "boolean",  "hackathons.Round.results_published"),
             "details_submitted": self._val(e.details_response_id is not None,                  "boolean",  "hackathons.RoundEntry.details_response"),

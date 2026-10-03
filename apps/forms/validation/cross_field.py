@@ -1,5 +1,5 @@
 """
-Cross-field validation — rules that compare one answer against another.
+Cross-field validation - rules that compare one answer against another.
 
 Configured on the field that "owns" the comparison, inside its
 ``validation_rules``::
@@ -11,8 +11,8 @@ Configured on the field that "owns" the comparison, inside its
     ]
 
 Operators:
-  eq / ne / lt / lte / gt / gte  — compare this field's value to the other field's
-  required_if                    — this field must be non-empty when the other
+  eq / ne / lt / lte / gt / gte  - compare this field's value to the other field's
+  required_if                    - this field must be non-empty when the other
                                    field equals ``equals`` (or is simply non-empty
                                    if ``equals`` is omitted)
 
@@ -93,7 +93,7 @@ def evaluate_cross_field(form_fields_by_id: dict[int, Any],
             comparator = _COMPARATORS.get(op)
             if not comparator:
                 continue
-            # Skip when either side is unanswered — required-ness is a separate concern.
+            # Skip when either side is unanswered - required-ness is a separate concern.
             if is_empty(this_val) or is_empty(other_val):
                 continue
 

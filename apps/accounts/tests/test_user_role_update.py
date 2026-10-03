@@ -6,7 +6,7 @@ User = get_user_model()
 
 
 class UserRoleUpdateTests(TestCase):
-    """PATCH /auth/users/{id}/ — the admin Users tab's role dropdown."""
+    """PATCH /auth/users/{id}/ - the admin Users tab's role dropdown."""
 
     def setUp(self):
         self.client = APIClient()
@@ -90,7 +90,7 @@ class UserRoleUpdateTests(TestCase):
         self.assertIn(resp.status_code, (401, 403))
 
     def test_club_lead_can_change_membership_status(self):
-        # Unlike `role`, `membership_status` isn't a privilege field — a
+        # Unlike `role`, `membership_status` isn't a privilege field - a
         # CLUB_LEAD may set it even though they can't grant elevated roles.
         self.client.force_authenticate(self.club_lead)
         resp = self.client.patch(self._url(self.member), {'membership_status': 'SUSPENDED'}, format='json')
@@ -100,7 +100,7 @@ class UserRoleUpdateTests(TestCase):
 
     def test_club_lead_can_change_membership_status_of_elevated_user(self):
         # Regression guard: the role-escalation check must key off the role
-        # actually being submitted, not the target's current role — otherwise
+        # actually being submitted, not the target's current role - otherwise
         # a membership_status-only PATCH targeting an ADMIN/CLUB_LEAD user
         # would be wrongly rejected as a role escalation attempt.
         self.client.force_authenticate(self.club_lead)
@@ -119,7 +119,7 @@ class UserRoleUpdateTests(TestCase):
 
     # --- Roll number: admin can set/correct/clear it any time --------------
     # Unlike the member's own self-service PATCH /api/auth/me/ (which locks
-    # roll_number after the member's first self-set — see
+    # roll_number after the member's first self-set - see
     # test_profile_update_validation.py), this endpoint has no such lock:
     # an admin can add, correct, or clear it whenever needed.
 

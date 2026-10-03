@@ -101,7 +101,7 @@ class RoundEntriesDatasetTests(TestCase):
         self.assertEqual(result.total, 3)
         alpha = next(r for r in result.records if r['team_name'].value == 'Alpha')
         self.assertEqual(alpha['status'].value, 'Shortlisted')
-        self.assertEqual(alpha['problem_statement'].value, 'PS-01 — Problem PS-01')
+        self.assertEqual(alpha['problem_statement'].value, 'PS-01: Problem PS-01')
         self.assertTrue(alpha['results_published'].value)
         self.assertFalse(alpha['details_submitted'].value)
 

@@ -79,7 +79,7 @@ class PasswordSetupLifecycleTests(TestCase):
         )
 
         # 403 per docs/architecture/password-setup-lifecycle.md (Forbidden, not a
-        # validation error) — this account exists but isn't allowed to log in yet.
+        # validation error) - this account exists but isn't allowed to log in yet.
         self.assertEqual(response.status_code, 403)
         data = response.json()
         self.assertEqual(data.get("code"), "PASSWORD_SETUP_REQUIRED")
@@ -148,7 +148,7 @@ class PasswordSetupLifecycleTests(TestCase):
         This deployment sits behind exactly one trusted reverse proxy, which
         appends the real client IP as the LAST hop of X-Forwarded-For. Trusting
         the FIRST hop instead (attacker-controlled) let anyone reset their own
-        20/hr/IP bucket by sending a fresh forged value on every request —
+        20/hr/IP bucket by sending a fresh forged value on every request -
         confirmed here by varying only the forged first hop and checking the
         real (last) IP's bucket is still what gets exhausted.
         """

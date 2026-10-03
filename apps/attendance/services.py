@@ -1,5 +1,5 @@
 """
-Business logic for the QR-code attendance feature — kept separate from
+Business logic for the QR-code attendance feature - kept separate from
 views.py per this codebase's convention (see apps/forms/services.py).
 """
 from datetime import datetime, time as dtime, timedelta
@@ -16,7 +16,7 @@ SESSION_LABELS_BY_COUNT = {
 
 # Default scheduled clock time for each session label, used to compute a
 # session's opens_at/closes_at when it's (re)generated. Just a sensible
-# starting point — nothing elsewhere assumes these exact hours.
+# starting point - nothing elsewhere assumes these exact hours.
 SESSION_TIME_DEFAULTS = {
     SessionLabel.MORNING: (dtime(9, 0), dtime(12, 0)),
     SessionLabel.AFTERNOON: (dtime(13, 0), dtime(16, 0)),
@@ -39,7 +39,7 @@ def generate_sessions(form):
     writes. Non-destructive of scanned data: an AttendanceSession that already
     has one or more AttendanceRecord scans is NEVER deleted, even if the
     current config no longer calls for it (e.g. attendance_days was reduced,
-    or attendance was disabled entirely) — such sessions are left exactly as
+    or attendance was disabled entirely) - such sessions are left exactly as
     they are.
 
     Returns the list of AttendanceSession instances that the current config no
@@ -105,7 +105,7 @@ def issue_badge(response):
     """
     get_or_create the permanent AttendanceBadge for a completed Response.
     Safe to call repeatedly (e.g. once at initial submission and again if the
-    submission is later edited in place) — a Response only ever gets one
+    submission is later edited in place) - a Response only ever gets one
     badge/token.
     """
     badge, _created = AttendanceBadge.objects.get_or_create(response=response)
