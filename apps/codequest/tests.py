@@ -73,3 +73,20 @@ class ProblemVisibilityTests(APITestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn('problem', response.data)
+
+    def test_batch_schedule_route_is_not_captured_as_a_problem_slug(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            reverse('codequest-batch-schedule'),
+            {
+                'problems': [{
+                    'title': 'Batch route challenge',
+                    'difficulty': 'MEDIUM',
+                    'statement': 'A complete scheduled challenge.',
+                    'scheduled_date': (self.today + timedelta(days=2)).isoformat(),
+                }],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['problems'][0]['title'], 'Batch route challenge')
