@@ -46,11 +46,65 @@ class EventRegistrationsAdapter(BaseDatasetAdapter):
             .select_related("user", "form")
         )
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "event_title":
+                if op == "contains": form_ids = Event.objects.filter(title__icontains=str(val)).values_list("registration_form_id", flat=True)
+                elif op == "starts_with": form_ids = Event.objects.filter(title__istartswith=str(val)).values_list("registration_form_id", flat=True)
+                elif op == "eq": form_ids = Event.objects.filter(title__iexact=str(val)).values_list("registration_form_id", flat=True)
+                elif op == "neq": form_ids = Event.objects.exclude(title__iexact=str(val)).values_list("registration_form_id", flat=True)
+                else: form_ids = Event.objects.filter(title__icontains=str(val)).values_list("registration_form_id", flat=True)
+                qs = qs.filter(form_id__in=form_ids)
+            elif field == "venue":
+                if op == "contains": form_ids = Event.objects.filter(venue__icontains=str(val)).values_list("registration_form_id", flat=True)
+                elif op == "starts_with": form_ids = Event.objects.filter(venue__istartswith=str(val)).values_list("registration_form_id", flat=True)
+                elif op == "eq": form_ids = Event.objects.filter(venue__iexact=str(val)).values_list("registration_form_id", flat=True)
+                elif op == "neq": form_ids = Event.objects.exclude(venue__iexact=str(val)).values_list("registration_form_id", flat=True)
+                elif op == "empty": form_ids = Event.objects.filter(Q(venue__isnull=True) | Q(venue="")).values_list("registration_form_id", flat=True)
+                elif op == "not_empty": form_ids = Event.objects.exclude(Q(venue__isnull=True) | Q(venue="")).values_list("registration_form_id", flat=True)
+                else: form_ids = Event.objects.filter(venue__icontains=str(val)).values_list("registration_form_id", flat=True)
+                qs = qs.filter(form_id__in=form_ids)
+            elif field == "event_date":
+                if op == "gte": form_ids = Event.objects.filter(start_time__gte=val).values_list("registration_form_id", flat=True)
+                elif op == "lte": form_ids = Event.objects.filter(start_time__lte=val).values_list("registration_form_id", flat=True)
+                elif op == "eq": form_ids = Event.objects.filter(start_time__date=val).values_list("registration_form_id", flat=True)
+                else: form_ids = Event.objects.filter(start_time__gte=val).values_list("registration_form_id", flat=True)
+                qs = qs.filter(form_id__in=form_ids)
+            elif field == "name":
+                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
+                elif op == "starts_with": qs = qs.filter(Q(user__first_name__istartswith=str(val)) | Q(user__last_name__istartswith=str(val)))
+                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
+            elif field == "email":
+                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
+                elif op == "starts_with": qs = qs.filter(user__email__istartswith=str(val))
+                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
+            elif field == "roll_number":
+                if op == "contains": qs = qs.filter(user__roll_number__icontains=str(val))
+                elif op == "starts_with": qs = qs.filter(user__roll_number__istartswith=str(val))
+                elif op == "eq": qs = qs.filter(user__roll_number__iexact=str(val))
+            elif field == "submitted_at":
+                if op == "gte": qs = qs.filter(submitted_at__gte=val)
+                elif op == "lte": qs = qs.filter(submitted_at__lte=val)
+                elif op == "eq": qs = qs.filter(submitted_at__date=val)
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = self._base_qs()
         if query_req.search:
             q = query_req.search.strip()
-            qs = qs.filter(Q(user__email__icontains=q) | Q(user__first_name__icontains=q) | Q(form__title__icontains=q)).distinct()
+            matching_form_ids = Event.objects.filter(Q(title__icontains=q) | Q(venue__icontains=q)).values_list("registration_form_id", flat=True)
+            qs = qs.filter(
+                Q(user__email__icontains=q) |
+                Q(user__first_name__icontains=q) |
+                Q(user__last_name__icontains=q) |
+                Q(form__title__icontains=q) |
+                Q(form_id__in=matching_form_ids)
+            ).distinct()
+
+        qs = self._apply_filters(qs, query_req.filters)
 
         sort_field = "submitted_at" if query_req.sort.field not in {"id", "submitted_at"} else query_req.sort.field
         prefix = "-" if query_req.sort.direction == "desc" else ""
@@ -79,6 +133,18 @@ class EventRegistrationsAdapter(BaseDatasetAdapter):
         qs = self._base_qs()
         if selected_ids:
             qs = qs.filter(pk__in=selected_ids)
+        else:
+            if query_req.search:
+                q = query_req.search.strip()
+                matching_form_ids = Event.objects.filter(Q(title__icontains=q) | Q(venue__icontains=q)).values_list("registration_form_id", flat=True)
+                qs = qs.filter(
+                    Q(user__email__icontains=q) |
+                    Q(user__first_name__icontains=q) |
+                    Q(user__last_name__icontains=q) |
+                    Q(form__title__icontains=q) |
+                    Q(form_id__in=matching_form_ids)
+                ).distinct()
+            qs = self._apply_filters(qs, query_req.filters)
         event_form_map = {e.registration_form_id: e for e in Event.objects.exclude(registration_form=None)}
         for r in qs.iterator(chunk_size=500):
             yield self._normalize(r, event_form_map)
@@ -128,16 +194,37 @@ class CodequestSubmissionsAdapter(BaseDatasetAdapter):
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
         return list(CQ_COLS), list(CQ_FILTERS)
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "is_correct":
+                qs = qs.filter(is_correct=(str(val).lower() in ("true", "1", "yes")))
+            elif field == "difficulty":
+                qs = qs.filter(problem__difficulty=f.value)
+            elif field == "language":
+                if op == "eq": qs = qs.filter(language__iexact=str(val))
+                elif op == "contains": qs = qs.filter(language__icontains=str(val))
+            elif field == "problem_title":
+                if op == "contains": qs = qs.filter(problem__title__icontains=str(val))
+                elif op == "eq": qs = qs.filter(problem__title__iexact=str(val))
+            elif field == "name":
+                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
+                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
+            elif field == "email":
+                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
+                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = CQSubmission.objects.select_related("user", "problem")
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(user__email__icontains=q) | Q(problem__title__icontains=q)).distinct()
-        for f in query_req.filters:
-            if f.field == "is_correct":
-                qs = qs.filter(is_correct=bool(f.value))
-            elif f.field == "difficulty":
-                qs = qs.filter(problem__difficulty=f.value)
+        
+        qs = self._apply_filters(qs, query_req.filters)
+
         sort_field = query_req.sort.field if query_req.sort.field in {"id", "is_correct", "created_at"} else "created_at"
         prefix = "-" if query_req.sort.direction == "desc" else ""
         qs = qs.order_by(f"{prefix}{sort_field}")
@@ -157,6 +244,11 @@ class CodequestSubmissionsAdapter(BaseDatasetAdapter):
         qs = CQSubmission.objects.select_related("user", "problem")
         if selected_ids:
             qs = qs.filter(pk__in=selected_ids)
+        else:
+            if query_req.search:
+                q = query_req.search.strip()
+                qs = qs.filter(Q(user__email__icontains=q) | Q(problem__title__icontains=q)).distinct()
+            qs = self._apply_filters(qs, query_req.filters)
         for s in qs.iterator(chunk_size=500):
             yield self._normalize(s)
 
@@ -216,15 +308,35 @@ class CareerApplicationsAdapter(BaseDatasetAdapter):
         job_form_ids = JobListing.objects.exclude(application_form=None).values_list("application_form_id", flat=True)
         return Response.objects.filter(form_id__in=job_form_ids, is_test_submission=False).select_related("user", "form")
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "job_type":
+                job_form_ids = JobListing.objects.filter(job_type=val, application_form__isnull=False).values_list("application_form_id", flat=True)
+                qs = qs.filter(form_id__in=job_form_ids)
+            elif field == "job_title":
+                job_form_ids = JobListing.objects.filter(title__icontains=str(val), application_form__isnull=False).values_list("application_form_id", flat=True)
+                qs = qs.filter(form_id__in=job_form_ids)
+            elif field == "company":
+                job_form_ids = JobListing.objects.filter(company_name__icontains=str(val), application_form__isnull=False).values_list("application_form_id", flat=True)
+                qs = qs.filter(form_id__in=job_form_ids)
+            elif field == "name":
+                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
+                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
+            elif field == "email":
+                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
+                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = self._base_qs()
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(user__email__icontains=q) | Q(user__first_name__icontains=q)).distinct()
-        for f in query_req.filters:
-            if f.field == "job_type":
-                job_form_ids = JobListing.objects.filter(job_type=f.value, application_form__isnull=False).values_list("application_form_id", flat=True)
-                qs = qs.filter(form_id__in=job_form_ids)
+        
+        qs = self._apply_filters(qs, query_req.filters)
         qs = qs.order_by("-submitted_at")
         total = qs.count()
         offset = (query_req.page - 1) * query_req.page_size
@@ -244,6 +356,11 @@ class CareerApplicationsAdapter(BaseDatasetAdapter):
         qs = self._base_qs()
         if selected_ids:
             qs = qs.filter(pk__in=selected_ids)
+        else:
+            if query_req.search:
+                q = query_req.search.strip()
+                qs = qs.filter(Q(user__email__icontains=q) | Q(user__first_name__icontains=q)).distinct()
+            qs = self._apply_filters(qs, query_req.filters)
         job_map = {j.application_form_id: j for j in JobListing.objects.exclude(application_form=None)}
         for r in qs.iterator(chunk_size=500):
             yield self._normalize(r, job_map)
@@ -270,14 +387,35 @@ class CareerJobsAdapter(BaseDatasetAdapter):
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
         return list(CAREER_JOB_COLS), list(CAREER_FILTERS)
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "job_type":
+                qs = qs.filter(job_type=val)
+            elif field == "job_title":
+                if op == "contains": qs = qs.filter(title__icontains=str(val))
+                elif op == "eq": qs = qs.filter(title__iexact=str(val))
+            elif field == "company":
+                if op == "contains": qs = qs.filter(company_name__icontains=str(val))
+                elif op == "eq": qs = qs.filter(company_name__iexact=str(val))
+            elif field == "location":
+                if op == "contains": qs = qs.filter(location__icontains=str(val))
+                elif op == "eq": qs = qs.filter(location__iexact=str(val))
+            elif field == "deadline":
+                if op == "gte": qs = qs.filter(deadline__gte=val)
+                elif op == "lte": qs = qs.filter(deadline__lte=val)
+                elif op == "eq": qs = qs.filter(deadline__date=val)
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = JobListing.objects.all()
         if query_req.search:
             q = query_req.search.strip()
-            qs = qs.filter(Q(title__icontains=q) | Q(company_name__icontains=q))
-        for f in query_req.filters:
-            if f.field == "job_type":
-                qs = qs.filter(job_type=f.value)
+            qs = qs.filter(Q(title__icontains=q) | Q(company_name__icontains=q) | Q(location__icontains=q))
+        
+        qs = self._apply_filters(qs, query_req.filters)
         qs = qs.order_by("-created_at")
         total = qs.count()
         offset = (query_req.page - 1) * query_req.page_size
@@ -295,6 +433,11 @@ class CareerJobsAdapter(BaseDatasetAdapter):
         qs = JobListing.objects.all()
         if selected_ids:
             qs = qs.filter(pk__in=selected_ids)
+        else:
+            if query_req.search:
+                q = query_req.search.strip()
+                qs = qs.filter(Q(title__icontains=q) | Q(company_name__icontains=q) | Q(location__icontains=q))
+            qs = self._apply_filters(qs, query_req.filters)
         for j in qs.iterator(chunk_size=500):
             yield self._normalize(j)
 
