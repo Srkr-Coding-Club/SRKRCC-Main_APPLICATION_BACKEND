@@ -6,6 +6,8 @@ from django.core import checks
 
 from config.email_config import CONSOLE_BACKEND
 
+LOCMEM_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
+
 # Resend only sends from domains you have verified with it, never from free mailboxes.
 _FREE_MAIL_DOMAINS = {'gmail.com', 'googlemail.com', 'yahoo.com', 'outlook.com', 'hotmail.com'}
 
@@ -17,6 +19,9 @@ def _sender_address() -> str:
 @checks.register()
 def check_email_provider(app_configs, **kwargs):
     """Surface email misconfiguration at startup instead of as silently failed sends."""
+    # Django swaps in the in-memory backend while testing, so nothing real is configured then.
+    if settings.EMAIL_BACKEND == LOCMEM_BACKEND:
+        return []
     provider = settings.EMAIL_PROVIDER
     found = []
 
@@ -52,7 +57,8 @@ def check_email_provider(app_configs, **kwargs):
             hint='Set EMAIL_PROVIDER to resend (staging) or gmail (production).',
             id='core.W004',
         ))
-    if provider in ('resend', 'gmail') and urlparse(settings.FRONTEND_URL).hostname in ('localhost', '127.0.0.1'):
+    # Locally the frontend really is on localhost, so only flag it outside development.
+    if provider in ('resend', 'gmail') and not settings.DEBUG and urlparse(settings.FRONTEND_URL).hostname in ('localhost', '127.0.0.1'):
         found.append(checks.Warning(
             f'FRONTEND_URL is {settings.FRONTEND_URL}, so every link in an email will point at a local machine.',
             hint='Set FRONTEND_URL to the public address of the frontend, e.g. https://srkrcc.in.',

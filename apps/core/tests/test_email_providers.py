@@ -293,9 +293,16 @@ class EmailChecksTests(SimpleTestCase):
 
     def test_a_real_provider_with_a_localhost_frontend_url_is_flagged(self):
         for url in ('http://localhost:3000', 'http://127.0.0.1:3000'):
-            ids = self._ids(EMAIL_PROVIDER='resend', RESEND_API_KEY='re_x', FRONTEND_URL=url)
+            ids = self._ids(EMAIL_PROVIDER='resend', RESEND_API_KEY='re_x', DEBUG=False, FRONTEND_URL=url)
             self.assertEqual(ids, ['core.W005'], url)
+        # In development a localhost frontend is correct.
+        self.assertEqual(self._ids(EMAIL_PROVIDER='resend', RESEND_API_KEY='re_x', FRONTEND_URL='http://localhost:3000'), [])
         self.assertEqual(self._ids(FRONTEND_URL='http://localhost:3000'), [])  # console: links are only printed
+
+    def test_nothing_is_checked_while_testing_with_the_in_memory_backend(self):
+        ids = self._ids(EMAIL_PROVIDER='resend', RESEND_API_KEY='', DEBUG=False, FRONTEND_URL='http://localhost:3000',
+                        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+        self.assertEqual(ids, [])
 
     def test_gmail_needs_credentials(self):
         self.assertEqual(self._ids(EMAIL_PROVIDER='gmail', DEBUG=False), ['core.W003'])

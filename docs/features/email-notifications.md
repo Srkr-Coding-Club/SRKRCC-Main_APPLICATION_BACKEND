@@ -98,7 +98,7 @@ longer read. Templates for each environment live in `.env.example` (local),
 - It needs outbound access to port 587. Some hosts block SMTP, so confirm the production host allows it before relying on this.
 - Connections time out after 20 seconds so a stalled send cannot pin a web worker.
 
-**Startup checks.** `python manage.py check` reports misconfiguration instead of letting sends fail silently: `core.W001` Resend without an API key, `core.W002` Resend with a free-mailbox sender, `core.W003` Gmail without credentials, `core.W004` the console provider outside development, `core.W005` a real provider with a localhost `FRONTEND_URL`, and the informational `core.I001` when Gmail's From address differs from the account.
+**Startup checks.** (Skipped while running tests, when Django uses its in-memory backend.) `python manage.py check` reports misconfiguration instead of letting sends fail silently: `core.W001` Resend without an API key, `core.W002` Resend with a free-mailbox sender, `core.W003` Gmail without credentials, `core.W004` the console provider outside development, `core.W005` a real provider with a localhost `FRONTEND_URL` when `DEBUG=False`, and the informational `core.I001` when Gmail's From address differs from the account.
 
 **Trying a provider.** From a shell with the environment loaded:
 
