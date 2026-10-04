@@ -3,7 +3,7 @@ from django.utils import timezone
 from rest_framework import decorators, permissions, response, status, viewsets
 from rest_framework.exceptions import ValidationError
 from .models import Problem, Submission, UserStreak
-from .serializers import ProblemSerializer, SubmissionSerializer, UserStreakSerializer
+from .serializers import ProblemSerializer, SubmissionSerializer, UserStreakSerializer, BatchScheduleSerializer, BatchScheduleProblemSerializer
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead, _is_admin_or_club_lead
 from .services import rebuild_user_streak
 
@@ -61,3 +61,62 @@ class UserStreakViewSet(viewsets.ReadOnlyModelViewSet):
         if _is_admin_or_club_lead(self.request.user):
             return qs
         return qs.filter(user=self.request.user)
+
+
+class BatchScheduleView(viewsets.ViewSet):
+    """
+    Batch schedule multiple Codequest problems with their dates.
+    Accepts 1-5 problems at a time, each with title, date, difficulty, tags.
+    Only accessible to Admin and Club Lead.
+    """
+    permission_classes = [IsAdminOrClubLeadOrReadOnly]
+
+    def create(self, request):
+        serializer = BatchScheduleSerializer(data=request.data)
+        if not serializer.is_valid():
+            return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        validated = serializer.validated_data
+        if 'problems' in validated:
+            problem_entries = validated['problems']
+        else:
+            titles = validated['titles']
+            dates = validated['scheduled_dates']
+            difficulties = validated.get('difficulties', [])
+            tags = validated.get('tags', [])
+            problem_entries = [
+                {
+                    'title': title,
+                    'difficulty': difficulties[i] if i < len(difficulties) else 'EASY',
+                    'statement': f'Codequest problem: {title}',
+                    'tags': tags[i] if i < len(tags) else [],
+                    'scheduled_date': dates[i],
+                }
+                for i, title in enumerate(titles)
+            ]
+
+        created_problems = []
+
+        with transaction.atomic():
+            for problem_data in problem_entries:
+                problem_serializer = BatchScheduleProblemSerializer(data=problem_data)
+                if problem_serializer.is_valid():
+                    problem = problem_serializer.save()
+                    created_problems.append({
+                        'id': problem.id,
+                        'title': problem.title,
+                        'slug': problem.slug,
+                        'scheduled_date': problem.scheduled_date,
+                        'difficulty': problem.difficulty,
+                    })
+                else:
+                    transaction.set_rollback(True)
+                    return response.Response(
+                        {'error': f'Failed to create problem "{problem_data["title"]}": {problem_serializer.errors}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+        return response.Response({
+            'message': f'Successfully scheduled {len(created_problems)} problem(s)',
+            'problems': created_problems,
+        }, status=status.HTTP_201_CREATED)
