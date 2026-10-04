@@ -124,7 +124,7 @@ class RegistrationValidationTests(TestCase):
         self.assertIn('roll_number', resp.data)
 
     def test_roll_number_may_be_omitted(self):
-        """Optional field — a member can sign up without one and add it later
+        """Optional field - a member can sign up without one and add it later
         from their profile."""
         payload = self._payload()
         del payload['roll_number']
@@ -178,7 +178,7 @@ class RegistrationValidationTests(TestCase):
     def test_duplicate_roll_number_race_is_still_rejected_cleanly(self):
         """
         Simulates two requests both passing the pre-save exists() check and
-        racing to INSERT — the DB's unique constraint is the real backstop, and
+        racing to INSERT - the DB's unique constraint is the real backstop, and
         create() must turn that IntegrityError into a normal 400, not a 500.
         """
         from unittest.mock import patch
@@ -189,7 +189,7 @@ class RegistrationValidationTests(TestCase):
 
         def derive_username_then_insert_duplicate(email):
             # Runs after RegisterSerializer.create() computes the username but
-            # before it opens the atomic() block around create_user() — i.e.
+            # before it opens the atomic() block around create_user() - i.e.
             # before any savepoint exists, so this insert survives even though
             # the real create_user() call below it is about to fail and roll
             # its own savepoint back. That's what makes this a faithful stand-in
@@ -312,13 +312,13 @@ class RegistrationValidationTests(TestCase):
         # "must provide a valid Club ID" is the cross-field validate() message;
         # it must NOT be the one that fired here (checked instead of the naive
         # substring 'valid Club ID', which false-positives against "Invalid
-        # Club ID format" — "Invalid" itself contains "valid").
+        # Club ID format" - "Invalid" itself contains "valid").
         self.assertNotIn('must provide a valid Club ID', str(resp.data['club_id']))
 
     def test_anonymous_self_registration_cannot_grant_volunteer(self):
         # This endpoint is AllowAny (it's also the public signup form), so an
         # anonymous POST with role='VOLUNTEER' must be downgraded the same way
-        # ADMIN/CLUB_LEAD already are — VOLUNTEER is enough to reach the
+        # ADMIN/CLUB_LEAD already are - VOLUNTEER is enough to reach the
         # attendance-scan endpoint (IsVolunteerOrAbove), so letting anyone
         # self-grant it would be a privilege escalation.
         resp = self._post(role='VOLUNTEER')

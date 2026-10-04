@@ -13,7 +13,7 @@ Public API
     -> ``ValidationReport`` (``.ok``, ``.errors``, ``.warnings``, ``.cleaned_answers``).
     Enforces every stored form-definition rule on an incoming response. ``mode``
     is ``"strict"`` (public submit / edit) or ``"partial"`` (admin manual entry /
-    CSV import — required + constraint failures become warnings).
+    CSV import - required + constraint failures become warnings).
 
 ``validate_form_definition(form_or_payload)``
     -> ``DefinitionReport`` (``.publishable``, ``.errors``, ``.warnings``).

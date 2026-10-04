@@ -10,7 +10,7 @@ User = get_user_model()
 
 
 def _wait_until(predicate, timeout=2.0, interval=0.02):
-    """Polls `predicate()` until truthy or `timeout` elapses — the async export
+    """Polls `predicate()` until truthy or `timeout` elapses - the async export
     path runs on a real background thread (apps.core.tasks.run_in_background),
     so its effects aren't visible the instant the dispatching request returns."""
     deadline = time.monotonic() + timeout
@@ -49,7 +49,7 @@ class DMCAsyncExportTests(APITransactionTestCase):
     def test_export_endpoint_dispatches_and_completes_in_background(self):
         self.client.force_authenticate(self.admin)
         # DMC_SYNC_EXPORT_MAX_ROWS is read once at module import time, so
-        # @override_settings can't reach it — patch the module constant directly
+        # @override_settings can't reach it - patch the module constant directly
         # to force the async branch without needing 1000+ real rows.
         with patch("apps.core.dmc.export_service.DMC_SYNC_EXPORT_MAX_ROWS", 0):
             resp = self.client.post(
@@ -60,7 +60,7 @@ class DMCAsyncExportTests(APITransactionTestCase):
         self.assertEqual(resp.status_code, 202, resp.data)
         job_id = resp.data["job_id"]
 
-        # Immediately after dispatch, the job has not necessarily finished yet —
+        # Immediately after dispatch, the job has not necessarily finished yet -
         # it must be QUEUED or already RUNNING/COMPLETED, never left uncreated.
         job = ExportJob.objects.get(pk=job_id)
         self.assertIn(job.status, [ExportJob.STATUS_QUEUED, ExportJob.STATUS_RUNNING, ExportJob.STATUS_COMPLETED])
@@ -75,7 +75,7 @@ class DMCAsyncExportTests(APITransactionTestCase):
 
     def test_run_export_job_executes_correctly_when_run_directly(self):
         """Exercises the job function the same way run_in_background's thread
-        invokes it — directly, against a job left QUEUED."""
+        invokes it - directly, against a job left QUEUED."""
         from apps.core.dmc.tasks import run_export_job
 
         job = ExportJob.objects.create(

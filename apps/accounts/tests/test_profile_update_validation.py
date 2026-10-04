@@ -5,7 +5,7 @@ profile update).
 UserProfileDetailSerializer only marks id/role/created_at/club_id/email
 read-only, so first_name/last_name/roll_number/phone_number/branch/year are
 all writable here. They must be held to the exact same rules
-RegisterSerializer enforces at signup (apps/accounts/validators.py) —
+RegisterSerializer enforces at signup (apps/accounts/validators.py) -
 otherwise a user could PATCH their own profile to a value the signup form
 would have rejected outright.
 """
@@ -109,7 +109,7 @@ class ProfileUpdateValidationTests(TestCase):
 
     def test_once_set_via_admin_it_locks_against_the_member_too(self):
         """A roll number set by an admin (not the member) still locks the
-        self-service path the same way a self-set one does — the lock is
+        self-service path the same way a self-set one does - the lock is
         keyed on "does the user row already have a value", not on who put it
         there."""
         admin_set_user = User.objects.create_user(
@@ -129,7 +129,7 @@ class ProfileUpdateValidationTests(TestCase):
         self.assertEqual(self.user.branch, "IT")
 
     def test_email_is_immutable_via_profile_patch(self):
-        """email is the account identity (login + USERNAME_FIELD) — it must
+        """email is the account identity (login + USERNAME_FIELD) - it must
         never change through this endpoint, silently or otherwise."""
         resp = self._patch(email="attacker@evil.com", first_name="Ravi")
         self.assertEqual(resp.status_code, 200, resp.data)

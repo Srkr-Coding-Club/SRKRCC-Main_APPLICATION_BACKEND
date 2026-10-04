@@ -349,20 +349,20 @@ class ProblemStatementApiTests(APITestCase):
     def test_admin_crud_and_public_sees_active_only(self):
         self.client.force_authenticate(self.admin)
         resp = self.client.post(f'/api/hackathons/{self.hack.slug}/problem-statements/',
-                                {'code': 'ps-01', 'title': 'Smart Campus', 'max_teams': 2, 'tags': ['iot']}, format='json')
+                                {'title': 'Smart Campus', 'description': 'Automate attendance.', 'domain': 'EdTech',
+                                 'max_teams': 2, 'tags': ['iot']}, format='json')
         self.assertEqual(resp.status_code, 201, resp.data)
-        self.assertEqual(resp.data['code'], 'PS-01')
+        self.assertEqual(resp.data['code'], 'PS-001')
+        self.assertEqual(resp.data['domain'], 'EdTech')
         self.assertEqual(resp.data['slots_left'], 2)
-        dup = self.client.post(f'/api/hackathons/{self.hack.slug}/problem-statements/',
-                               {'code': 'PS-01', 'title': 'Dup'}, format='json')
-        self.assertEqual(dup.status_code, 400)
         hidden = make_ps(self.hack, 'OFF', is_active=False)
 
         self.client.force_authenticate(None)
         codes = [p['code'] for p in self.client.get(f'/api/hackathons/{self.hack.slug}/problem-statements/').data]
-        self.assertEqual(codes, ['PS-01'])
-        self.assertEqual(self.client.post(f'/api/hackathons/{self.hack.slug}/problem-statements/',
-                                          {'code': 'Z', 'title': 'Z'}, format='json').status_code in (401, 403), True)
+        self.assertEqual(codes, ['PS-001'])
+        anonymous_post = self.client.post(f'/api/hackathons/{self.hack.slug}/problem-statements/',
+                                          {'title': 'Z', 'description': 'z', 'domain': 'z'}, format='json')
+        self.assertIn(anonymous_post.status_code, (401, 403))
 
         self.client.force_authenticate(self.admin)
         resp = self.client.delete(f'/api/hackathons/{self.hack.slug}/problem-statements/{hidden.id}/')

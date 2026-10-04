@@ -2,7 +2,7 @@
 Verifies the mapping rule the 0007_affiliate_non_affiliate_roles data
 migration applies to historical MEMBER rows: a MEMBER with a club_id becomes
 AFFILIATE, a MEMBER without one becomes NON_AFFILIATE. This tests the rule
-directly against the current model (not the migration file itself — Django
+directly against the current model (not the migration file itself - Django
 migrations aren't easily unit-testable without extra tooling this repo
 doesn't have) so it stays meaningful as living documentation even after the
 one-time migration has run in every environment.

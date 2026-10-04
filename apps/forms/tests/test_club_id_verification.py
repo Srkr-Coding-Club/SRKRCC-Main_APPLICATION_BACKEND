@@ -1,5 +1,5 @@
 """
-Form.club_id_verification_enabled — the inverse of club_id_enabled (which
+Form.club_id_verification_enabled - the inverse of club_id_enabled (which
 *generates* a Club ID for a submitter who doesn't have one). This automation
 *verifies* a Club ID the submitter claims to already have: the submission is
 rejected if that Club ID isn't registered, or if any other mapped field
@@ -16,7 +16,7 @@ User = get_user_model()
 
 
 class ClubIdVerificationGatingTests(APITestCase):
-    """FormSerializer.validate() gating — mirrors test_form_automation_gating.py."""
+    """FormSerializer.validate() gating - mirrors test_form_automation_gating.py."""
 
     def setUp(self):
         self.admin = User.objects.create_user(
@@ -79,7 +79,7 @@ class ClubIdVerificationGatingTests(APITestCase):
 
 
 class ClubIdVerificationSubmissionTests(APITestCase):
-    """Submission-time verification — POST /api/forms/submissions/."""
+    """Submission-time verification - POST /api/forms/submissions/."""
 
     def setUp(self):
         self.member = User.objects.create_user(

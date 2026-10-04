@@ -1,8 +1,8 @@
 """
 Result objects returned by the validation engine.
 
-``ValidationReport``  — the outcome of validating one submission.
-``DefinitionReport``  — the outcome of validating a form's own definition.
+``ValidationReport``  - the outcome of validating one submission.
+``DefinitionReport``  - the outcome of validating a form's own definition.
 
 Both are plain dataclasses (no Django, no DRF) so they can be unit-tested and
 reused from any layer. ``ValidationReport.as_dict()`` produces the exact JSON
@@ -87,8 +87,8 @@ class DefinitionReport:
     """
     Outcome of ``definition.validate_form_definition``.
 
-    ``errors``   — structural problems that block PUBLISHED / SCHEDULED.
-    ``warnings`` — soft issues surfaced to the builder but never blocking.
+    ``errors``   - structural problems that block PUBLISHED / SCHEDULED.
+    ``warnings`` - soft issues surfaced to the builder but never blocking.
     """
     errors: list[FieldError] = field(default_factory=list)
     warnings: list[FieldError] = field(default_factory=list)

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The DMC is a **metadata-driven admin workspace** that exposes a unified, permission-aware view over all application data entities — Users, Form Responses, Hackathon Teams/Participants/Submissions, Event Registrations, CodeQuest Submissions, Career Applications, and Job Listings.
+The DMC is a **metadata-driven admin workspace** that exposes a unified, permission-aware view over all application data entities — Users, Form Responses, Hackathon Teams/Participants/Submissions/Round Results, Event Registrations, CodeQuest Submissions, Career Applications, and Job Listings.
 
 The architecture follows a strict principle: **DMC is a generic data engine sitting above the existing application data — not a collection of custom admin tables.**
 
@@ -32,7 +32,7 @@ Backend (Django DRF)
             ├── base.py          → BaseDatasetAdapter (abstract)
             ├── users.py         → Users & Members
             ├── forms.py         → FormsAll + FormIndividual (2-step pagination)
-            ├── hackathons.py    → Participants, Teams, Submissions
+            ├── hackathons.py    → Participants, Teams, Submissions, Round Results
             └── events_codequest_careers.py → Events, CodeQuest, Careers
 ```
 

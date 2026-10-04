@@ -15,7 +15,7 @@ def get_client_ip(request) -> str | None:
     # (SECURE_PROXY_SSL_HEADER in settings.py confirms it terminates TLS in
     # front of Django). That proxy appends the real client IP as the LAST hop
     # of X-Forwarded-For rather than replacing whatever the client already
-    # sent — so the first entry is attacker-controlled and picking it let
+    # sent - so the first entry is attacker-controlled and picking it let
     # anyone reset their own 20/hr/IP setup-link rate limit on every request
     # by sending a fresh forged X-Forwarded-For value each time.
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')

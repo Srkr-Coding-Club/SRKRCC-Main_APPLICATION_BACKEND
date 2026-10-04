@@ -275,7 +275,7 @@ class EmailDispatchView(APIView):
             )
 
             # Dispatch off the request/response cycle (a background thread, no
-            # task queue in this app — see apps/core/tasks.py) so a large
+            # task queue in this app - see apps/core/tasks.py) so a large
             # campaign doesn't hold a web worker for the full SMTP send duration.
             from apps.core.tasks import process_email_job, run_in_background
             run_in_background(lambda: process_email_job(job.id))

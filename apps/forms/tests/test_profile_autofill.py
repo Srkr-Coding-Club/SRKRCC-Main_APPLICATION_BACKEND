@@ -1,5 +1,5 @@
 """
-FormField.profile_field — a question mapped to a profile attribute is never
+FormField.profile_field - a question mapped to a profile attribute is never
 asked of the user; the server resolves and writes its value from the
 authenticated submitter's own profile at submission time, discarding
 whatever (if anything) the client sent for it. See
@@ -44,7 +44,7 @@ class ProfileAutofillSubmissionTests(APITestCase):
         return self.client.post("/api/forms/submissions/", body, format="json")
 
     def test_profile_value_is_stored_regardless_of_submitted_value(self):
-        """The client sends a bogus phone number — the server ignores it and
+        """The client sends a bogus phone number - the server ignores it and
         stores the submitter's real profile phone number instead."""
         resp = self._submit("0000000000", "The Bugslayers", "autofill-1")
         self.assertEqual(resp.status_code, 201, resp.data)
@@ -85,7 +85,7 @@ class ProfileAutofillSubmissionTests(APITestCase):
 
     def test_optional_profile_field_left_unresolvable_is_silently_skipped(self):
         """An optional (not required) profile-mapped field with no profile
-        data doesn't block submission — it's just left unanswered."""
+        data doesn't block submission - it's just left unanswered."""
         self.phone_field.is_required = False
         self.phone_field.save(update_fields=["is_required"])
         self.member.phone_number = ""
@@ -98,7 +98,7 @@ class ProfileAutofillSubmissionTests(APITestCase):
 
     def test_admin_manual_entry_is_unaffected_by_profile_mapping(self):
         """PARTIAL mode (admin manual entry) treats a profile-mapped field as
-        an ordinary answer supplied directly in the payload — the person
+        an ordinary answer supplied directly in the payload - the person
         being entered usually isn't the authenticated caller (the admin)."""
         admin = User.objects.create_user(
             username="admin1", email="admin1@srkr.ac.in", password="x",

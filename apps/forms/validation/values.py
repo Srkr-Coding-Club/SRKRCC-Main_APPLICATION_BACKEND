@@ -1,9 +1,9 @@
 """
 Value-level helpers shared by every validation layer.
 
-``is_empty``      — the single definition of "unanswered", consistent across
+``is_empty``      - the single definition of "unanswered", consistent across
                     required-checks and conditional evaluation.
-``coerce_value``  — turn a raw submitted value into the typed Python value the
+``coerce_value``  - turn a raw submitted value into the typed Python value the
                     field's validators expect, or raise ``CoercionError``.
 
 Coercion is deliberately lenient about *input* shape (the frontend sends numbers
@@ -155,7 +155,7 @@ def coerce_value(field, raw: Any) -> Any:
             if item.get("type"):
                 entry["type"] = str(item["type"])
             if item.get("url"):
-                # data: URI (inline capture) or an absolute URL — kept verbatim
+                # data: URI (inline capture) or an absolute URL - kept verbatim
                 # so the responses viewer can render / download it.
                 entry["url"] = str(item["url"])
             cleaned.append(entry)
@@ -164,5 +164,5 @@ def coerce_value(field, raw: Any) -> Any:
     if ftype == FieldType.SECTION:
         return None
 
-    # Unknown type — pass through untouched.
+    # Unknown type - pass through untouched.
     return raw

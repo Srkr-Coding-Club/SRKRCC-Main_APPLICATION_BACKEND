@@ -14,7 +14,7 @@ real, current setup, not the target/future one described further below:
 | Cache | **None.** No `CACHES` setting in `config/settings.py` — Django's default in-process `LocMemCache` backs the one thing that uses caching (password-setup rate limiting). |
 | Background jobs | **None separately deployed.** Plain Python threads inside the same web process — see [tech-stack.md](../architecture/tech-stack.md#background-jobs--caching-current-state). |
 | File storage | Django's default local filesystem storage — no Cloudflare R2 / S3 config exists in `settings.py` or `requirements.txt`. On a host with an ephemeral filesystem (like Render's free tier), uploaded files do not reliably survive a redeploy — a real gap if user-uploaded files (signatures, profile photos) matter long-term. |
-| Email | Django's `EmailMultiAlternatives`, console backend in dev / SMTP in prod — no Resend/Brevo integration exists yet. |
+| Email | Django's `EmailMultiAlternatives` via `EMAIL_PROVIDER`: console in dev, Resend on staging, Gmail SMTP in prod. Per-environment variables are in `.env.staging.example` and `.env.production.example`; details in [email-notifications.md](email-notifications.md#email-providers). `render.yaml` does not define the email variables, so set them in the Render dashboard for each service. |
 | Monitoring | None configured (no Sentry/PostHog in `requirements.txt`). |
 
 ## Target / Future Deployment (aspirational — not yet built)
@@ -30,7 +30,7 @@ the running system.
 | Database | Neon or Supabase (PostgreSQL) |
 | Storage | Cloudflare R2 |
 | Cache | Upstash Redis |
-| Email | Resend / Brevo (free tier) |
+| Email | Resend for staging, Gmail SMTP for production (already wired up) |
 | Monitoring | Sentry / UptimeRobot (free) |
 | CI/CD | GitHub Actions |
 

@@ -17,7 +17,7 @@ def _wait_until(predicate, timeout=2.0, interval=0.02):
 
     The confirmation-email auto-fire path now runs on a real background thread
     (apps.core.tasks.run_in_background) instead of executing inline, so tests
-    that assert on its effects (mail.outbox, DB status) need to wait for it —
+    that assert on its effects (mail.outbox, DB status) need to wait for it -
     it usually finishes in well under a millisecond against the in-memory test
     email backend, but must never be assumed synchronous.
     """
@@ -36,14 +36,14 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
 
     Uses APITransactionTestCase (real commits) rather than APITestCase (each
     test wrapped in a rolled-back transaction) because the confirmation email
-    now sends on a background thread with its own DB connection — that thread
+    now sends on a background thread with its own DB connection - that thread
     can only see rows this test has actually committed, not rows still inside
     an uncommitted per-test transaction.
     """
 
     def setUp(self):
         # The anon 'form_submit' throttle scope is keyed in the shared cache by
-        # client IP and persists across tests in the same process — clear it so
+        # client IP and persists across tests in the same process - clear it so
         # this file's several submissions never bleed into (or get starved by)
         # other test files' own submission counts.
         cache.clear()
@@ -61,7 +61,7 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
         )
         self.email_field = add_field(self.form, FieldType.EMAIL, label="Email", required=True, order=1)
         # Confirmation-email's recipient-resolution fallback (no club-id automation
-        # running) reads the recipient from `club_id_field_mapping['email']` — set
+        # running) reads the recipient from `club_id_field_mapping['email']` - set
         # it directly so the test doesn't have to enable full club-id automation.
         self.form.club_id_field_mapping = {"email": self.email_field.id}
         self.form.save(update_fields=["club_id_field_mapping"])
@@ -91,7 +91,7 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
 
         # Sent on a background thread. `mail.outbox` gets its entry appended
         # slightly BEFORE the delivery/job rows are saved (send, then persist),
-        # so poll the actual persisted status rather than the outbox alone —
+        # so poll the actual persisted status rather than the outbox alone -
         # otherwise the GET below can race the thread's own DB writes.
         self.client.force_authenticate(self.admin)
 

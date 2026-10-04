@@ -34,7 +34,7 @@ class ExportJob(models.Model):
         related_name="dmc_export_jobs",
     )
 
-    # Request snapshot — frozen at export initiation time
+    # Request snapshot - frozen at export initiation time
     format     = models.CharField(max_length=10, choices=FORMAT_CHOICES, default="csv")
     row_scope  = models.CharField(max_length=20, default="all_filtered")   # "selected" | "all_filtered"
     column_scope = models.CharField(max_length=20, default="visible")      # "visible" | "all_permitted"
@@ -64,7 +64,7 @@ class ExportJob(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"ExportJob #{self.pk} [{self.dataset_id}] {self.format.upper()} — {self.status}"
+        return f"ExportJob #{self.pk} [{self.dataset_id}] {self.format.upper()}: {self.status}"
 
     @property
     def is_downloadable(self) -> bool:

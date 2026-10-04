@@ -1,5 +1,5 @@
 """
-FormSerializer.validate_title — DRF's CharField only rejects a literal ""
+FormSerializer.validate_title - DRF's CharField only rejects a literal ""
 ("may not be blank"), so a whitespace-only title like "   " used to pass
 straight through and get persisted. That form then rendered as a blank row
 everywhere its title is listed (the admin's "Select a form" dropdown in the

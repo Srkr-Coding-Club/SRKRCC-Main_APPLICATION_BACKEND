@@ -322,7 +322,7 @@ class UserAccountService:
                     created = False
                     user = cls.find_by_email(email)
                     if not user:
-                        # Not an email collision after all — check whether it was
+                        # Not an email collision after all - check whether it was
                         # actually a roll_number collision (roll_number carries a
                         # unique constraint) before falling back to the generic
                         # re-raise below.
@@ -331,7 +331,7 @@ class UserAccountService:
                                 f"Roll number '{roll_num}' is already registered to another member."
                             )
                         # Not an email collision after all (e.g. username or club_id
-                        # unique constraint) — re-raise the original failure shape.
+                        # unique constraint) - re-raise the original failure shape.
                         raise
 
             if not created:
@@ -419,7 +419,7 @@ class UserAccountService:
                     update_field_list.append("updated_at")
                     try:
                         # Nested atomic (savepoint) so an IntegrityError here only
-                        # rolls back this save, not the whole outer transaction —
+                        # rolls back this save, not the whole outer transaction -
                         # otherwise the diagnostic query below would itself fail
                         # with "You can't execute queries until the end of the
                         # 'atomic' block."
@@ -432,7 +432,7 @@ class UserAccountService:
                             raise RollNumberConflictError(
                                 f"Roll number '{roll_num}' is already registered to another member."
                             )
-                        # Not a roll_number collision — re-raise the original
+                        # Not a roll_number collision - re-raise the original
                         # failure shape rather than swallowing an unexpected
                         # constraint violation.
                         raise

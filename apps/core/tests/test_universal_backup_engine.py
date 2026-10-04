@@ -116,7 +116,7 @@ class UniversalBackupEngineTests(TestCase):
     def test_commit_blocked_below_50_percent_confidence(self):
         """
         The commit path must independently enforce the Strict 50% Rule server-side
-        — the UI's own gate is advisory, not a security boundary (never trust the
+        - the UI's own gate is advisory, not a security boundary (never trust the
         frontend). A regression test for a bug where `commit_import` never checked
         `required_fields_satisfied` / `schema_confidence_percentage` at all, so a
         direct API call (or a UI that displayed a stale/wrong confidence number)

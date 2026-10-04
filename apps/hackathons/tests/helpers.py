@@ -31,7 +31,10 @@ def make_hackathon(**kw):
 
 
 def make_ps(hackathon, code='PS1', **kw):
-    return ProblemStatement.objects.create(hackathon=hackathon, code=code, title=f'Problem {code}', **kw)
+    kw.setdefault('title', f'Problem {code}')
+    kw.setdefault('description', 'Test problem.')
+    kw.setdefault('domain', 'General')
+    return ProblemStatement.objects.create(hackathon=hackathon, code=code, **kw)
 
 
 def make_team(hackathon, leader, *members, name=None, status=TeamStatus.REGISTERED, ps=None):

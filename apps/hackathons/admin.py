@@ -21,7 +21,7 @@ class TeamMemberInline(admin.TabularInline):
 
 @admin.register(Team)
 class TeamAdmin(admin.ModelAdmin):
-    list_display = ['name', 'hackathon', 'leader', 'status', 'problem_statement']
+    list_display = ['name', 'hackathon', 'leader', 'status', 'problem_statement', 'is_open_innovation']
     list_filter = ['hackathon', 'status']
     search_fields = ['name', 'leader__email']
     inlines = [TeamMemberInline]
@@ -29,7 +29,8 @@ class TeamAdmin(admin.ModelAdmin):
 
 @admin.register(ProblemStatement)
 class ProblemStatementAdmin(admin.ModelAdmin):
-    list_display = ['code', 'title', 'hackathon', 'max_teams', 'is_active']
+    list_display = ['code', 'title', 'domain', 'hackathon', 'max_teams', 'is_active']
+    readonly_fields = ['code']
     list_filter = ['hackathon', 'is_active']
 
 

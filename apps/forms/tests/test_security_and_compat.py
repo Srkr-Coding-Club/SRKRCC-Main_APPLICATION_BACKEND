@@ -105,7 +105,7 @@ class BackwardCompatTests(TestCase):
 
 
 class FormVisibilityTests(APITestCase):
-    """DRAFT forms are unfinished/internal — only ADMIN/CLUB_LEAD may list or
+    """DRAFT forms are unfinished/internal - only ADMIN/CLUB_LEAD may list or
     retrieve them; everyone else (including anonymous) must not be able to
     discover a draft form's existence or field structure, whether by listing
     or by knowing/guessing its slug."""
@@ -140,7 +140,7 @@ class FormVisibilityTests(APITestCase):
 
 class AnonymousSubmissionIdentityTests(APITestCase):
     """An anonymous submitter must never be able to attribute a response to
-    an arbitrary user by ID — that was an IDOR letting anyone hijack another
+    an arbitrary user by ID - that was an IDOR letting anyone hijack another
     member's single-submission response or consume their response quota."""
 
     def setUp(self):

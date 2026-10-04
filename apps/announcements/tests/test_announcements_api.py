@@ -48,7 +48,7 @@ class AnnouncementsApiTests(APITestCase):
     def test_member_read_is_also_filtered_to_active_only(self):
         # Read access is open to anyone (SAFE_METHODS), but a regular member
         # is not admin/club-lead, so they get the same public-filtered view
-        # as an anonymous caller — not the admin's full list.
+        # as an anonymous caller - not the admin's full list.
         Announcement.objects.create(title='Active', message='m', is_active=True)
         Announcement.objects.create(title='Inactive', message='m', is_active=False)
         self.client.force_authenticate(self.member)

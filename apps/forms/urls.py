@@ -5,7 +5,7 @@ router = DefaultRouter()
 router.register(r'submissions', ResponseViewSet, basename='form-submission')
 router.register(r'', FormViewSet, basename='form')
 
-# Separate router for /api/members/ — registered independently in config/urls.py
+# Separate router for /api/members/ - registered independently in config/urls.py
 members_router = DefaultRouter()
 members_router.register(r'', MemberViewSet, basename='member')
 

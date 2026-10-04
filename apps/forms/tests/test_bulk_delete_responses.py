@@ -12,7 +12,7 @@ class BulkDeleteResponsesTests(APITestCase):
     POST /api/forms/{slug}/responses/bulk-delete/
 
     Admins/club leads may delete a batch of a form's responses in one call.
-    Every id in the request must belong to the target form — if any don't,
+    Every id in the request must belong to the target form - if any don't,
     nothing is deleted and the endpoint reports a 400.
     """
 

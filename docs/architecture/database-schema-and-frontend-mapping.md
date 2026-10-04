@@ -195,6 +195,9 @@ erDiagram
         string name "unique per hackathon, case-insensitive"
         int leader_id FK "nullable"
         int problem_statement_id FK "nullable"
+        bool is_open_innovation
+        string custom_problem_title
+        string custom_problem_domain
         string status "FORMING, REGISTERED, DISQUALIFIED, WITHDRAWN"
         datetime created_at
         datetime updated_at
@@ -223,8 +226,9 @@ erDiagram
     PROBLEM_STATEMENT {
         int id PK
         int hackathon_id FK
-        string code "unique per hackathon"
+        string code "generated, unique per hackathon"
         string title
+        string domain
         int max_teams "nullable"
         bool is_active
     }
@@ -494,13 +498,14 @@ API-only (not DB columns — annotated in `EventViewSet.get_queryset()` / serial
 - `registration_opens_at` / `registration_closes_at` (`DateTimeField`, nullable)
 - `min_team_size` / `max_team_size` (`PositiveIntegerField`, defaults 1 / 4)
 - `team_edits_locked` (`BooleanField`, default: False)
+- `allow_open_innovation` (`BooleanField`, default: True)
 - `required_profile_fields` (`JSONField`, default: `list` of `forms.ProfileField` keys)
 
 API-only: `is_registration_open` (property: `status == LIVE` and now within the registration window). Also API-only (not DB columns — annotated in `HackathonViewSet.get_queryset()` / serialized from `registration_form`): `form_slug`, `form_title`, `registration_count` (non-test `Form.responses` count for the linked `registration_form`), `team_count` (`teams` reverse count).
 
 #### `ProblemStatement` (Table: `hackathons_problemstatement`)
 - `hackathon_id` (`ForeignKey -> Hackathon`, `on_delete=CASCADE`, `related_name='problem_statements'`)
-- `code` (`CharField(30)`, unique per hackathon), `title`, `description` (Markdown), `category`, `tags` (`JSONField` list)
+- `code` (`CharField(30)`, unique per hackathon; **generated** as `PS-001`, `PS-002`, … by `ProblemStatementService`), `title`, `description` (Markdown), `domain` (`CharField(100)`, renamed from `category` in migration 0008), `tags` (`JSONField` list)
 - `max_teams` (`PositiveIntegerField`, nullable = unlimited), `is_active`, `order`
 
 #### `Team` (Table: `hackathons_team`)
@@ -510,6 +515,7 @@ API-only: `is_registration_open` (property: `status == LIVE` and now within the 
 - `leader_id` (`ForeignKey -> User`, `on_delete=SET_NULL`, nullable, `related_name='led_teams'`) — a deleted user never takes the rest of the team or its Submission with them
 - `members` (`ManyToManyField -> User` **through `TeamMember`**, `related_name='hackathon_teams'`)
 - `problem_statement_id` (`ForeignKey -> ProblemStatement`, `on_delete=SET_NULL`, nullable, `related_name='teams'`)
+- `is_open_innovation` (`BooleanField`), `custom_problem_title` (`CharField(255)`), `custom_problem_description` (`TextField`), `custom_problem_domain` (`CharField(100)`) — the team's own problem when it goes open innovation; mutually exclusive with `problem_statement`. The derived ID is `OI-<team id>`.
 - `status` (`FORMING` / `REGISTERED` / `DISQUALIFIED` / `WITHDRAWN`)
 
 #### `TeamMember` (Table: `hackathons_teammember`)

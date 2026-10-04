@@ -4,7 +4,7 @@ from django.db import models
 from apps.core.models import TimeStampedModel
 
 class UserRole(models.TextChoices):
-    # AFFILIATE always has a club_id — enforced in RegisterSerializer.validate()
+    # AFFILIATE always has a club_id - enforced in RegisterSerializer.validate()
     # (signup + the admin "Create New User" modal, which reuses that same
     # endpoint) and in UserDetailView.perform_update (the admin role-change
     # PATCH). NON_AFFILIATE has no such requirement, though nothing stops one
@@ -67,7 +67,7 @@ class User(AbstractUser, TimeStampedModel):
     # Profile & Academic Details
     #
     # unique=True (added alongside the self-registration uniqueness check in
-    # RegisterSerializer) — two students previously could sign up with the same
+    # RegisterSerializer) - two students previously could sign up with the same
     # roll number since nothing enforced it beyond format. NULL is exempt from
     # the constraint, which legacy/admin/faculty rows without a roll number rely
     # on; blank='' is not, so callers that don't have a value must pass None

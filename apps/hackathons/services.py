@@ -2,13 +2,17 @@
 Business rules for hackathon team formation, rounds and announcements.
 
 Every state change goes through here (never through a raw serializer save) so
-the rules — registration window, team size, one team per user per hackathon,
-leader-only edits, problem-statement capacity — live in one place and are
+the rules - registration window, team size, one team per user per hackathon,
+leader-only edits, problem-statement capacity - live in one place and are
 enforced identically for every endpoint. Mutations run inside
 ``transaction.atomic`` with the Team row locked, so two concurrent invite
 accepts can't both squeeze past the size limit.
 """
 from __future__ import annotations
+
+import csv
+import io
+import re
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
@@ -103,16 +107,17 @@ def _require_profile_complete(hackathon: Hackathon, user, *, who='your'):
     missing = missing_profile_fields(hackathon, user)
     if missing:
         raise HackathonError(
-            f"Complete {who} profile first — missing: {', '.join(missing)}.",
+            f"Complete {who} profile first. Missing: {', '.join(missing)}.",
             'PROFILE_INCOMPLETE',
         )
 
 
-def _check_problem_statement(hackathon: Hackathon, ps: ProblemStatement | None, *, exclude_team: Team | None = None):
-    if ps is None:
-        if hackathon.problem_statements.filter(is_active=True).exists():
-            raise HackathonError('Pick a problem statement.', 'PROBLEM_STATEMENT_REQUIRED', field='problem_statement')
-        return
+MAX_PROBLEM_TITLE = 255
+MAX_PROBLEM_DOMAIN = 100
+MAX_PROBLEM_DESCRIPTION = 5000
+
+
+def _check_problem_statement(hackathon: Hackathon, ps: ProblemStatement, *, exclude_team: Team | None = None):
     if ps.hackathon_id != hackathon.id or not ps.is_active:
         raise HackathonError('That problem statement is not available.', 'PROBLEM_STATEMENT_INVALID', field='problem_statement')
     if ps.max_teams:
@@ -120,7 +125,61 @@ def _check_problem_statement(hackathon: Hackathon, ps: ProblemStatement | None, 
         if exclude_team is not None:
             taken = taken.exclude(pk=exclude_team.pk)
         if taken.count() >= ps.max_teams:
-            raise HackathonError('That problem statement is full — pick another.', 'PROBLEM_STATEMENT_FULL', field='problem_statement')
+            raise HackathonError('That problem statement is full. Pick another.', 'PROBLEM_STATEMENT_FULL', field='problem_statement')
+
+
+def _clean_open_innovation(data: dict) -> dict:
+    """Title, description and domain are all mandatory for an open-innovation problem."""
+    limits = {
+        'title': ('custom_problem_title', MAX_PROBLEM_TITLE, 'Problem title'),
+        'description': ('custom_problem_description', MAX_PROBLEM_DESCRIPTION, 'Problem description'),
+        'domain': ('custom_problem_domain', MAX_PROBLEM_DOMAIN, 'Problem domain'),
+    }
+    cleaned = {}
+    for key, (field, limit, label) in limits.items():
+        value = str((data or {}).get(key) or '').strip()
+        if not value:
+            raise HackathonError(f'{label} is required for open innovation.', 'OPEN_INNOVATION_INCOMPLETE', field=field)
+        if len(value) > limit:
+            raise HackathonError(f'{label} is too long (max {limit} characters).', 'OPEN_INNOVATION_TOO_LONG', field=field)
+        cleaned[field] = value
+    return cleaned
+
+
+def _resolve_problem(hackathon: Hackathon, problem_statement, open_innovation, *, exclude_team: Team | None = None) -> dict:
+    """Turn the team's problem choice into Team field values, enforcing the rules.
+
+    A team either picks one admin-defined statement or goes open innovation with
+    its own title/description/domain - never both. With neither, a problem is only
+    mandatory once the hackathon actually has statements to pick from.
+    """
+    if problem_statement is not None and open_innovation:
+        raise HackathonError(
+            'Pick a problem statement or go open innovation, not both.', 'PROBLEM_CHOICE_CONFLICT', field='problem_statement',
+        )
+    blank_custom = {'custom_problem_title': '', 'custom_problem_description': '', 'custom_problem_domain': ''}
+
+    if open_innovation:
+        if not hackathon.allow_open_innovation:
+            raise HackathonError('Open innovation is not enabled for this hackathon.', 'OPEN_INNOVATION_DISABLED', field='open_innovation')
+        return {'problem_statement': None, 'is_open_innovation': True, **_clean_open_innovation(open_innovation)}
+
+    if problem_statement is not None:
+        ProblemStatement.objects.select_for_update().filter(pk=problem_statement.pk).first()
+        _check_problem_statement(hackathon, problem_statement, exclude_team=exclude_team)
+        return {'problem_statement': problem_statement, 'is_open_innovation': False, **blank_custom}
+
+    if hackathon.problem_statements.filter(is_active=True).exists():
+        message = 'Pick a problem statement' + (' or go open innovation with your own.' if hackathon.allow_open_innovation else '.')
+        raise HackathonError(message, 'PROBLEM_STATEMENT_REQUIRED', field='problem_statement')
+    return {'problem_statement': None, 'is_open_innovation': False, **blank_custom}
+
+
+def problem_label(team: Team) -> str | None:
+    """The ID a team's problem is known by: PS-001 for a statement, OI-<team id> for open innovation."""
+    if team.problem_statement_id:
+        return team.problem_statement.code
+    return team.open_innovation_code if team.is_open_innovation else None
 
 
 def _lock_team(team: Team) -> Team:
@@ -138,6 +197,41 @@ def _recompute_status(team: Team):
         team.save(update_fields=['status', 'updated_at'])
 
 
+def _run_in_background(fn):
+    from apps.core.tasks import run_in_background
+    run_in_background(fn)
+
+
+def send_invite_email(invite_id: int) -> bool:
+    """Tell the invitee they've been invited. Looked up by id - runs on a background thread."""
+    from django.conf import settings
+    from django.utils.html import escape
+    from apps.core.services.email_service import EmailNotificationService
+
+    invite = (
+        TeamInvite.objects.select_related('team', 'hackathon', 'invited_user', 'invited_by')
+        .filter(pk=invite_id, status=InviteStatus.PENDING).first()
+    )
+    if invite is None:
+        return False
+    user = invite.invited_user
+    first_name = user.first_name or user.email.split('@')[0]
+    inviter = (invite.invited_by.get_full_name() or invite.invited_by.email) if invite.invited_by else 'A team leader'
+    url = f"{getattr(settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')}/hackathons/{invite.hackathon.slug}/dashboard"
+    subject = f'[{invite.hackathon.title}] You are invited to join team {invite.team.name}'
+    text = (
+        f'Hi {first_name},\n\n{inviter} invited you to join the team "{invite.team.name}" '
+        f'for {invite.hackathon.title}.\n\nAccept or decline the invite from your team dashboard:\n{url}\n'
+    )
+    html = (
+        f'<p>Hi {escape(first_name)},</p>'
+        f'<p>{escape(inviter)} invited you to join the team <strong>{escape(invite.team.name)}</strong> '
+        f'for {escape(invite.hackathon.title)}.</p>'
+        f'<p><a href="{escape(url)}">Accept or decline the invite on your team dashboard</a></p>'
+    )
+    return EmailNotificationService.send_email(user.email, subject, text, html)
+
+
 def _audit(actor, action, team: Team, **details):
     log_audit_event(
         actor=actor, action=action, target_model='HackathonTeam', target_id=team.pk,
@@ -153,7 +247,8 @@ class TeamService:
 
     @staticmethod
     @transaction.atomic
-    def create_team(hackathon: Hackathon, leader, name: str, problem_statement: ProblemStatement | None) -> Team:
+    def create_team(hackathon: Hackathon, leader, name: str, problem_statement: ProblemStatement | None = None,
+                    open_innovation: dict | None = None) -> Team:
         name = (name or '').strip()
         if not name:
             raise HackathonError('Team name is required.', 'NAME_REQUIRED', field='name')
@@ -167,15 +262,10 @@ class TeamService:
         _require_profile_complete(hackathon, leader)
         if hackathon.teams.filter(name__iexact=name).exists():
             raise HackathonError('That team name is already taken.', 'NAME_TAKEN', field='name')
-        if problem_statement is not None:
-            ProblemStatement.objects.select_for_update().filter(pk=problem_statement.pk).first()
-        _check_problem_statement(hackathon, problem_statement)
+        problem = _resolve_problem(hackathon, problem_statement, open_innovation)
 
         try:
-            team = Team.objects.create(
-                hackathon=hackathon, name=name, leader=leader,
-                problem_statement=problem_statement, status=TeamStatus.FORMING,
-            )
+            team = Team.objects.create(hackathon=hackathon, name=name, leader=leader, status=TeamStatus.FORMING, **problem)
             TeamMember.objects.create(team=team, hackathon=hackathon, user=leader, role=TeamRole.LEADER)
         except IntegrityError:
             raise HackathonError('You are already in a team, or that name is taken.', 'CONFLICT')
@@ -186,12 +276,13 @@ class TeamService:
         ).update(status=InviteStatus.CANCELLED, responded_at=timezone.now())
 
         _recompute_status(team)
-        _audit(leader, 'Created Hackathon Team', team, problem_statement=getattr(problem_statement, 'code', None))
+        _audit(leader, 'Created Hackathon Team', team, problem=problem_label(team))
         return team
 
     @staticmethod
     @transaction.atomic
-    def update_team(team: Team, actor, *, name=None, problem_statement=..., ) -> Team:
+    def update_team(team: Team, actor, *, name=None, change_problem=False,
+                    problem_statement: ProblemStatement | None = None, open_innovation: dict | None = None) -> Team:
         team = _lock_team(team)
         _require_leader(team, actor)
         _require_team_editable(team, actor)
@@ -205,15 +296,14 @@ class TeamService:
             if name != team.name:
                 changes['name'] = [team.name, name]
                 team.name = name
-        if problem_statement is not ...:
-            if problem_statement is not None:
-                ProblemStatement.objects.select_for_update().filter(pk=problem_statement.pk).first()
-            _check_problem_statement(team.hackathon, problem_statement, exclude_team=team)
-            if problem_statement != team.problem_statement:
-                changes['problem_statement'] = [
-                    getattr(team.problem_statement, 'code', None), getattr(problem_statement, 'code', None),
-                ]
-                team.problem_statement = problem_statement
+        if change_problem:
+            before = problem_label(team)
+            problem = _resolve_problem(team.hackathon, problem_statement, open_innovation, exclude_team=team)
+            for field, value in problem.items():
+                setattr(team, field, value)
+            after = problem_label(team)
+            if before != after or problem['is_open_innovation']:
+                changes['problem'] = [before, after]
         if changes:
             team.save()
             _audit(actor, 'Updated Hackathon Team', team, changes=changes)
@@ -256,6 +346,8 @@ class TeamService:
         except IntegrityError:
             raise HackathonError('Already invited.', 'CANNOT_INVITE', field='email')
         _audit(actor, 'Invited Hackathon Team Member', team, invitee=target.email)
+        invite_id = invite.pk
+        transaction.on_commit(lambda: _run_in_background(lambda: send_invite_email(invite_id)))
         return invite
 
     @staticmethod
@@ -434,6 +526,120 @@ class TeamService:
 
 
 # ---------------------------------------------------------------------------
+# Problem statements
+# ---------------------------------------------------------------------------
+
+CSV_COLUMN_ALIASES = {
+    'title': ('title', 'problem title', 'problem statement', 'name'),
+    'description': ('description', 'problem description', 'details', 'summary'),
+    'domain': ('domain', 'category', 'track', 'theme'),
+}
+CSV_MAX_ROWS = 500
+
+
+class ProblemStatementService:
+    """Admin-defined problems. The application, not the admin, assigns every ID."""
+
+    @staticmethod
+    def next_code(hackathon: Hackathon) -> str:
+        highest = 0
+        for code in hackathon.problem_statements.values_list('code', flat=True):
+            match = re.fullmatch(r'PS-(\d+)', code or '')
+            if match:
+                highest = max(highest, int(match.group(1)))
+        return f'PS-{highest + 1:03d}'
+
+    @staticmethod
+    @transaction.atomic
+    def create(hackathon: Hackathon, actor, **fields) -> ProblemStatement:
+        # Serialise ID generation per hackathon so two admins can't be handed the same ID.
+        Hackathon.objects.select_for_update().get(pk=hackathon.pk)
+        statement = ProblemStatement.objects.create(
+            hackathon=hackathon, code=ProblemStatementService.next_code(hackathon), **fields,
+        )
+        log_audit_event(
+            actor=actor, action='Created Problem Statement', target_model='ProblemStatement', target_id=statement.pk,
+            details={'hackathon': hackathon.slug, 'code': statement.code, 'title': statement.title},
+        )
+        return statement
+
+    @staticmethod
+    def _map_headers(fieldnames) -> dict:
+        mapping = {}
+        for raw in fieldnames or []:
+            key = (raw or '').strip().lower()
+            for canonical, aliases in CSV_COLUMN_ALIASES.items():
+                if key in aliases and canonical not in mapping.values():
+                    mapping[raw] = canonical
+        return mapping
+
+    @staticmethod
+    @transaction.atomic
+    def import_csv(hackathon: Hackathon, actor, raw: bytes) -> dict:
+        """Create statements from a CSV with title, description and domain columns.
+
+        Valid rows are imported and invalid ones reported by row number; a row that
+        repeats an existing (title, domain) is skipped rather than duplicated.
+        """
+        try:
+            text = raw.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            raise HackathonError('The file must be a UTF-8 encoded CSV.', 'CSV_ENCODING', field='file')
+        reader = csv.DictReader(io.StringIO(text))
+        mapping = ProblemStatementService._map_headers(reader.fieldnames)
+        missing = [c for c in CSV_COLUMN_ALIASES if c not in mapping.values()]
+        if missing:
+            raise HackathonError(
+                f"The CSV needs these columns: {', '.join(CSV_COLUMN_ALIASES)}. Missing: {', '.join(missing)}.",
+                'CSV_MISSING_COLUMNS', field='file',
+            )
+
+        rows = list(reader)
+        if len(rows) > CSV_MAX_ROWS:
+            raise HackathonError(f'Too many rows (max {CSV_MAX_ROWS} per upload).', 'CSV_TOO_MANY_ROWS', field='file')
+
+        Hackathon.objects.select_for_update().get(pk=hackathon.pk)
+        seen = {(t.lower(), d.lower()) for t, d in hackathon.problem_statements.values_list('title', 'domain')}
+        next_number = int(ProblemStatementService.next_code(hackathon).split('-')[1])
+        next_order = (hackathon.problem_statements.order_by('-order').values_list('order', flat=True).first() or 0) + 1
+        created, skipped, errors = [], 0, []
+
+        for line_number, row in enumerate(rows, start=2):
+            values = {canonical: (row.get(raw_header) or '').strip() for raw_header, canonical in mapping.items()}
+            problem = next((f'{name} is required' for name in CSV_COLUMN_ALIASES if not values.get(name)), None)
+            if problem is None and len(values['title']) > MAX_PROBLEM_TITLE:
+                problem = f'title is too long (max {MAX_PROBLEM_TITLE} characters)'
+            if problem is None and len(values['domain']) > MAX_PROBLEM_DOMAIN:
+                problem = f'domain is too long (max {MAX_PROBLEM_DOMAIN} characters)'
+            if problem is None and len(values['description']) > MAX_PROBLEM_DESCRIPTION:
+                problem = f'description is too long (max {MAX_PROBLEM_DESCRIPTION} characters)'
+            if problem:
+                errors.append({'row': line_number, 'message': problem})
+                continue
+            key = (values['title'].lower(), values['domain'].lower())
+            if key in seen:
+                skipped += 1
+                continue
+            seen.add(key)
+            created.append(ProblemStatement(
+                hackathon=hackathon, code=f'PS-{next_number:03d}', order=next_order,
+                title=values['title'], description=values['description'], domain=values['domain'],
+            ))
+            next_number += 1
+            next_order += 1
+
+        ProblemStatement.objects.bulk_create(created)
+        log_audit_event(
+            actor=actor, action='Imported Problem Statements', target_model='Hackathon', target_id=hackathon.slug,
+            details={'created': len(created), 'skipped_duplicates': skipped, 'errors': len(errors)},
+        )
+        return {
+            'created': len(created), 'skipped': skipped, 'errors': errors,
+            'codes': [statement.code for statement in created],
+        }
+
+
+# ---------------------------------------------------------------------------
 # Rounds & shortlisting
 # ---------------------------------------------------------------------------
 
@@ -506,7 +712,7 @@ class RoundService:
 
     @staticmethod
     @transaction.atomic
-    def publish_results(round_obj: Round, actor, *, announce=False, message='') -> Round:
+    def publish_results(round_obj: Round, actor, *, announce=False, message='', email=False) -> Round:
         round_obj.results_published = True
         round_obj.save(update_fields=['results_published', 'updated_at'])
         log_audit_event(
@@ -522,6 +728,7 @@ class RoundService:
                     'Check your team dashboard for next steps.'
                 ),
                 audience=AnnouncementAudience.ROUND_SHORTLISTED, round=round_obj, type='SUCCESS',
+                send_email=email,
             )
         return round_obj
 
@@ -670,7 +877,7 @@ class AnnouncementService:
 
         # The background job re-derives each recipient's context from their
         # profile (EmailNotificationService.process_email_job), so per-call
-        # context can't carry the message — it's baked into a template of its
+        # context can't carry the message - it's baked into a template of its
         # own instead. `{{` is defused so admin-typed text can't be read as a
         # template parameter.
         def defuse(text):
