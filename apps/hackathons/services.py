@@ -248,7 +248,7 @@ class TeamService:
     @staticmethod
     @transaction.atomic
     def create_team(hackathon: Hackathon, leader, name: str, problem_statement: ProblemStatement | None = None,
-                    open_innovation: dict | None = None) -> Team:
+                    open_innovation: dict | None = None, actor=None) -> Team:
         name = (name or '').strip()
         if not name:
             raise HackathonError('Team name is required.', 'NAME_REQUIRED', field='name')
@@ -256,10 +256,11 @@ class TeamService:
             raise HackathonError('Team name is too long (max 150 characters).', 'NAME_TOO_LONG', field='name')
 
         hackathon = Hackathon.objects.select_for_update().get(pk=hackathon.pk)
-        _require_registration_open(hackathon)
+        if not (actor and _is_admin_or_club_lead(actor)):
+            _require_registration_open(hackathon)
+            _require_profile_complete(hackathon, leader)
         if TeamMember.objects.filter(hackathon=hackathon, user=leader).exists():
-            raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
-        _require_profile_complete(hackathon, leader)
+            raise HackathonError('You are already in a team for this hackathon.' if (not actor or actor == leader) else 'That user is already in a team for this hackathon.', 'ALREADY_IN_TEAM')
         if hackathon.teams.filter(name__iexact=name).exists():
             raise HackathonError('That team name is already taken.', 'NAME_TAKEN', field='name')
         problem = _resolve_problem(hackathon, problem_statement, open_innovation)
@@ -276,7 +277,8 @@ class TeamService:
         ).update(status=InviteStatus.CANCELLED, responded_at=timezone.now())
 
         _recompute_status(team)
-        _audit(leader, 'Created Hackathon Team', team, problem=problem_label(team))
+        audit_actor = actor or leader
+        _audit(audit_actor, 'Created Hackathon Team', team, problem=problem_label(team), leader=leader.email)
         return team
 
     @staticmethod
@@ -346,6 +348,20 @@ class TeamService:
         except IntegrityError:
             raise HackathonError('Already invited.', 'CANNOT_INVITE', field='email')
         _audit(actor, 'Invited Hackathon Team Member', team, invitee=target.email)
+        try:
+            from apps.notifications.services import NotificationService
+            from apps.notifications.models import NotificationType, NotificationCategory
+            NotificationService.create_notification(
+                recipient=target,
+                title=f"Team Invite: {team.name}",
+                message=f"You have been invited by {actor.first_name or actor.username} to join team '{team.name}' for {team.hackathon.title}.",
+                type=NotificationType.INFO,
+                category=NotificationCategory.HACKATHON,
+                link_url=f"/hackathons/{team.hackathon.slug}",
+                created_by=actor,
+            )
+        except Exception:
+            pass
         invite_id = invite.pk
         transaction.on_commit(lambda: _run_in_background(lambda: send_invite_email(invite_id)))
         return invite
@@ -742,6 +758,84 @@ class RoundService:
             target_id=round_obj.pk, details={'round': round_obj.name},
         )
         return round_obj
+
+    @staticmethod
+    @transaction.atomic
+    def advance_shortlisted(round_obj: Round, actor=None) -> tuple[Round, int, int]:
+        """
+        Advances all SHORTLISTED teams in round_obj to the next sequential round.
+        If the next round doesn't exist yet, it creates it automatically.
+        Returns: (target_round, newly_promoted_count, already_in_round_count)
+        """
+        hackathon = round_obj.hackathon
+        next_round = hackathon.rounds.filter(order__gt=round_obj.order).order_by('order').first()
+        if next_round is None:
+            next_order = round_obj.order + 1
+            from .models import RoundStatus
+            next_round = Round.objects.create(
+                hackathon=hackathon,
+                order=next_order,
+                name=f"Round {next_order}",
+                status=RoundStatus.UPCOMING,
+            )
+            log_audit_event(
+                actor=actor, action='Auto-Created Hackathon Round for Promotion',
+                target_model='HackathonRound', target_id=next_round.pk,
+                details={'hackathon': hackathon.slug, 'round': next_round.name, 'order': next_order},
+            )
+
+        shortlisted_teams = hackathon.teams.filter(
+            status=TeamStatus.REGISTERED,
+            round_entries__round=round_obj,
+            round_entries__status=EntryStatus.SHORTLISTED,
+        ).distinct()
+
+        existing_team_ids = set(next_round.entries.values_list('team_id', flat=True))
+        to_create = [
+            RoundEntry(round=next_round, team=team, status=EntryStatus.PENDING)
+            for team in shortlisted_teams
+            if team.pk not in existing_team_ids
+        ]
+        if to_create:
+            RoundEntry.objects.bulk_create(to_create, ignore_conflicts=True)
+
+        already_present = len(shortlisted_teams) - len(to_create)
+        log_audit_event(
+            actor=actor, action='Advanced Shortlisted Teams',
+            target_model='HackathonRound', target_id=round_obj.pk,
+            details={
+                'from_round': round_obj.name,
+                'to_round': next_round.name,
+                'promoted': len(to_create),
+                'already_present': already_present,
+            },
+        )
+        return next_round, len(to_create), already_present
+
+    @staticmethod
+    @transaction.atomic
+    def add_team_entry(round_obj: Round, team: Team, actor=None) -> tuple[RoundEntry, bool]:
+        entry, created = RoundEntry.objects.get_or_create(
+            round=round_obj, team=team,
+            defaults={'status': EntryStatus.PENDING}
+        )
+        log_audit_event(
+            actor=actor, action='Added Team to Hackathon Round',
+            target_model='HackathonRound', target_id=round_obj.pk,
+            details={'round': round_obj.name, 'team': team.name, 'created': created},
+        )
+        return entry, created
+
+    @staticmethod
+    @transaction.atomic
+    def remove_team_entry(round_obj: Round, team: Team, actor=None) -> bool:
+        deleted_count, _ = round_obj.entries.filter(team=team).delete()
+        log_audit_event(
+            actor=actor, action='Removed Team from Hackathon Round',
+            target_model='HackathonRound', target_id=round_obj.pk,
+            details={'round': round_obj.name, 'team': team.name},
+        )
+        return deleted_count > 0
 
 
 def _prepare_details_form(form):

@@ -1,0 +1,67 @@
+# Notifications & Multi-Channel Broadcast System
+
+## Overview
+The `notifications` application (`apps/notifications`) provides:
+1. **User In-App Notifications**: Real-time per-user notification inbox and header bell indicator with unread count, relative timestamps, type icons, action links, mark as read, and dismissal.
+2. **Multi-Channel Admin Broadcast**: Administrators can compose announcements and broadcast them simultaneously as **in-app notifications** and/or **direct emails** (dispatched safely via the backend Python thread runner `apps/core/tasks.py::run_in_background`).
+3. **Automated Event Triggers**: Key platform events (e.g. hackathon team invitations) automatically deliver in-app notifications to target users.
+
+---
+
+## Data Model
+
+### `Notification` (`apps/notifications/models.py`)
+- `recipient`: `ForeignKey(User, on_delete=CASCADE, related_name='notifications')`
+- `title`: `CharField(max_length=200)`
+- `message`: `TextField()`
+- `type`: `CharField` (`INFO`, `SUCCESS`, `WARNING`, `URGENT`)
+- `category`: `CharField` (`GENERAL`, `HACKATHON`, `EVENT`, `FORM`, `TEAM`, `SYSTEM`)
+- `link_url`: `CharField(max_length=500)` — Optional route to open when clicked
+- `is_read`: `BooleanField(default=False, db_index=True)`
+- `read_at`: `DateTimeField(null=True, blank=True)`
+- `created_by`: `ForeignKey(User, null=True, on_delete=SET_NULL)`
+- `created_at`, `updated_at`: `TimeStampedModel`
+
+Indexes: `['recipient', 'is_read', '-created_at']`
+
+---
+
+## API Endpoints
+
+### User Endpoints (Authenticated)
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/notifications/` | List caller's notifications (`?unread_only=true`, `?limit=50`). Returns `{ unread_count, results }`. |
+| `GET` | `/api/notifications/unread-count/` | Fast counter query returning `{ unread_count }` for header polling. |
+| `POST` | `/api/notifications/{id}/read/` | Mark single notification as read. |
+| `POST` | `/api/notifications/mark-all-read/` | Mark all caller's notifications as read. |
+| `DELETE` | `/api/notifications/{id}/` | Delete / dismiss notification for caller. |
+
+### Admin Endpoints (`IsAdminOrClubLead`)
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/notifications/broadcast/` | Dispatch in-app notifications and/or emails across target audience. |
+| `GET` | `/api/notifications/broadcast-history/` | View recent broadcast email jobs and status. |
+
+---
+
+## Multi-Channel Broadcast Payload
+
+```json
+{
+  "title": "IconCoders 2026 Round 2 Released",
+  "message": "Problem statements are now available on your dashboard.",
+  "type": "URGENT",
+  "category": "HACKATHON",
+  "link_url": "/hackathons/iconcoders-2026/dashboard",
+  "channels": ["IN_APP", "EMAIL"],
+  "audience": "HACKATHON",
+  "target_hackathon_slug": "iconcoders-2026"
+}
+```
+
+Audience options:
+- `ALL`: All active members
+- `ROLE`: Filter by `target_role` (`AFFILIATE`, `NON_AFFILIATE`, `VOLUNTEER`, `JUDGE`, `CLUB_LEAD`, `ADMIN`)
+- `HACKATHON`: Filter by participants in `target_hackathon_slug`
+- `USERS`: Filter by list of user IDs in `target_user_ids`

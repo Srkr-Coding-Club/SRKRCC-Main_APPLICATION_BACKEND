@@ -310,6 +310,24 @@ class VisibilityAndLookupTests(APITestCase):
         resp = self.client.get(f'/api/hackathons/{self.hack.slug}/user-lookup/', {'email': 'user'})
         self.assertEqual(resp.data['code'], 'EMAIL_REQUIRED')
 
+    def test_lookup_autocomplete_search(self):
+        target = make_user(first_name='Anand', last_name='Kumar', club_id='25SCC999')
+        self.client.force_authenticate(self.leader)
+        # Search by partial first name
+        resp = self.client.get(f'/api/hackathons/{self.hack.slug}/user-lookup/', {'q': 'Anand'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data['found'])
+        self.assertIn('results', resp.data)
+        self.assertGreaterEqual(len(resp.data['results']), 1)
+        self.assertEqual(resp.data['results'][0]['club_id'], '25SCC999')
+        self.assertTrue(resp.data['results'][0]['can_invite'])
+
+        # Search by club ID
+        resp2 = self.client.get(f'/api/hackathons/{self.hack.slug}/user-lookup/', {'q': '25SCC999'})
+        self.assertEqual(resp2.status_code, 200)
+        self.assertTrue(resp2.data['found'])
+        self.assertEqual(resp2.data['results'][0]['email'], target.email)
+
     def test_my_team_payload(self):
         self.client.force_authenticate(self.leader)
         resp = self.client.get(f'/api/hackathons/{self.hack.slug}/my-team/')

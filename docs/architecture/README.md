@@ -44,4 +44,5 @@ flowchart LR
 - [deployment-infra.md](deployment-infra.md) — where things run and estimated cost
 - [backup-security.md](backup-security.md) — backups and security practices
 - [../admin/README.md](../admin/README.md) — admin panel overview
+- [../modules/notifications.md](../modules/notifications.md) — in-app notifications & multi-channel broadcast
 - [../features/](../features/) — every platform feature explained
