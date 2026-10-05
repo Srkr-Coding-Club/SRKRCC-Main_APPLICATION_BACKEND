@@ -24,7 +24,7 @@ ColumnCategory = Literal["common", "academic", "hackathon", "form_questions", "c
 ColumnRenderer = Literal["text", "link", "badge", "file_download", "star_rating", "date", "boolean", "email"]
 
 FilterType = Literal["select", "text", "date_range", "boolean", "number_range"]
-FilterOperator = Literal["eq", "neq", "contains", "starts_with", "between", "gte", "lte"]
+FilterOperator = Literal["eq", "neq", "contains", "starts_with", "between", "gte", "lte", "gt", "lt", "empty", "not_empty"]
 
 ExportFormat = Literal["csv", "xlsx", "json"]
 ExportRowScope = Literal["selected", "all_filtered"]
