@@ -1,9 +1,29 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator
+from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import serializers
 from .models import Problem, Submission, UserStreak
 
+HTTPS_URL_VALIDATOR = URLValidator(
+    schemes=['https'],
+    message='Enter a valid HTTPS URL (https://...).',
+)
+
+
+def _reject_past_date(value):
+    if value < timezone.localdate():
+        raise serializers.ValidationError(f'Scheduled date {value.isoformat()} cannot be before today.')
+
 
 class ProblemSerializer(serializers.ModelSerializer):
+    # Declared explicitly instead of model-inferred so the auto-added UniqueValidator
+    # is replaced by validate_scheduled_date, which names the conflicting date and
+    # correctly ignores a problem's own date when it is being edited.
+    scheduled_date = serializers.DateField()
+    # External judge link is required for every scheduled problem.
+    external_url = serializers.URLField(required=True, allow_blank=False)
+
     class Meta:
         model = Problem
         fields = '__all__'
@@ -13,6 +33,27 @@ class ProblemSerializer(serializers.ModelSerializer):
         if not isinstance(value, list) or not all(isinstance(tag, str) and tag.strip() for tag in value):
             raise serializers.ValidationError('Tags must be a list of non-empty strings.')
         return [tag.strip() for tag in value]
+
+    def validate_external_url(self, value):
+        value = value.strip()
+        if not value:
+            return value
+        try:
+            HTTPS_URL_VALIDATOR(value)
+        except DjangoValidationError:
+            raise serializers.ValidationError('Enter a valid HTTPS URL (https://...).') from None
+        return value
+
+    def validate_scheduled_date(self, value):
+        if self.instance is not None and value == self.instance.scheduled_date:
+            return value
+        _reject_past_date(value)
+        conflicts = Problem.objects.filter(scheduled_date=value)
+        if self.instance is not None:
+            conflicts = conflicts.exclude(pk=self.instance.pk)
+        if conflicts.exists():
+            raise serializers.ValidationError(f'A problem is already scheduled on {value.isoformat()}.')
+        return value
 
     def create(self, validated_data):
         title = validated_data['title']
@@ -48,9 +89,31 @@ class UserStreakSerializer(serializers.ModelSerializer):
 
 
 class BatchScheduleProblemSerializer(serializers.ModelSerializer):
+    # Declared explicitly instead of model-inferred so the auto-added UniqueValidator
+    # is replaced by validate_scheduled_date, which names the conflicting date.
+    scheduled_date = serializers.DateField()
+    # External judge link is required for every scheduled problem.
+    external_url = serializers.URLField(required=True, allow_blank=False)
+
     class Meta:
         model = Problem
         fields = ['title', 'difficulty', 'statement', 'constraints', 'sample_input', 'sample_output', 'tags', 'external_url', 'external_platform', 'scheduled_date']
+
+    def validate_external_url(self, value):
+        value = value.strip()
+        if not value:
+            return value
+        try:
+            HTTPS_URL_VALIDATOR(value)
+        except DjangoValidationError:
+            raise serializers.ValidationError('Enter a valid HTTPS URL (https://...).') from None
+        return value
+
+    def validate_scheduled_date(self, value):
+        _reject_past_date(value)
+        if Problem.objects.filter(scheduled_date=value).exists():
+            raise serializers.ValidationError(f'A problem is already scheduled on {value.isoformat()}.')
+        return value
 
     def create(self, validated_data):
         title = validated_data['title']
@@ -95,13 +158,21 @@ class BatchScheduleSerializer(serializers.Serializer):
         default=list,
         help_text='Tags for each problem (comma-separated or list)'
     )
+    external_urls = serializers.ListField(
+        child=serializers.CharField(max_length=500),
+        min_length=1,
+        max_length=5,
+        required=False,
+        help_text='External URLs for each title (required when titles is used)'
+    )
 
     def validate(self, data):
         entries = data.get('problems')
         if entries is not None:
             dates = [entry['scheduled_date'] for entry in entries]
-            if len(set(dates)) != len(dates):
-                raise serializers.ValidationError({'problems': 'Scheduled dates must be unique.'})
+            duplicates = sorted({value for value in dates if dates.count(value) > 1})
+            if duplicates:
+                raise serializers.ValidationError({'problems': f'Scheduled dates must be unique: {", ".join(value.isoformat() for value in duplicates)}.'})
             existing_dates = set(Problem.objects.filter(scheduled_date__in=dates).values_list('scheduled_date', flat=True))
             if existing_dates:
                 raise serializers.ValidationError({'problems': f'Already scheduled date(s): {", ".join(map(str, sorted(existing_dates)))}.'})
@@ -114,6 +185,9 @@ class BatchScheduleSerializer(serializers.Serializer):
         dates = data.get('scheduled_dates', [])
         difficulties = data.get('difficulties', [])
         tags = data.get('tags', [])
+        urls = data.get('external_urls', [])
+        if len(urls) != len(titles):
+            raise serializers.ValidationError({'external_urls': f'Number of external URLs ({len(urls)}) must match number of titles ({len(titles)}).'})
 
         if len(titles) != len(dates):
             raise serializers.ValidationError('Number of titles must match number of dates.')
@@ -127,8 +201,12 @@ class BatchScheduleSerializer(serializers.Serializer):
         if len(tags) > 0 and len(tags) != len(titles):
             raise serializers.ValidationError('Number of tag lists must match number of titles.')
 
-        if len(set(dates)) != len(dates):
-            raise serializers.ValidationError('Scheduled dates must be unique.')
+        for value in dates:
+            _reject_past_date(value)
+
+        duplicates = sorted({value for value in dates if dates.count(value) > 1})
+        if duplicates:
+            raise serializers.ValidationError(f'Scheduled dates must be unique: {", ".join(value.isoformat() for value in duplicates)}.')
 
         existing_dates = set(Problem.objects.filter(scheduled_date__in=dates).values_list('scheduled_date', flat=True))
         if existing_dates:

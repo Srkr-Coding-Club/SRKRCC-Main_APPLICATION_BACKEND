@@ -84,6 +84,7 @@ class BatchScheduleView(viewsets.ViewSet):
             dates = validated['scheduled_dates']
             difficulties = validated.get('difficulties', [])
             tags = validated.get('tags', [])
+            urls = validated.get('external_urls', [])
             problem_entries = [
                 {
                     'title': title,
@@ -91,6 +92,7 @@ class BatchScheduleView(viewsets.ViewSet):
                     'statement': f'Codequest problem: {title}',
                     'tags': tags[i] if i < len(tags) else [],
                     'scheduled_date': dates[i],
+                    'external_url': urls[i] if i < len(urls) else '',
                 }
                 for i, title in enumerate(titles)
             ]
