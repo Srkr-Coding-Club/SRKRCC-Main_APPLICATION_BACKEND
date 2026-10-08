@@ -73,6 +73,62 @@ class UserRoleUpdateTests(TestCase):
         self.member.refresh_from_db()
         self.assertEqual(self.member.role, 'AFFILIATE')
 
+    def test_admin_can_promote_to_affiliate_and_assign_club_id_in_same_request(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(
+            self._url(self.member),
+            {'role': 'AFFILIATE', 'club_id': '25SCC777'},
+            format='json'
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.role, 'AFFILIATE')
+        self.assertEqual(self.member.club_id, '25SCC777')
+
+    def test_admin_promote_to_affiliate_with_malformed_club_id_rejected(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(
+            self._url(self.member),
+            {'role': 'AFFILIATE', 'club_id': 'not-a-club-id'},
+            format='json'
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('club_id', resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.role, 'NON_AFFILIATE')
+        self.assertIsNone(self.member.club_id)
+
+    def test_admin_promote_to_affiliate_with_duplicate_club_id_rejected(self):
+        User.objects.create_user(
+            username='existing_affiliate',
+            email='affiliate@srkr.ac.in',
+            password='pw12345!',
+            role='AFFILIATE',
+            club_id='25SCC999'
+        )
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(
+            self._url(self.member),
+            {'role': 'AFFILIATE', 'club_id': '25SCC999'},
+            format='json'
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('club_id', resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.role, 'NON_AFFILIATE')
+
+    def test_admin_cannot_clear_club_id_for_existing_affiliate(self):
+        self.member.role = 'AFFILIATE'
+        self.member.club_id = '25SCC420'
+        self.member.save(update_fields=['role', 'club_id'])
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {'club_id': ''}, format='json')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('club_id', resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.role, 'AFFILIATE')
+        self.assertEqual(self.member.club_id, '25SCC420')
+
     def test_cannot_change_own_role(self):
         self.client.force_authenticate(self.admin)
         resp = self.client.patch(self._url(self.admin), {'role': 'NON_AFFILIATE'}, format='json')
@@ -171,3 +227,84 @@ class UserRoleUpdateTests(TestCase):
         resp = self.client.patch(self._url(self.member), {'roll_number': '21B91A0501'}, format='json')
         self.assertEqual(resp.status_code, 400)
         self.assertIn('roll_number', resp.data)
+
+    def test_admin_can_edit_user_profile_details(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {
+            'first_name': 'Updated',
+            'last_name': 'Member',
+            'branch': 'IT',
+            'year': 3,
+            'phone_number': '9876543210',
+            'github_profile': 'https://github.com/updatedmember',
+            'linkedin_profile': 'https://linkedin.com/in/updatedmember',
+        }, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.first_name, 'Updated')
+        self.assertEqual(self.member.last_name, 'Member')
+        self.assertEqual(self.member.branch, 'IT')
+        self.assertEqual(self.member.year, 3)
+        self.assertEqual(self.member.phone_number, '9876543210')
+        self.assertEqual(self.member.github_profile, 'https://github.com/updatedmember')
+        self.assertEqual(self.member.linkedin_profile, 'https://linkedin.com/in/updatedmember')
+
+    def test_user_list_filters_by_role_and_affiliates_only(self):
+        self.member.role = 'AFFILIATE'
+        self.member.club_id = '25SCC100'
+        self.member.save(update_fields=['role', 'club_id'])
+        self.client.force_authenticate(self.admin)
+
+        # Role filter
+        resp = self.client.get('/api/auth/users/?role=AFFILIATE')
+        self.assertEqual(resp.status_code, 200)
+        items = resp.data if isinstance(resp.data, list) else resp.data.get('results', [])
+        user_ids = [u['id'] for u in items]
+        self.assertIn(self.member.id, user_ids)
+        self.assertNotIn(self.club_lead.id, user_ids)
+
+        # Affiliates only filter
+        resp_aff = self.client.get('/api/auth/users/?affiliates_only=true')
+        self.assertEqual(resp_aff.status_code, 200)
+        items_aff = resp_aff.data if isinstance(resp_aff.data, list) else resp_aff.data.get('results', [])
+        aff_ids = [u['id'] for u in items_aff]
+        self.assertIn(self.member.id, aff_ids)
+        self.assertNotIn(self.club_lead.id, aff_ids)
+
+    def test_admin_can_update_own_profile_details_without_changing_role(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.admin), {
+            'first_name': 'Super',
+            'phone_number': '9988776655',
+        }, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.first_name, 'Super')
+        self.assertEqual(self.admin.phone_number, '9988776655')
+        self.assertEqual(self.admin.role, 'ADMIN')
+
+    def test_admin_cannot_change_own_role(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.admin), {'role': 'VOLUNTEER'}, format='json')
+        self.assertEqual(resp.status_code, 403)
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.role, 'ADMIN')
+
+    def test_admin_social_links_without_scheme_auto_prefixed(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.patch(self._url(self.member), {
+            'github_profile': 'github.com/mygit',
+            'linkedin_profile': 'linkedin.com/in/mylinkedin',
+        }, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.github_profile, 'https://github.com/mygit')
+        self.assertEqual(self.member.linkedin_profile, 'https://linkedin.com/in/mylinkedin')
+
+    def test_club_lead_cannot_demote_admin_account(self):
+        self.client.force_authenticate(self.club_lead)
+        resp = self.client.patch(self._url(self.admin), {
+            'role': 'VOLUNTEER',
+        }, format='json')
+        self.assertEqual(resp.status_code, 403)
+

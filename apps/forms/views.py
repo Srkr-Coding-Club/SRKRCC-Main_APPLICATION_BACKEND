@@ -24,6 +24,7 @@ from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly
 from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError, RollNumberConflictError
 from .services import FormAutomationService
 from apps.core.models import EmailDelivery
+from apps.notifications.models import Notification
 from apps.core.idempotency import (
     get_idempotency_key,
     check_idempotent_response,
@@ -79,7 +80,8 @@ class FormViewSet(viewsets.ModelViewSet):
         return resp
 
     def perform_create(self, serializer):
-        form = serializer.save()
+        creator = self.request.user if self.request.user and self.request.user.is_authenticated else None
+        form = serializer.save(created_by=creator)
         log_audit_event(
             actor=self.request.user,
             action=f"Created Dynamic Form ({form.status})",
@@ -195,6 +197,23 @@ class FormViewSet(viewsets.ModelViewSet):
             target_id=form.slug,
             details={"title": form.title, "status": "PUBLISHED", "version": form.version}
         )
+
+        if form.notify_members_on_publish:
+            try:
+                from apps.notifications.services import NotificationService
+                from apps.notifications.models import NotificationType, NotificationCategory
+                NotificationService.broadcast(
+                    title=f"New Form Available: {form.title}",
+                    message=f"A new form '{form.title}' is now open for responses.",
+                    channels=['IN_APP'],
+                    audience='ALL',
+                    type=NotificationType.INFO,
+                    category=NotificationCategory.FORM,
+                    link_url=f"/forms/{form.slug}",
+                    actor=request.user,
+                )
+            except Exception as ex:
+                pass
         serializer = self.get_serializer(form)
         payload = dict(serializer.data)
         payload["warnings"] = [w.as_dict() for w in report.warnings]
@@ -929,6 +948,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
     queryset = Response.objects.select_related('form', 'user', 'created_by_admin').prefetch_related(
         'answers__field',
         Prefetch('confirmation_email_deliveries', queryset=EmailDelivery.objects.order_by('-created_at')),
+        Prefetch('notifications', queryset=Notification.objects.order_by('-created_at')),
     ).all().order_by('-submitted_at')
     serializer_class = ResponseSerializer
     pagination_class = StandardResultsSetPagination
@@ -936,7 +956,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action == 'create':
             return [permissions.AllowAny()]
-        if self.action in ['list', 'retrieve', 'resend_confirmation_email']:
+        if self.action in ['list', 'retrieve', 'resend_confirmation_email', 'resend_notification']:
             return [IsAdminOrClubLead()]
         return [permissions.IsAuthenticated(), IsOwnerOrAdminOrClubLead()]
 
@@ -1145,6 +1165,13 @@ class ResponseViewSet(viewsets.ModelViewSet):
             answers_by_field_id = {a.field_id: a.value for a in response_obj.answers.all()}
             FormAutomationService.dispatch_confirmation_email(form_obj, resolved_user, answers_by_field_id, response=response_obj)
 
+        # In-app notifications dispatch also happens post-commit
+        if form_obj.confirmation_notification_enabled or form_obj.notify_admin_on_submission:
+            target_user = resolved_user or response_obj.user
+            FormAutomationService.dispatch_submission_notifications(
+                form_obj, target_user, response=response_obj
+            )
+
         store_idempotent_response(key, request, resp_status, resp_data)
         return DRFResponse(resp_data, status=resp_status)
 
@@ -1242,6 +1269,52 @@ class ResponseViewSet(viewsets.ModelViewSet):
             "status": delivery.status if delivery else job.status,
             "recipient_email": delivery.recipient_email if delivery else None,
         })
+
+    @action(detail=True, methods=['post'], url_path='resend-notification')
+    def resend_notification(self, request, pk=None):
+        """
+        POST /api/forms/submissions/{id}/resend-notification/
+        Manually re-triggers the form's in-app confirmation notification for this response.
+        Admin/Club-Lead only (see get_permissions).
+        """
+        response_obj = self.get_object()
+        form_obj = response_obj.form
+        user = response_obj.user
+        if not user:
+            answers_by_field_id = {a.field_id: a.value for a in response_obj.answers.all()}
+            user = FormAutomationService.resolve_club_member(form_obj, answers_by_field_id)
+        if not user:
+            return DRFResponse(
+                {"error": "No registered member account linked to this response."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            notif = FormAutomationService.send_submission_notification_to_submitter(
+                form_obj, user, response=response_obj
+            )
+        except Exception as ex:
+            return DRFResponse({"error": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
+
+        log_audit_event(
+            actor=request.user,
+            action="Resent Form In-App Notification",
+            target_model="Response",
+            target_id=str(response_obj.id),
+            details={"recipient": user.email, "form_slug": form_obj.slug},
+        )
+        return DRFResponse(
+            {
+                "success": True,
+                "status": "SENT",
+                "notification": {
+                    "id": notif.id,
+                    "title": notif.title,
+                    "created_at": notif.created_at.isoformat() if notif.created_at else None,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class MemberViewSet(viewsets.ReadOnlyModelViewSet):

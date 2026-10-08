@@ -8,11 +8,16 @@ The Forms & Data Management module powers dynamic registration forms, complex mu
 ## Data Models
 
 ### 1. `Form`
-- **Fields**: `title`, `slug`, `description`, `image_url`, `category`, `status` (`DRAFT`, `PUBLISHED`, `CLOSED`), `version`, `allow_multiple_responses`, `allow_response_editing`, `enable_prefill`, `allow_edits_until`, `open_at`, `close_at`.
-- **Policy Controls**:
+- **Fields**: `title`, `slug`, `description`, `image_url`, `category`, `status` (`DRAFT`, `PUBLISHED`, `CLOSED`), `version`, `created_by`, `allow_multiple_responses`, `allow_response_editing`, `enable_prefill`, `allow_edits_until`, `open_at`, `close_at`, `confirmation_email_enabled`, `confirmation_email_template`, `confirmation_notification_enabled`, `notify_admin_on_submission`, `notify_members_on_publish`, `notification_title`, `notification_message`, `club_id_enabled`, `attendance_enabled`.
+- **Policy & Automation Controls**:
   - `allow_multiple_responses` (bool): When `False` (default for registrations), students can only submit once. If a student returns, they enter response review/edit mode.
   - `allow_response_editing` (bool): When `True`, students who previously submitted can update their answers.
   - `enable_prefill` (bool): When `True` (and `allow_multiple_responses=False`), the form submission engine automatically matches and pre-fills student profile details (Full Name, Email, Phone, Roll Number, Branch, Year, GitHub, LinkedIn).
+  - `confirmation_email_enabled` (bool): When `True`, automatically dispatches confirmation email via `confirmation_email_template` post-commit.
+  - `confirmation_notification_enabled` (bool): When `True`, automatically creates an in-app `Notification` for the submitter (`category=FORM`, `type=SUCCESS`, `link_url=/forms/{slug}`) post-commit.
+  - `notify_admin_on_submission` (bool): When `True`, sends an in-app notification to the form's `created_by` (or active admin) on each new submission.
+  - `notify_members_on_publish` (bool): When `True`, broadcasts an in-app notification to all active club members when the form is published (`category=FORM`, `type=INFO`).
+  - `notification_title` & `notification_message` (str): Optional custom notification copy for submission confirmations.
 
 ### 2. `FormField`
 - **Fields**: `form` (FK), `label`, `type` (TEXT, EMAIL, NUMBER, DROPDOWN, RADIO, CHECKBOX, MATRIX_*, SIGNATURE, RATING, etc.), `placeholder`, `is_required`, `options`, `rows`, `min_value`, `max_value`, `conditional_logic`, `validation_rules`, `order`, `is_deleted`.
@@ -46,6 +51,8 @@ The Forms & Data Management module powers dynamic registration forms, complex mu
 | `/api/forms/{slug}/check-duplicates/` | POST | Staff / Admin | Query existing email responses using JSONField-safe `Cast` lookup. |
 | `/api/forms/data-health/` | GET | Staff / Admin | Diagnostic statistics, active system warnings, and recent activity log. |
 | `/api/forms/{slug}/responses/` | GET | Staff / Admin | Paginated response viewer with search, date range, and flag filters. |
+| `/api/forms/submissions/{id}/resend-confirmation-email/` | POST | Staff / Admin | Manually resend the confirmation email for a submission. |
+| `/api/forms/submissions/{id}/resend-notification/` | POST | Staff / Admin | Manually resend the in-app confirmation notification for a submission. |
 | `/api/members/` | GET | Staff / Admin | Aggregated member submissions directory with search and form filtering. |
 
 ### Hackathon round details forms

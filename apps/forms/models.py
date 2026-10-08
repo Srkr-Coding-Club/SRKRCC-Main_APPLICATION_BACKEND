@@ -55,6 +55,14 @@ class Form(TimeStampedModel):
     image_url = models.TextField(blank=True, null=True)
     category = models.CharField(max_length=100, default='General')
     status = models.CharField(max_length=20, choices=FormStatus.choices, default=FormStatus.DRAFT)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_forms',
+        help_text="User who created this form",
+    )
     version = models.PositiveIntegerField(default=1, help_text="Schema version incremented on form updates")
     allow_multiple_responses = models.BooleanField(default=False, help_text="Allow a user to submit multiple times")
     allow_response_editing = models.BooleanField(default=True, help_text="Allow users to view and update their previously submitted response")
@@ -109,6 +117,28 @@ class Form(TimeStampedModel):
         'core.EmailTemplate', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='confirmation_forms',
         help_text="Template dispatched on submission when confirmation_email_enabled is True.",
+    )
+
+    # --- In-app notification automation --------------------------------------
+    confirmation_notification_enabled = models.BooleanField(
+        default=False,
+        help_text="Send an in-app notification to the submitter when their response completes.",
+    )
+    notify_admin_on_submission = models.BooleanField(
+        default=False,
+        help_text="Send an in-app notification to the form creator / admin when a response is submitted.",
+    )
+    notify_members_on_publish = models.BooleanField(
+        default=False,
+        help_text="Broadcast an in-app notification to all members when this form is published.",
+    )
+    notification_title = models.CharField(
+        max_length=200, blank=True, default='',
+        help_text="Custom title for the in-app confirmation notification. Defaults to 'Response Recorded: <Form Title>'",
+    )
+    notification_message = models.TextField(
+        blank=True, default='',
+        help_text="Custom message for the in-app confirmation notification. Defaults to 'Your response for <Form Title> has been successfully recorded.'",
     )
 
     # --- QR-code attendance automation ---------------------------------------

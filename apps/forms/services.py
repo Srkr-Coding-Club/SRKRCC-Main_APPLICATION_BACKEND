@@ -155,3 +155,95 @@ class FormAutomationService:
 
         from apps.core.tasks import run_in_background
         run_in_background(_send)
+
+    @classmethod
+    def send_submission_notification_to_submitter(cls, form, resolved_user, response=None):
+        """
+        Creates an in-app confirmation notification for the submitter when
+        confirmation_notification_enabled is True.
+        """
+        if not resolved_user:
+            return None
+        title = form.notification_title.strip() if form.notification_title else f"Response Recorded: {form.title}"
+        message = (
+            form.notification_message.strip()
+            if form.notification_message
+            else f"Your response for '{form.title}' has been successfully submitted."
+        )
+        from apps.notifications.services import NotificationService
+        from apps.notifications.models import NotificationType, NotificationCategory
+        return NotificationService.create_notification(
+            recipient=resolved_user,
+            title=title,
+            message=message,
+            type=NotificationType.SUCCESS,
+            category=NotificationCategory.FORM,
+            link_url=f"/forms/{form.slug}",
+            created_by=form.created_by,
+            response=response,
+        )
+
+    @classmethod
+    def send_submission_notification_to_admin(cls, form, resolved_user, response=None):
+        """
+        Creates an in-app notification for the form creator/admin when
+        notify_admin_on_submission is True.
+        """
+        recipient = form.created_by
+        if not recipient:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            recipient = User.objects.filter(is_active=True, role='ADMIN').order_by('id').first()
+        if not recipient:
+            return None
+
+        from apps.notifications.services import NotificationService
+        from apps.notifications.models import NotificationType, NotificationCategory
+        submitter_name = (
+            resolved_user.get_full_name() or resolved_user.username
+            if resolved_user
+            else "A respondent"
+        )
+        return NotificationService.create_notification(
+            recipient=recipient,
+            title=f"New Response: {form.title}",
+            message=f"A new response was submitted by {submitter_name} for '{form.title}'.",
+            type=NotificationType.INFO,
+            category=NotificationCategory.FORM,
+            link_url=f"/admin/responses?form={form.slug}",
+            created_by=resolved_user,
+            response=response,
+        )
+
+    @classmethod
+    def dispatch_submission_notifications(cls, form, resolved_user, response=None) -> None:
+        """
+        Dispatches in-app notifications on a background thread post-commit,
+        mirroring dispatch_confirmation_email. Swallows errors so notification
+        issues never break response submission.
+        """
+        if not form.confirmation_notification_enabled and not form.notify_admin_on_submission:
+            return
+
+        def _send():
+            try:
+                if form.confirmation_notification_enabled and resolved_user:
+                    cls.send_submission_notification_to_submitter(form, resolved_user, response=response)
+            except Exception as ex:
+                logger.error(
+                    "FORM_SUBMISSION_NOTIFICATION_FAILED: form_id=%s user_id=%s error=%s",
+                    form.id, getattr(resolved_user, 'id', None), str(ex)
+                )
+
+            try:
+                if form.notify_admin_on_submission:
+                    cls.send_submission_notification_to_admin(form, resolved_user, response=response)
+            except Exception as ex:
+                logger.error(
+                    "FORM_ADMIN_NOTIFICATION_FAILED: form_id=%s error=%s",
+                    form.id, str(ex)
+                )
+
+        from apps.core.tasks import run_in_background
+        run_in_background(_send)
+
