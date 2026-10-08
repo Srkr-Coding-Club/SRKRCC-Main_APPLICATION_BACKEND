@@ -2,6 +2,7 @@ from rest_framework import generics, permissions, status, filters
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
+from django.db import models
 from django.contrib.auth import get_user_model
 from .serializers import (
     UserSerializer,
@@ -71,6 +72,21 @@ class UserListView(generics.ListCreateAPIView):
     ]
     ordering_fields = ['created_at', 'registered_at', 'club_id', 'first_name', 'email']
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        role = self.request.query_params.get('role')
+        if role and role != 'ALL':
+            if role == 'AFFILIATE':
+                qs = qs.filter(models.Q(role='AFFILIATE') | (models.Q(club_id__isnull=False) & ~models.Q(club_id='')))
+            elif role == 'NON_AFFILIATE':
+                qs = qs.filter(role='NON_AFFILIATE').filter(models.Q(club_id__isnull=True) | models.Q(club_id=''))
+            else:
+                qs = qs.filter(role=role)
+        affiliates_only = self.request.query_params.get('affiliates_only')
+        if affiliates_only in ('true', '1', 'True'):
+            qs = qs.filter(models.Q(role='AFFILIATE') | (models.Q(club_id__isnull=False) & ~models.Q(club_id='')))
+        return qs
+
 class UserDetailView(generics.RetrieveUpdateAPIView):
     """
     PATCH /auth/users/{id}/ - backs the admin Users tab's role dropdown and
@@ -91,50 +107,63 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
         target = serializer.instance
         requester = self.request.user
 
-        if target.id == requester.id:
+        if target.id == requester.id and 'role' in serializer.validated_data and serializer.validated_data['role'] != target.role:
             raise PermissionDenied("You cannot change your own role.")
 
         # Escalation check applies only when `role` is actually being changed -
         # scoped to serializer.validated_data (not target.role) so that a
         # membership_status-only PATCH on a user who already holds an elevated
         # role doesn't get wrongly blocked as a "role escalation".
+        new_role = serializer.validated_data.get('role', target.role)
+        is_full_admin = requester.is_superuser or requester.is_staff or getattr(requester, 'role', None) == 'ADMIN'
+
         if 'role' in serializer.validated_data:
-            new_role = serializer.validated_data['role']
-            is_full_admin = requester.is_superuser or requester.is_staff or getattr(requester, 'role', None) == 'ADMIN'
+            if target.role in self.ELEVATED_ROLES and not is_full_admin:
+                raise PermissionDenied("Only an Admin can modify an Admin or Club Lead role.")
             if new_role in self.ELEVATED_ROLES and not is_full_admin:
                 raise PermissionDenied("Only an Admin can assign the Admin or Club Lead role.")
-            # AFFILIATE always has a club_id. This endpoint doesn't accept
-            # club_id in its own payload (UserRoleUpdateSerializer only writes
-            # role/membership_status) - the admin must assign one first via
-            # the existing Club ID tooling, then set the role.
-            if new_role == 'AFFILIATE' and not target.club_id:
-                raise ValidationError({
-                    'club_id': ["Assign a Club ID to this member before setting their role to Affiliate."],
-                })
 
-        previous_role = target.role
-        previous_membership_status = target.membership_status
-        previous_roll_number = target.roll_number
+        # AFFILIATE always has a club_id. Check the effective club_id
+        # (either provided in the payload or already assigned to the user).
+        if 'club_id' in serializer.validated_data:
+            effective_club_id = serializer.validated_data['club_id']
+        else:
+            effective_club_id = target.club_id
+
+        if new_role == 'AFFILIATE' and not effective_club_id:
+            raise ValidationError({
+                'club_id': ["Assign a Club ID to this member before setting their role to Affiliate."],
+            })
+
+        # Snapshot all previous values BEFORE serializer.save() mutates target in-place
+        previous_snapshots = {
+            field: getattr(target, field, None)
+            for field in [
+                'role', 'membership_status', 'roll_number', 'club_id',
+                'first_name', 'last_name', 'branch', 'year', 'phone_number',
+                'github_profile', 'linkedin_profile'
+            ]
+        }
+
         user = serializer.save()
 
         details = {}
-        if 'role' in serializer.validated_data:
-            details["previous_role"] = previous_role
-            details["new_role"] = user.role
-        if 'membership_status' in serializer.validated_data:
-            details["previous_membership_status"] = previous_membership_status
-            details["new_membership_status"] = user.membership_status
-        if 'roll_number' in serializer.validated_data:
-            details["previous_roll_number"] = previous_roll_number
-            details["new_roll_number"] = user.roll_number
+        for field, prev_val in previous_snapshots.items():
+            if field in serializer.validated_data:
+                details[f"previous_{field}"] = prev_val
+                details[f"new_{field}"] = getattr(user, field, None)
 
         if details:
             if 'role' in serializer.validated_data:
                 action = "User Role Changed"
+            elif 'club_id' in serializer.validated_data:
+                action = "User Club ID Changed"
             elif 'membership_status' in serializer.validated_data:
                 action = "User Membership Status Changed"
-            else:
+            elif 'roll_number' in serializer.validated_data:
                 action = "User Roll Number Changed"
+            else:
+                action = "User Profile Updated by Admin"
             log_audit_event(
                 actor=requester,
                 action=action,

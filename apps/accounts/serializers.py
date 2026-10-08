@@ -126,8 +126,53 @@ class UserRoleUpdateSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = User
-        fields = ['id', 'role', 'membership_status', 'roll_number']
-        read_only_fields = ['id']
+        fields = [
+            'id', 'email', 'first_name', 'last_name', 'role',
+            'membership_status', 'roll_number', 'club_id',
+            'branch', 'year', 'phone_number', 'github_profile', 'linkedin_profile',
+        ]
+        read_only_fields = ['id', 'email']
+
+    def validate_first_name(self, value):
+        if not value:
+            return ""
+        name = normalize_name(value)
+        if len(name) < NAME_MIN_LENGTH:
+            raise serializers.ValidationError(f"First name must be at least {NAME_MIN_LENGTH} characters long.")
+        if len(name) > NAME_MAX_LENGTH:
+            raise serializers.ValidationError(f"First name must be at most {NAME_MAX_LENGTH} characters long.")
+        if not NAME_REGEX.match(name):
+            raise serializers.ValidationError("First name may only contain letters, spaces, hyphens and apostrophes.")
+        return name
+
+    def validate_last_name(self, value):
+        if not value:
+            return ""
+        name = normalize_name(value)
+        if len(name) > NAME_MAX_LENGTH:
+            raise serializers.ValidationError(f"Last name must be at most {NAME_MAX_LENGTH} characters long.")
+        if not NAME_REGEX.match(name):
+            raise serializers.ValidationError("Last name may only contain letters, spaces, hyphens and apostrophes.")
+        return name
+
+    def validate_phone_number(self, value):
+        if not value:
+            return None
+        phone = normalize_phone_number(value)
+        if len(phone) != PHONE_NUMBER_LENGTH:
+            raise serializers.ValidationError(f"Phone number must be exactly {PHONE_NUMBER_LENGTH} digits.")
+        return phone
+
+    def validate_year(self, value):
+        if value is None or value == "":
+            return None
+        try:
+            val = int(value)
+            if val < 1 or val > 5:
+                raise serializers.ValidationError("Year must be between 1 and 5.")
+            return val
+        except (ValueError, TypeError):
+            raise serializers.ValidationError("Year must be a number between 1 and 5.")
 
     def validate_roll_number(self, value):
         roll = normalize_roll_number(value)
@@ -149,6 +194,51 @@ class UserRoleUpdateSerializer(serializers.ModelSerializer):
                 "This roll number is already registered to another member."
             )
         return roll
+
+    def validate_club_id(self, value):
+        if not value or not str(value).strip():
+            return None
+        from apps.accounts.services.club_id_service import ClubIDService, InvalidClubIdError
+        try:
+            parsed = ClubIDService.parse_club_id(str(value).strip())
+        except InvalidClubIdError as ex:
+            raise serializers.ValidationError(str(ex))
+        canonical = parsed['canonical_id']
+        existing = User.objects.filter(club_id__iexact=canonical)
+        if self.instance is not None:
+            existing = existing.exclude(id=self.instance.id)
+        if existing.exists():
+            raise serializers.ValidationError(f"Club ID '{canonical}' is already assigned to another member.")
+        return canonical
+
+    def to_internal_value(self, data):
+        data = data.copy() if hasattr(data, 'copy') else dict(data)
+        for url_field in ['github_profile', 'linkedin_profile']:
+            if url_field in data and data[url_field]:
+                val = str(data[url_field]).strip()
+                if val and not val.startswith(('http://', 'https://')):
+                    data[url_field] = f"https://{val}"
+        return super().to_internal_value(data)
+
+    def validate_github_profile(self, value):
+        if not value:
+            return None
+        val = str(value).strip()
+        if not val:
+            return None
+        if not val.startswith(('http://', 'https://')):
+            val = f"https://{val}"
+        return val
+
+    def validate_linkedin_profile(self, value):
+        if not value:
+            return None
+        val = str(value).strip()
+        if not val:
+            return None
+        if not val.startswith(('http://', 'https://')):
+            val = f"https://{val}"
+        return val
 
 
 class UserProfileDetailSerializer(serializers.ModelSerializer):
