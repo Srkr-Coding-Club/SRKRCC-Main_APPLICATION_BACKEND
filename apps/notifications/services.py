@@ -21,6 +21,7 @@ class NotificationService:
         category: str = NotificationCategory.GENERAL,
         link_url: str = '',
         created_by=None,
+        response=None,
     ) -> Notification:
         """Create a single in-app notification for a user."""
         return Notification.objects.create(
@@ -31,6 +32,7 @@ class NotificationService:
             category=category,
             link_url=link_url or '',
             created_by=created_by,
+            response=response,
         )
 
     @staticmethod

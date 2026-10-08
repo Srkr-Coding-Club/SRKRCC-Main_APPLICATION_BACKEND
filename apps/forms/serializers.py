@@ -123,6 +123,8 @@ class FormSerializer(serializers.ModelSerializer):
             'allow_edits_until', 'open_at', 'close_at',
             'club_id_enabled', 'club_id_prefix', 'club_id_field_mapping', 'club_id_verification_enabled',
             'confirmation_email_enabled', 'confirmation_email_template',
+            'confirmation_notification_enabled', 'notify_admin_on_submission',
+            'notify_members_on_publish', 'notification_title', 'notification_message',
             'attendance_enabled', 'attendance_start_date', 'attendance_days',
             'attendance_sessions_per_day', 'attendance_window_minutes',
             'fields', 'created_at', 'response_count',
@@ -317,6 +319,8 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
     user_email = serializers.SerializerMethodField()
     confirmation_email_enabled = serializers.BooleanField(source='form.confirmation_email_enabled', read_only=True)
     confirmation_email = serializers.SerializerMethodField()
+    confirmation_notification_enabled = serializers.BooleanField(source='form.confirmation_notification_enabled', read_only=True)
+    confirmation_notification = serializers.SerializerMethodField()
 
     class Meta:
         model = Response
@@ -325,6 +329,7 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
             'is_manual_entry', 'is_test_submission', 'form_version',
             'user', 'user_name', 'user_email', 'answers',
             'confirmation_email_enabled', 'confirmation_email',
+            'confirmation_notification_enabled', 'confirmation_notification',
         ]
 
     def get_user(self, obj):
@@ -377,6 +382,26 @@ class ResponseDetailSerializer(serializers.ModelSerializer):
             'sent_at': latest.sent_at,
             'error_message': latest.error_message,
             'recipient_email': latest.recipient_email,
+        }
+
+    def get_confirmation_notification(self, obj):
+        # Reads from prefetch cache if available
+        notifs = list(obj.notifications.all())
+        if obj.user_id:
+            submitter_notifs = [n for n in notifs if n.recipient_id == obj.user_id]
+            if submitter_notifs:
+                notifs = submitter_notifs
+        if not notifs:
+            return None
+        latest = notifs[0]
+        return {
+            'id': latest.id,
+            'title': latest.title,
+            'message': latest.message,
+            'type': latest.type,
+            'category': latest.category,
+            'is_read': latest.is_read,
+            'created_at': latest.created_at,
         }
 
 
