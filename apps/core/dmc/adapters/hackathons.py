@@ -108,11 +108,32 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
         return list(PARTICIPANT_COLS), [_hackathon_title_filter()]
 
+    def _apply_row_filters(self, rows: list[dict], filters: list[FilterClause]) -> list[dict]:
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = str(f.value).lower().strip()
+            if field == "hackathon_title" and str(f.value).isdigit():
+                continue
+            if op == "eq":
+                rows = [r for r in rows if str(r.get(field, "") or "").lower() == val]
+            elif op == "neq":
+                rows = [r for r in rows if str(r.get(field, "") or "").lower() != val]
+            elif op == "contains":
+                rows = [r for r in rows if val in str(r.get(field, "") or "").lower()]
+            elif op == "starts_with":
+                rows = [r for r in rows if str(r.get(field, "") or "").lower().startswith(val)]
+            elif op == "empty":
+                rows = [r for r in rows if not r.get(field)]
+            elif op == "not_empty":
+                rows = [r for r in rows if r.get(field)]
+        return rows
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         teams = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user")
         for f in query_req.filters:
-            if f.field == "hackathon_title":
-                teams = teams.filter(hackathon_id=f.value)
+            if f.field == "hackathon_title" and str(f.value).isdigit():
+                teams = teams.filter(hackathon_id=int(f.value))
         rows = []
         for team in teams:
             rows.extend(self._expand_team(team))
@@ -120,6 +141,8 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
         if query_req.search:
             q = query_req.search.lower()
             rows = [r for r in rows if q in (r.get("email", "").lower() + r.get("name", "").lower())]
+
+        rows = self._apply_row_filters(rows, query_req.filters)
 
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_PARTICIPANT else "created_at"
         reverse = query_req.sort.direction == "desc"
@@ -134,8 +157,16 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
         return None  # Composite rows don't have a single DB primary key to look up
 
     def stream_records(self, query_req: QueryRequest, user: Any, selected_ids: list[str] | None = None) -> Generator[dict[str, CanonicalValue], None, None]:
-        for team in Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user").iterator(chunk_size=100):
-            for row in self._expand_team(team):
+        teams = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user")
+        for f in query_req.filters:
+            if f.field == "hackathon_title" and str(f.value).isdigit():
+                teams = teams.filter(hackathon_id=int(f.value))
+        rows = []
+        for team in teams.iterator(chunk_size=100):
+            rows.extend(self._expand_team(team))
+        rows = self._apply_row_filters(rows, query_req.filters)
+        for row in rows:
+            if selected_ids is None or row["id"] in selected_ids:
                 yield self._to_record(row)
 
     def _expand_team(self, team: Team) -> list[dict]:
@@ -168,14 +199,50 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
         return list(TEAMS_COLS), [_hackathon_title_filter()]
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "hackathon_title":
+                if str(val).isdigit():
+                    qs = qs.filter(hackathon_id=int(val))
+                elif op == "contains":
+                    qs = qs.filter(hackathon__title__icontains=str(val))
+                else:
+                    qs = qs.filter(hackathon__title__iexact=str(val))
+            elif field == "team_name":
+                if op == "contains": qs = qs.filter(name__icontains=str(val))
+                elif op == "eq": qs = qs.filter(name__iexact=str(val))
+            elif field == "leader_name":
+                if op == "contains": qs = qs.filter(Q(leader__first_name__icontains=str(val)) | Q(leader__last_name__icontains=str(val)))
+                elif op == "eq": qs = qs.filter(Q(leader__first_name__iexact=str(val)) | Q(leader__last_name__iexact=str(val)))
+            elif field == "leader_email":
+                if op == "contains": qs = qs.filter(leader__email__icontains=str(val))
+                elif op == "eq": qs = qs.filter(leader__email__iexact=str(val))
+            elif field == "open_innovation":
+                if op == "eq":
+                    qs = qs.filter(is_open_innovation=(str(val).lower() in ("true", "1", "yes")))
+            elif field in ("submission_score", "score"):
+                if op in ("eq", "gte", "lte", "gt", "lt"):
+                    try:
+                        num = float(val)
+                        if op == "eq": qs = qs.filter(submission__score=num)
+                        elif op == "gte": qs = qs.filter(submission__score__gte=num)
+                        elif op == "lte": qs = qs.filter(submission__score__lte=num)
+                        elif op == "gt": qs = qs.filter(submission__score__gt=num)
+                        elif op == "lt": qs = qs.filter(submission__score__lt=num)
+                    except (ValueError, TypeError):
+                        pass
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = Team.objects.select_related("hackathon", "leader", "problem_statement").prefetch_related("memberships", "submission")
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(name__icontains=q) | Q(leader__email__icontains=q) | Q(hackathon__title__icontains=q))
-        for f in query_req.filters:
-            if f.field == "hackathon_title":
-                qs = qs.filter(hackathon_id=f.value)
+        
+        qs = self._apply_filters(qs, query_req.filters)
 
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_TEAMS else "created_at"
         prefix = "-" if query_req.sort.direction == "desc" else ""
@@ -197,6 +264,11 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
         qs = Team.objects.select_related("hackathon", "leader", "problem_statement").prefetch_related("memberships", "submission")
         if selected_ids:
             qs = qs.filter(pk__in=selected_ids)
+        else:
+            if query_req.search:
+                q = query_req.search.strip()
+                qs = qs.filter(Q(name__icontains=q) | Q(leader__email__icontains=q) | Q(hackathon__title__icontains=q))
+            qs = self._apply_filters(qs, query_req.filters)
         for t in qs.iterator(chunk_size=200):
             yield self._normalize(t)
 
@@ -230,14 +302,42 @@ class HackathonSubmissionsAdapter(BaseDatasetAdapter):
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
         return list(SUBMISSIONS_COLS), [_hackathon_title_filter()]
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "hackathon_title":
+                if str(val).isdigit():
+                    qs = qs.filter(team__hackathon_id=int(val))
+                elif op == "contains":
+                    qs = qs.filter(team__hackathon__title__icontains=str(val))
+                else:
+                    qs = qs.filter(team__hackathon__title__iexact=str(val))
+            elif field == "project_title":
+                if op == "contains": qs = qs.filter(project_title__icontains=str(val))
+                elif op == "eq": qs = qs.filter(project_title__iexact=str(val))
+            elif field == "team_name":
+                if op == "contains": qs = qs.filter(team__name__icontains=str(val))
+                elif op == "eq": qs = qs.filter(team__name__iexact=str(val))
+            elif field == "score":
+                if op in ("eq", "gte", "lte", "gt", "lt"):
+                    try:
+                        num = float(val)
+                        if op == "eq": qs = qs.filter(score=num)
+                        elif op == "gte": qs = qs.filter(score__gte=num)
+                        elif op == "lte": qs = qs.filter(score__lte=num)
+                    except (ValueError, TypeError):
+                        pass
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = Submission.objects.select_related("team__hackathon", "team__leader")
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(Q(project_title__icontains=q) | Q(team__name__icontains=q))
-        for f in query_req.filters:
-            if f.field == "hackathon_title":
-                qs = qs.filter(team__hackathon_id=f.value)
+        
+        qs = self._apply_filters(qs, query_req.filters)
 
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_SUBMISSIONS else "created_at"
         prefix = "-" if query_req.sort.direction == "desc" else ""
@@ -259,6 +359,11 @@ class HackathonSubmissionsAdapter(BaseDatasetAdapter):
         qs = Submission.objects.select_related("team__hackathon", "team__leader")
         if selected_ids:
             qs = qs.filter(pk__in=selected_ids)
+        else:
+            if query_req.search:
+                q = query_req.search.strip()
+                qs = qs.filter(Q(project_title__icontains=q) | Q(team__name__icontains=q))
+            qs = self._apply_filters(qs, query_req.filters)
         for s in qs.iterator(chunk_size=200):
             yield self._normalize(s)
 
@@ -315,14 +420,48 @@ class HackathonRoundEntriesAdapter(BaseDatasetAdapter):
     def _base_qs(self):
         return RoundEntry.objects.select_related("round__hackathon", "team__leader", "team__problem_statement")
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "hackathon_title":
+                if str(val).isdigit():
+                    qs = qs.filter(round__hackathon_id=int(val))
+                elif op == "contains":
+                    qs = qs.filter(round__hackathon__title__icontains=str(val))
+                else:
+                    qs = qs.filter(round__hackathon__title__iexact=str(val))
+            elif field == "team_name":
+                if op == "contains": qs = qs.filter(team__name__icontains=str(val))
+                elif op == "starts_with": qs = qs.filter(team__name__istartswith=str(val))
+                elif op == "eq": qs = qs.filter(team__name__iexact=str(val))
+            elif field == "round_name":
+                if op == "contains": qs = qs.filter(round__name__icontains=str(val))
+                elif op == "eq": qs = qs.filter(round__name__iexact=str(val))
+            elif field == "leader_email":
+                if op == "contains": qs = qs.filter(team__leader__email__icontains=str(val))
+                elif op == "eq": qs = qs.filter(team__leader__email__iexact=str(val))
+            elif field == "status":
+                if op == "eq": qs = qs.filter(status__iexact=str(val))
+                elif op == "neq": qs = qs.exclude(status__iexact=str(val))
+            elif field == "results_published":
+                if op == "eq": qs = qs.filter(round__results_published=(str(val).lower() in ("true", "1", "yes")))
+            elif field == "details_submitted":
+                if op == "eq":
+                    is_true = str(val).lower() in ("true", "1", "yes")
+                    qs = qs.filter(details_response__isnull=not is_true)
+            elif field == "decided_at":
+                if op == "gte": qs = qs.filter(decided_at__gte=val)
+                elif op == "lte": qs = qs.filter(decided_at__lte=val)
+        return qs
+
     def _filtered(self, query_req: QueryRequest):
         qs = self._base_qs()
         if query_req.search:
             q = query_req.search.strip()
-            qs = qs.filter(Q(team__name__icontains=q) | Q(team__leader__email__icontains=q) | Q(round__name__icontains=q))
-        for f in query_req.filters:
-            if f.field == "hackathon_title":
-                qs = qs.filter(round__hackathon_id=f.value)
+            qs = qs.filter(Q(team__name__icontains=q) | Q(team__leader__email__icontains=q) | Q(round__name__icontains=q) | Q(round__hackathon__title__icontains=q))
+        qs = self._apply_filters(qs, query_req.filters)
         return qs
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:

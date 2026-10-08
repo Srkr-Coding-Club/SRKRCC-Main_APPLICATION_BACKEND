@@ -83,7 +83,7 @@ Participant / public:
 | GET | `/{slug}/announcements/` | Anyone (filtered by audience) | Announcements visible to the caller |
 | GET | `/{slug}/my-team/` | Authenticated | Dashboard payload: hackathon, `profile_missing`, team, `is_leader`, pending invites, rounds (entry status/feedback hidden until published, details-form eligibility) |
 | POST | `/{slug}/teams/` | Authenticated | Create a team `{name, problem_statement}` **or** `{name, open_innovation: {title, description, domain}}` |
-| GET | `/{slug}/user-lookup/?email=` | Authenticated, throttled `hackathon_lookup` 30/min | Exact-email lookup returning only `id, name, email, club_id, can_invite, reason` |
+| GET | `/{slug}/user-lookup/` | Authenticated, throttled `hackathon_lookup` 30/min | User lookup supporting exact `?email=` or instant autocomplete prefix/partial search `?q=` (searches name, email, club ID) with optional `&team_id=`. Returns minimal fields: `id, name, email, club_id, can_invite, reason, results` |
 | GET | `/my-teams/`, `/my-invites/` | Authenticated | Caller's teams / pending invites across hackathons |
 | POST | `/invites/{id}/accept/`, `/invites/{id}/decline/` | Invitee | Respond to an invite |
 | GET, PATCH | `/teams/{id}/` | Members read; leader/admin write | Team detail (admins also get members' contact details and round history). PATCH accepts `problem_statement` or `open_innovation` to change the problem; a body without either leaves it untouched |
@@ -98,13 +98,18 @@ Admin (`IsAdminOrClubLead`):
 | PATCH | `/{slug}/` | Registration settings (validated: `max_team_size >= min_team_size >= 1`, closes after opens, known profile-field keys) |
 | POST | `/{slug}/close/`, `/{slug}/reopen/`, `/{slug}/hide/`, `/{slug}/show/` | Hackathon status / public visibility |
 | GET | `/{slug}/stats/` | Teams by status, participants, pending invites, per-statement uptake, per-round funnel |
-| POST, PATCH, DELETE | `/{slug}/problem-statements/[{id}/]` | Manage statements. `POST {title, description, domain, tags?, max_teams?}` — the `code` is generated and any `code` sent is ignored |
+| POST, PATCH, DELETE | `/{slug}/problem-statements/[{id}/]` | Manage statements. `POST {title, description, domain, tags?, max_teams?}` — the `code` is generated and any `code` sent is ignored. `DELETE ?force=true` force-unassigns any assigned teams before deletion |
 | POST | `/{slug}/problem-statements/upload/` | Multipart `file`: a CSV with `title`, `description`, `domain` columns (aliases such as `problem title`, `details`, `category`/`track` accepted; UTF-8, ≤1 MB, ≤500 rows). Generates IDs, skips rows repeating an existing title + domain, reports invalid rows by row number: `{created, skipped, errors, codes}` |
 | GET | `/{slug}/teams/?status=&problem_statement=&round=&entry_status=&search=` | All teams with members' contact details (`problem_statement=open_innovation` lists open-innovation teams) |
+| POST | `/{slug}/teams/` | Admin creation: accepts `leader_email` to register a team directly on behalf of a student, bypassing registration closed checks |
+| DELETE | `/teams/{id}/` | Delete a team permanently with DB-level cascading of memberships, invites, round entries, and submissions |
 | GET, POST, PATCH, DELETE | `/{slug}/rounds/[{id}/]` | Manage rounds (`POST` auto-populates entries unless `populate=false`) |
 | GET | `/{slug}/rounds/{id}/entries/?status=&search=` | Teams in a round |
 | POST | `/{slug}/rounds/{id}/decide/` | `{team_ids, status, feedback?, admin_notes?}` |
 | POST | `/{slug}/rounds/{id}/publish/`, `/unpublish/`, `/populate/` | Results visibility / sync eligible teams |
+| POST | `/{slug}/rounds/{id}/advance/` | Advance all `SHORTLISTED` teams to the next round; automatically creates Round N+1 if it does not yet exist |
+| POST | `/{slug}/rounds/{id}/add-team/` | `{team_id}`: wildcard promotion / manual addition of an eligible team to this round |
+| POST | `/{slug}/rounds/{id}/remove-team/` | `{team_id}`: remove a team entry from this round |
 | GET | `/{slug}/announcements/?all=true` | Every announcement with audience details |
 | POST, PATCH, DELETE | `/{slug}/announcements/[{id}/]` | Manage announcements |
 | POST | `/{slug}/announcements/{id}/notify/` | (Re)send the announcement email |

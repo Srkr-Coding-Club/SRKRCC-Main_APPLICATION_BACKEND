@@ -65,6 +65,37 @@ class FormsAllAdapter(BaseDatasetAdapter):
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
         return list(COMMON_COLUMNS), list(FORMS_ALL_FILTERS)
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "is_manual_entry":
+                if op == "eq":
+                    is_true = str(val).lower() in ("true", "1", "yes")
+                    qs = qs.filter(is_manual_entry=is_true)
+            elif field == "form_title":
+                if op == "contains": qs = qs.filter(form__title__icontains=str(val))
+                elif op == "eq": qs = qs.filter(form__title__iexact=str(val))
+                elif op == "neq": qs = qs.exclude(form__title__iexact=str(val))
+                elif op == "starts_with": qs = qs.filter(form__title__istartswith=str(val))
+            elif field == "name":
+                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
+                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
+                elif op == "starts_with": qs = qs.filter(Q(user__first_name__istartswith=str(val)) | Q(user__last_name__istartswith=str(val)))
+            elif field == "email":
+                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
+                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
+                elif op == "starts_with": qs = qs.filter(user__email__istartswith=str(val))
+            elif field == "roll_number":
+                if op == "contains": qs = qs.filter(user__roll_number__icontains=str(val))
+                elif op == "eq": qs = qs.filter(user__roll_number__iexact=str(val))
+            elif field == "submitted_at":
+                if op == "gte": qs = qs.filter(submitted_at__gte=val)
+                elif op == "lte": qs = qs.filter(submitted_at__lte=val)
+                elif op == "eq": qs = qs.filter(submitted_at__date=val)
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = Response.objects.select_related("form", "user").prefetch_related("answers__field").filter(is_test_submission=False)
 
@@ -77,9 +108,7 @@ class FormsAllAdapter(BaseDatasetAdapter):
                 Q(form__title__icontains=q)
             ).distinct()
 
-        for f in query_req.filters:
-            if f.field == "is_manual_entry" and f.operator == "eq":
-                qs = qs.filter(is_manual_entry=bool(f.value))
+        qs = self._apply_filters(qs, query_req.filters)
 
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_FIELDS_FORMS else "submitted_at"
         sort_db = "form__title" if sort_field == "form_title" else sort_field
@@ -113,6 +142,7 @@ class FormsAllAdapter(BaseDatasetAdapter):
             if query_req.search:
                 q = query_req.search.strip()
                 qs = qs.filter(Q(user__email__icontains=q) | Q(user__first_name__icontains=q) | Q(form__title__icontains=q)).distinct()
+            qs = self._apply_filters(qs, query_req.filters)
         for r in qs.iterator(chunk_size=500):
             yield self._normalize_common(r)
 
@@ -216,6 +246,40 @@ class FormIndividualAdapter(BaseDatasetAdapter):
             ))
         return columns, []
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field == "is_manual_entry":
+                if op == "eq":
+                    is_true = str(val).lower() in ("true", "1", "yes")
+                    qs = qs.filter(is_manual_entry=is_true)
+            elif field == "name":
+                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
+                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
+                elif op == "starts_with": qs = qs.filter(Q(user__first_name__istartswith=str(val)) | Q(user__last_name__istartswith=str(val)))
+            elif field == "email":
+                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
+                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
+                elif op == "starts_with": qs = qs.filter(user__email__istartswith=str(val))
+            elif field == "roll_number":
+                if op == "contains": qs = qs.filter(user__roll_number__icontains=str(val))
+                elif op == "eq": qs = qs.filter(user__roll_number__iexact=str(val))
+            elif field == "submitted_at":
+                if op == "gte": qs = qs.filter(submitted_at__gte=val)
+                elif op == "lte": qs = qs.filter(submitted_at__lte=val)
+                elif op == "eq": qs = qs.filter(submitted_at__date=val)
+            elif field.startswith("q_") and field[2:].isdigit():
+                fid = int(field[2:])
+                if op == "contains": qs = qs.filter(answers__field_id=fid, answers__value__icontains=str(val))
+                elif op == "starts_with": qs = qs.filter(answers__field_id=fid, answers__value__istartswith=str(val))
+                elif op == "eq": qs = qs.filter(answers__field_id=fid, answers__value__iexact=str(val))
+                elif op == "neq": qs = qs.exclude(answers__field_id=fid, answers__value__iexact=str(val))
+                elif op == "empty": qs = qs.exclude(answers__field_id=fid, answers__value__isnull=False)
+                elif op == "not_empty": qs = qs.filter(answers__field_id=fid, answers__value__isnull=False)
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         if not self._ensure_form():
             return QueryResult(records=[], total=0, page=1, page_size=query_req.page_size, dataset_id=f"form_{self._form_id}")
@@ -225,8 +289,11 @@ class FormIndividualAdapter(BaseDatasetAdapter):
         if query_req.search:
             q = query_req.search.strip()
             qs = qs.filter(
-                Q(user__email__icontains=q) | Q(user__first_name__icontains=q) | Q(user__last_name__icontains=q)
+                Q(user__email__icontains=q) | Q(user__first_name__icontains=q) | Q(user__last_name__icontains=q) |
+                Q(answers__value__icontains=q)
             ).distinct()
+
+        qs = self._apply_filters(qs, query_req.filters)
 
         sort_field = "submitted_at" if query_req.sort.field not in {"id", "submitted_at"} else query_req.sort.field
         prefix = "-" if query_req.sort.direction == "desc" else ""
@@ -262,6 +329,14 @@ class FormIndividualAdapter(BaseDatasetAdapter):
         qs = Response.objects.filter(form=self._form, is_test_submission=False).select_related("user")
         if selected_ids is not None:
             qs = qs.filter(pk__in=selected_ids)
+        else:
+            if query_req.search:
+                q = query_req.search.strip()
+                qs = qs.filter(
+                    Q(user__email__icontains=q) | Q(user__first_name__icontains=q) | Q(user__last_name__icontains=q) |
+                    Q(answers__value__icontains=q)
+                ).distinct()
+            qs = self._apply_filters(qs, query_req.filters)
         field_set = {ff.id for ff in self._fields}
 
         # Stream in chunks of 200 responses; for each chunk prefetch answers

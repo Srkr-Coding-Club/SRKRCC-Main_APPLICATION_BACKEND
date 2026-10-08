@@ -252,15 +252,20 @@ class ProblemStatementDetailView(APIView):
     def delete(self, request, slug, pk):
         hackathon, ps = self._get(request, slug, pk)
         code = ps.code
-        if ps.teams.exists():
+        force = str(request.query_params.get('force', 'false')).lower() in ('true', '1') or str(request.data.get('force', 'false')).lower() in ('true', '1')
+        total_teams = ps.teams.count()
+        if total_teams > 0 and not force:
             raise HackathonError(
-                'Teams have picked this problem statement. Deactivate it instead of deleting.',
+                f'{total_teams} team(s) have picked this problem statement. Deactivate it or confirm force deletion to unassign them.',
                 'PROBLEM_STATEMENT_IN_USE',
             )
+        if total_teams > 0:
+            ps.teams.update(problem_statement=None)
         ps.delete()
-        log_audit_event(actor=request.user, action="Deleted Problem Statement", target_model="ProblemStatement",
-                        target_id=pk, details={"hackathon": slug, "code": code})
-        return DRFResponse({'deleted': True, 'id': pk})
+        data = {'deleted': True, 'id': pk}
+        if total_teams > 0:
+            data['teams_unassigned'] = total_teams
+        return DRFResponse(data)
 
 
 # ---------------------------------------------------------------------------
@@ -363,15 +368,28 @@ class HackathonTeamsView(APIView):
     def post(self, request, slug):
         hackathon = _get_hackathon(request, slug)
         _, ps, open_innovation = _parse_problem_choice(hackathon, request.data)
-        team = TeamService.create_team(hackathon, request.user, request.data.get('name', ''), ps, open_innovation)
+        leader = request.user
+        if _is_admin_or_club_lead(request.user) and request.data.get('leader_email'):
+            leader_email = request.data['leader_email'].strip()
+            from django.contrib.auth import get_user_model
+            UserModel = get_user_model()
+            leader_user = UserModel.objects.filter(email__iexact=leader_email).first()
+            if not leader_user:
+                raise HackathonError(f'No account found with email {leader_email}.', 'USER_NOT_FOUND', field='leader_email')
+            leader = leader_user
+        team = TeamService.create_team(hackathon, leader, request.data.get('name', ''), ps, open_innovation, actor=request.user)
         return DRFResponse(TeamSerializer(team).data, status=status.HTTP_201_CREATED)
 
 
 class UserLookupView(APIView):
     """
-    GET /api/hackathons/{slug}/user-lookup/?email= - exact-email teammate lookup.
-    Returns only name/email/club ID plus whether the caller's team can invite
-    them; never phone, roll number or other profile data. Throttled.
+    GET /api/hackathons/{slug}/user-lookup/
+    Supports:
+    - ?email=... : exact-email teammate lookup (legacy/strict mode). Requires full email with '@'.
+    - ?q=...     : prefix or partial search (email, name, club_id) for instant autocomplete as user types.
+    - ?team_id=...: optional target team ID to check invite eligibility against.
+    Returns only name/email/club ID plus whether the team can invite them;
+    never phone, roll number or other private profile data. Throttled.
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [ScopedRateThrottle]
@@ -379,25 +397,86 @@ class UserLookupView(APIView):
 
     def get(self, request, slug):
         from django.contrib.auth import get_user_model
+        User = get_user_model()
         hackathon = _get_hackathon(request, slug)
         email = (request.query_params.get('email') or '').strip()
-        if not email or '@' not in email:
-            raise HackathonError('Enter a full email address.', 'EMAIL_REQUIRED', field='email')
-        user = get_user_model().objects.filter(email__iexact=email).first()
-        if user is None:
-            return DRFResponse({'found': False, 'can_invite': False,
-                                'reason': 'No SRKRCC account uses that email. Ask them to sign up first.'})
-        membership = membership_of(hackathon, request.user)
-        can_invite, reason = False, 'Create a team first.'
-        if membership is not None:
-            if membership.team.leader_id != request.user.id:
-                can_invite, reason = False, 'Only the team leader can invite.'
+        q = (request.query_params.get('q') or '').strip()
+        team_id = request.query_params.get('team_id')
+
+        # Determine target team for eligibility checking
+        target_team = None
+        if team_id:
+            target_team = Team.objects.filter(hackathon=hackathon, id=team_id).first()
+        if target_team is None:
+            membership = membership_of(hackathon, request.user)
+            if membership is not None:
+                target_team = membership.team
+
+        def _evaluate(u):
+            if target_team is not None:
+                if target_team.leader_id != request.user.id and not _is_admin_or_club_lead(request.user):
+                    can_invite, reason = False, 'Only the team leader can invite.'
+                else:
+                    can_invite, reason = TeamService.invite_eligibility(target_team, u)
             else:
-                can_invite, reason = TeamService.invite_eligibility(membership.team, user)
-        name = f"{user.first_name} {user.last_name}".strip() or user.username
+                if not _is_admin_or_club_lead(request.user):
+                    can_invite, reason = False, 'Create a team first.'
+                elif TeamMember.objects.filter(hackathon=hackathon, user=u).exists():
+                    can_invite, reason = False, 'Already in another team for this hackathon.'
+                else:
+                    can_invite, reason = True, ''
+
+            name = f"{u.first_name} {u.last_name}".strip() or u.username
+            return {
+                'found': True,
+                'id': u.id,
+                'name': name,
+                'email': u.email,
+                'club_id': u.club_id,
+                'can_invite': can_invite,
+                'reason': reason,
+            }
+
+        # If email param is explicitly provided, enforce strict email contract (for existing tests & direct lookup)
+        if email:
+            if '@' not in email:
+                raise HackathonError('Enter a full email address.', 'EMAIL_REQUIRED', field='email')
+            user = User.objects.filter(email__iexact=email).first()
+            if user is None:
+                return DRFResponse({
+                    'found': False,
+                    'can_invite': False,
+                    'reason': 'No SRKRCC account uses that email. Ask them to sign up first.',
+                    'results': [],
+                })
+            res = _evaluate(user)
+            item = dict(res)
+            res['results'] = [item]
+            return DRFResponse(res)
+
+        # Autocomplete search via ?q=
+        if q:
+            users = User.objects.filter(
+                Q(email__icontains=q) |
+                Q(first_name__icontains=q) |
+                Q(last_name__icontains=q) |
+                Q(club_id__icontains=q)
+            ).distinct()[:8]
+
+            results = [_evaluate(u) for u in users]
+            top = dict(results[0]) if results else {
+                'found': False,
+                'can_invite': False,
+                'reason': f'No members found matching "{q}".',
+            }
+            top['results'] = results
+            return DRFResponse(top)
+
         return DRFResponse({
-            'found': True, 'id': user.id, 'name': name, 'email': user.email, 'club_id': user.club_id,
-            'can_invite': can_invite, 'reason': reason,
+            'found': False,
+            'can_invite': False,
+            'reason': 'Enter a search term.',
+            'results': [],
         })
 
 
@@ -479,6 +558,18 @@ class TeamDetailView(APIView):
             kwargs.update(change_problem=True, problem_statement=ps, open_innovation=open_innovation)
         TeamService.update_team(team, request.user, **kwargs)
         return DRFResponse(self._serialize(request, team))
+
+    def delete(self, request, pk):
+        if not _is_admin_or_club_lead(request.user):
+            raise PermissionDenied('Only admins can delete teams.')
+        team = get_object_or_404(_team_queryset(), pk=pk)
+        team_id = team.pk
+        team_name = team.name
+        slug = team.hackathon.slug
+        team.delete()
+        log_audit_event(actor=request.user, action="Deleted Hackathon Team", target_model="HackathonTeam",
+                        target_id=team_id, details={"hackathon": slug, "name": team_name})
+        return DRFResponse({'deleted': True, 'id': team_id})
 
 
 class TeamActionView(APIView):
@@ -634,6 +725,22 @@ class RoundActionView(APIView):
             RoundService.unpublish_results(round_obj, request.user)
         elif round_action == 'populate':
             result['added'] = RoundService.populate_entries(round_obj, request.user)
+        elif round_action == 'advance':
+            next_round, promoted, already_in_round = RoundService.advance_shortlisted(round_obj, request.user)
+            result['promoted'] = promoted
+            result['already_in_round'] = already_in_round
+            result['target_round'] = RoundSerializer(next_round).data
+        elif round_action == 'add-team':
+            team_id = _int(data.get('team_id'), 'team_id')
+            team = get_object_or_404(hackathon.teams, pk=team_id)
+            entry, added = RoundService.add_team_entry(round_obj, team, request.user)
+            result['added'] = added
+            result['entry_id'] = entry.pk
+        elif round_action == 'remove-team':
+            team_id = _int(data.get('team_id'), 'team_id')
+            team = get_object_or_404(hackathon.teams, pk=team_id)
+            removed = RoundService.remove_team_entry(round_obj, team, request.user)
+            result['removed'] = removed
         else:
             from django.http import Http404
             raise Http404

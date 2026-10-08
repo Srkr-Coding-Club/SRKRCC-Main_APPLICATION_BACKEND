@@ -41,6 +41,13 @@ authenticated Admin and Club Lead callers receive the complete scheduling calend
 scheduled date, statement, samples, tags, and optional external judge link; the backend derives
 its unique slug from the title.
 
+Admins and Club Leads can also create a batch through
+`POST /api/codequest/batch-schedule/` using a `problems` array (one to five entries). Each
+entry has the same problem content fields as the single-problem endpoint, including its own
+`scheduled_date`. Dates in the batch must be unique and cannot already be assigned. The batch
+is saved atomically, and public list/detail visibility still follows `scheduled_date <=
+timezone.localdate()`; members cannot discover a future problem before its date.
+
 Submissions remain member-owned. Admins and Club Leads review them through
 `POST /api/codequest/submissions/{id}/review/` with `{ "is_correct": true | false }`.
 The endpoint locks the submission, records the verdict, and rebuilds the member's current and

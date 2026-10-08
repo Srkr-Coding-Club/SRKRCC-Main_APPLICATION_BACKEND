@@ -110,6 +110,7 @@ INSTALLED_APPS = [
     'apps.blogs',
     'apps.audit',
     'apps.announcements',
+    'apps.notifications',
 ]
 
 MIDDLEWARE = [

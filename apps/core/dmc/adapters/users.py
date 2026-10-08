@@ -99,6 +99,61 @@ class UsersAdapter(BaseDatasetAdapter):
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
         return COLUMNS, FILTERS
 
+    def _apply_filters(self, qs, filters: list[FilterClause]):
+        for f in filters:
+            field = f.field
+            op = f.operator
+            val = f.value
+            if field in ("role", "membership_status", "branch", "created_from"):
+                if op == "eq":
+                    qs = qs.filter(**{field: val})
+                elif op == "neq":
+                    qs = qs.exclude(**{field: val})
+            elif field == "year":
+                if op in ("eq", "neq", "gte", "lte", "gt", "lt"):
+                    try:
+                        num_val = int(val)
+                        if op == "eq": qs = qs.filter(year=num_val)
+                        elif op == "neq": qs = qs.exclude(year=num_val)
+                        elif op == "gte": qs = qs.filter(year__gte=num_val)
+                        elif op == "lte": qs = qs.filter(year__lte=num_val)
+                        elif op == "gt": qs = qs.filter(year__gt=num_val)
+                        elif op == "lt": qs = qs.filter(year__lt=num_val)
+                    except (ValueError, TypeError):
+                        pass
+            elif field == "name":
+                if op == "contains":
+                    qs = qs.filter(Q(first_name__icontains=str(val)) | Q(last_name__icontains=str(val)))
+                elif op == "starts_with":
+                    qs = qs.filter(Q(first_name__istartswith=str(val)) | Q(last_name__istartswith=str(val)))
+                elif op == "eq":
+                    qs = qs.filter(Q(first_name__iexact=str(val)) | Q(last_name__iexact=str(val)))
+                elif op == "empty":
+                    qs = qs.filter(Q(first_name__isnull=True, last_name__isnull=True) | Q(first_name="", last_name=""))
+                elif op == "not_empty":
+                    qs = qs.exclude(Q(first_name__isnull=True, last_name__isnull=True) | Q(first_name="", last_name=""))
+            elif field in ("email", "club_id", "phone_number", "roll_number"):
+                if op == "eq":
+                    qs = qs.filter(**{f"{field}__iexact": str(val)})
+                elif op == "neq":
+                    qs = qs.exclude(**{f"{field}__iexact": str(val)})
+                elif op == "contains":
+                    qs = qs.filter(**{f"{field}__icontains": str(val)})
+                elif op == "starts_with":
+                    qs = qs.filter(**{f"{field}__istartswith": str(val)})
+                elif op == "empty":
+                    qs = qs.filter(Q(**{f"{field}__isnull": True}) | Q(**{field: ""}))
+                elif op == "not_empty":
+                    qs = qs.exclude(Q(**{f"{field}__isnull": True}) | Q(**{field: ""}))
+            elif field in ("registered_at", "created_at"):
+                if op == "gte":
+                    qs = qs.filter(**{f"{field}__gte": val})
+                elif op == "lte":
+                    qs = qs.filter(**{f"{field}__lte": val})
+                elif op == "eq":
+                    qs = qs.filter(**{f"{field}__date": val})
+        return qs
+
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = User.objects.all().select_related('referred_by_user')
 
@@ -115,19 +170,7 @@ class UsersAdapter(BaseDatasetAdapter):
             )
 
         # Filters
-        for f in query_req.filters:
-            if f.field == "role" and f.operator == "eq":
-                qs = qs.filter(role=f.value)
-            elif f.field == "role" and f.operator == "neq":
-                qs = qs.exclude(role=f.value)
-            elif f.field == "membership_status" and f.operator == "eq":
-                qs = qs.filter(membership_status=f.value)
-            elif f.field == "branch" and f.operator == "eq":
-                qs = qs.filter(branch=f.value)
-            elif f.field == "branch" and f.operator == "neq":
-                qs = qs.exclude(branch=f.value)
-            elif f.field == "created_from" and f.operator == "eq":
-                qs = qs.filter(created_from=f.value)
+        qs = self._apply_filters(qs, query_req.filters)
 
         # Sort (allowlisted)
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_FIELDS else "created_at"
@@ -173,15 +216,7 @@ class UsersAdapter(BaseDatasetAdapter):
                     Q(email__icontains=q) | Q(club_id__icontains=q) |
                     Q(phone_number__icontains=q) | Q(roll_number__icontains=q)
                 )
-            for f in query_req.filters:
-                if f.field == "role" and f.operator == "eq":
-                    qs = qs.filter(role=f.value)
-                elif f.field == "membership_status" and f.operator == "eq":
-                    qs = qs.filter(membership_status=f.value)
-                elif f.field == "branch" and f.operator == "eq":
-                    qs = qs.filter(branch=f.value)
-                elif f.field == "created_from" and f.operator == "eq":
-                    qs = qs.filter(created_from=f.value)
+            qs = self._apply_filters(qs, query_req.filters)
 
         for u in qs.iterator(chunk_size=500):
             yield self._normalize(u)

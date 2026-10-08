@@ -67,13 +67,14 @@ class HackathonSerializer(serializers.ModelSerializer):
 
 class ProblemStatementSerializer(serializers.ModelSerializer):
     team_count = serializers.SerializerMethodField()
+    total_teams_count = serializers.SerializerMethodField()
     slots_left = serializers.SerializerMethodField()
 
     class Meta:
         model = ProblemStatement
         fields = [
             'id', 'code', 'title', 'description', 'domain', 'tags',
-            'max_teams', 'is_active', 'order', 'team_count', 'slots_left',
+            'max_teams', 'is_active', 'order', 'team_count', 'total_teams_count', 'slots_left',
         ]
         # The ID is assigned by the application (ProblemStatementService), never typed by an admin.
         read_only_fields = ['code']
@@ -86,6 +87,9 @@ class ProblemStatementSerializer(serializers.ModelSerializer):
 
     def get_team_count(self, obj):
         return self._count(obj)
+
+    def get_total_teams_count(self, obj):
+        return obj.teams.count()
 
     def get_slots_left(self, obj):
         if not obj.max_teams:
@@ -282,6 +286,16 @@ class RoundSerializer(serializers.ModelSerializer):
             counts[status_value] = counts.get(status_value, 0) + 1
         counts['total'] = sum(counts.values())
         counts['details_submitted'] = obj.entries.filter(details_response__isnull=False).count()
+        next_round = obj.hackathon.rounds.filter(order__gt=obj.order).order_by('order').first()
+        if next_round:
+            counts['next_round_id'] = next_round.id
+            counts['next_round_name'] = next_round.name
+            shortlisted_team_ids = set(obj.entries.filter(status=EntryStatus.SHORTLISTED).values_list('team_id', flat=True))
+            counts['promoted_to_next'] = next_round.entries.filter(team_id__in=shortlisted_team_ids).count() if shortlisted_team_ids else 0
+        else:
+            counts['next_round_id'] = None
+            counts['next_round_name'] = None
+            counts['promoted_to_next'] = 0
         return counts
 
     def validate_name(self, value):
@@ -317,13 +331,14 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
     problem_code = serializers.SerializerMethodField()
     decided_by_name = serializers.SerializerMethodField()
     details_response_id = serializers.IntegerField(read_only=True)
+    is_promoted_to_next = serializers.SerializerMethodField()
 
     class Meta:
         model = RoundEntry
         fields = [
             'id', 'team_id', 'team_name', 'team_status', 'leader_email', 'member_count',
             'problem_statement', 'problem_code', 'status', 'admin_notes', 'feedback',
-            'decided_by_name', 'decided_at', 'details_response_id',
+            'decided_by_name', 'decided_at', 'details_response_id', 'is_promoted_to_next',
         ]
 
     def get_member_count(self, obj):
@@ -337,6 +352,14 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
 
     def get_decided_by_name(self, obj):
         return _user_name(obj.decided_by) if obj.decided_by else None
+
+    def get_is_promoted_to_next(self, obj):
+        if obj.status != EntryStatus.SHORTLISTED:
+            return False
+        next_round = obj.round.hackathon.rounds.filter(order__gt=obj.round.order).order_by('order').first()
+        if not next_round:
+            return False
+        return next_round.entries.filter(team_id=obj.team_id).exists()
 
 
 # ---------------------------------------------------------------------------
