@@ -1,8 +1,11 @@
+from collections import Counter, defaultdict
+
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response as DRFResponse
 from rest_framework.pagination import PageNumberPagination
+from django.http import HttpResponse
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Count, Max, Prefetch, Q
@@ -30,12 +33,80 @@ from apps.core.idempotency import (
     check_idempotent_response,
     store_idempotent_response,
 )
+from apps.core.dmc.adapters.forms import FormIndividualAdapter
+from apps.core.dmc.contracts import QueryRequest
+from apps.core.dmc.export_service import serialize_records
+
+
+RESPONSE_EXPORT_FORMATS = ('csv', 'xlsx', 'json')
+
+
+def _responses_missing_required_answers():
+    """
+    Returns (form_id, is_manual_entry) for every non-test response that leaves a
+    required field unanswered. Three queries however many responses exist.
+    """
+    required_by_form = defaultdict(set)
+    for form_id, field_id in FormField.objects.filter(is_required=True, is_deleted=False).values_list('form_id', 'id'):
+        required_by_form[form_id].add(field_id)
+    if not required_by_form:
+        return []
+
+    all_required_field_ids = [field_id for ids in required_by_form.values() for field_id in ids]
+    answered_by_response = defaultdict(set)
+    answered_rows = (
+        Answer.objects
+        .filter(field_id__in=all_required_field_ids, response__is_test_submission=False)
+        .exclude(value=None).exclude(value='').exclude(value=[])
+        .values_list('response_id', 'field_id')
+    )
+    for response_id, field_id in answered_rows:
+        answered_by_response[response_id].add(field_id)
+
+    responses = (
+        Response.objects
+        .filter(form_id__in=list(required_by_form), is_test_submission=False)
+        .values_list('id', 'form_id', 'is_manual_entry')
+    )
+    return [
+        (form_id, is_manual)
+        for response_id, form_id, is_manual in responses
+        if required_by_form[form_id] - answered_by_response[response_id]
+    ]
 
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
+
+
+def _apply_response_filters(qs, query_params):
+    """
+    Narrows a Response queryset by the responses viewer's query params. Shared by
+    the paginated viewer and the full export so both always cover the same rows.
+    """
+    search = query_params.get('search', '').strip()
+    if search:
+        qs = qs.filter(
+            Q(user__email__icontains=search) |
+            Q(user__first_name__icontains=search) |
+            Q(user__last_name__icontains=search) |
+            Q(answers__value__icontains=search)
+        ).distinct()
+
+    date_from = query_params.get('date_from')
+    date_to = query_params.get('date_to')
+    if date_from:
+        qs = qs.filter(submitted_at__date__gte=date_from)
+    if date_to:
+        qs = qs.filter(submitted_at__date__lte=date_to)
+
+    if query_params.get('manual_only') == 'true':
+        qs = qs.filter(is_manual_entry=True)
+    if query_params.get('test_only') == 'true':
+        qs = qs.filter(is_test_submission=True)
+    return qs
 
 
 class FormViewSet(viewsets.ModelViewSet):
@@ -696,22 +767,8 @@ class FormViewSet(viewsets.ModelViewSet):
         total_responses = Response.objects.filter(is_test_submission=False).count()
 
         # Completion rate: responses with no empty required answers / total responses
-        responses_with_gaps = 0
-        for form in all_forms:
-            required_fields = list(form.fields.filter(is_required=True, is_deleted=False))
-            if not required_fields:
-                continue
-            required_ids = [f.id for f in required_fields]
-            form_responses = Response.objects.filter(form=form, is_test_submission=False)
-            for resp in form_responses:
-                answered_ids = set(
-                    Answer.objects
-                    .filter(response=resp, field_id__in=required_ids)
-                    .exclude(value=None).exclude(value='').exclude(value=[])
-                    .values_list('field_id', flat=True)
-                )
-                if set(required_ids) - answered_ids:
-                    responses_with_gaps += 1
+        gap_responses = _responses_missing_required_answers()
+        responses_with_gaps = len(gap_responses)
 
         completion_rate = (
             round(((total_responses - responses_with_gaps) / total_responses) * 100)
@@ -722,29 +779,16 @@ class FormViewSet(viewsets.ModelViewSet):
         warnings = []
 
         # 1. Empty required fields in responses (manual entries)
-        for form in all_forms:
-            required_fields = list(form.fields.filter(is_required=True, is_deleted=False))
-            if not required_fields:
-                continue
-            required_ids = [f.id for f in required_fields]
-            gap_count = 0
-            for resp in Response.objects.filter(form=form, is_manual_entry=True):
-                answered_ids = set(
-                    Answer.objects
-                    .filter(response=resp, field_id__in=required_ids)
-                    .exclude(value=None).exclude(value='').exclude(value=[])
-                    .values_list('field_id', flat=True)
-                )
-                if set(required_ids) - answered_ids:
-                    gap_count += 1
-            if gap_count > 0:
-                warnings.append({
-                    "type": "empty_required_fields",
-                    "form_id": form.id,
-                    "form_title": form.title,
-                    "message": f"{gap_count} response(s) have empty required fields (manual entries)",
-                    "action_link": "responses",
-                })
+        manual_gap_counts = Counter(form_id for form_id, is_manual in gap_responses if is_manual)
+        for form in all_forms.filter(id__in=manual_gap_counts.keys()):
+            gap_count = manual_gap_counts[form.id]
+            warnings.append({
+                "type": "empty_required_fields",
+                "form_id": form.id,
+                "form_title": form.title,
+                "message": f"{gap_count} response(s) have empty required fields (manual entries)",
+                "action_link": "responses",
+            })
 
         # 2. Broken conditional rules (rule references a soft-deleted field)
         for field in FormField.objects.filter(is_deleted=False):
@@ -852,39 +896,71 @@ class FormViewSet(viewsets.ModelViewSet):
         """
         form = self.get_object()
         qs = Response.objects.filter(form=form).select_related(
-            'user', 'created_by_admin'
-        ).prefetch_related('answers__field').order_by('-submitted_at')
+            'form', 'user', 'created_by_admin'
+        ).prefetch_related(
+            'answers__field',
+            Prefetch('confirmation_email_deliveries', queryset=EmailDelivery.objects.order_by('-created_at')),
+            Prefetch('notifications', queryset=Notification.objects.order_by('-created_at')),
+        ).order_by('-submitted_at')
 
-        # Filters
-        search = request.query_params.get('search', '').strip()
-        if search:
-            qs = qs.filter(
-                Q(user__email__icontains=search) |
-                Q(user__first_name__icontains=search) |
-                Q(user__last_name__icontains=search) |
-                Q(answers__value__icontains=search)
-            ).distinct()
-
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        if date_from:
-            qs = qs.filter(submitted_at__date__gte=date_from)
-        if date_to:
-            qs = qs.filter(submitted_at__date__lte=date_to)
-
-        if request.query_params.get('manual_only') == 'true':
-            qs = qs.filter(is_manual_entry=True)
-        if request.query_params.get('test_only') == 'true':
-            qs = qs.filter(is_test_submission=True)
-        else:
-            # By default exclude test submissions unless explicitly requested
-            if request.query_params.get('test_only') != 'true':
-                pass  # Show all unless test_only is set
+        qs = _apply_response_filters(qs, request.query_params)
 
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(qs, request)
         serializer = ResponseDetailSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='responses/export',
+            permission_classes=[IsAdminOrClubLead])
+    def export_responses(self, request, slug=None):
+        """
+        GET /api/forms/{slug}/responses/export/
+        Params: export_format (csv|xlsx|json), ids (comma-separated response ids), columns
+        (comma-separated column keys, e.g. `email,q_12`; omit for every column), plus every
+        filter the responses viewer accepts. Exports ALL matching responses across
+        all pages, with every answer as a column; `ids` limits it to a selection.
+        (Not `format`: DRF reserves that query param for its own renderer negotiation.)
+        """
+        form = self.get_object()
+        export_format = request.query_params.get('export_format', 'csv').lower()
+        if export_format not in RESPONSE_EXPORT_FORMATS:
+            return DRFResponse(
+                {'error': f"Unsupported format. Choose: {', '.join(RESPONSE_EXPORT_FORMATS)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = _apply_response_filters(Response.objects.filter(form=form), request.query_params)
+        if 'ids' in request.query_params:
+            selected_ids = [int(i) for i in request.query_params['ids'].split(',') if i.strip().isdigit()]
+            qs = qs.filter(pk__in=selected_ids)
+        matched_ids = [str(pk) for pk in qs.values_list('pk', flat=True)]
+
+        adapter = FormIndividualAdapter(form.pk)
+        columns = [c for c in adapter.get_schema(request.user)[0] if c.exportable]
+        if 'columns' in request.query_params:
+            # Keep the schema's column order; unknown keys are ignored.
+            wanted = {key for key in request.query_params['columns'].split(',') if key}
+            columns = [c for c in columns if c.key in wanted]
+            if not columns:
+                return DRFResponse(
+                    {'error': 'Select at least one column to export.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        records = adapter.stream_records(QueryRequest(), request.user, selected_ids=matched_ids)
+        data, content_type = serialize_records(columns, records, export_format)
+
+        log_audit_event(
+            actor=request.user,
+            action=f"Form Responses Export ({export_format.upper()})",
+            target_model="Form",
+            target_id=str(form.pk),
+            details={"form": form.slug, "format": export_format, "matched_rows": len(matched_ids), "selection_only": 'ids' in request.query_params},
+        )
+
+        filename = f"{form.slug}-responses-{timezone.now():%Y%m%d_%H%M%S}.{export_format}"
+        http_response = HttpResponse(data, content_type=content_type)
+        http_response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return http_response
 
     @action(detail=True, methods=['post'], url_path='responses/bulk-delete',
             permission_classes=[IsAdminOrClubLead])
@@ -1317,16 +1393,16 @@ class ResponseViewSet(viewsets.ModelViewSet):
         )
 
 
-class MemberViewSet(viewsets.ReadOnlyModelViewSet):
+class MemberViewSet(viewsets.ViewSet):
     """
     GET /api/members/
     Aggregates responses by user (excludes anonymous/null-user responses).
     Supports ?search=, ?form_id=, ?page=, ?page_size=
+    List-only: the aggregate has no per-member detail route.
     """
     permission_classes = [IsAdminOrClubLead]
-    pagination_class = StandardResultsSetPagination
 
-    def list(self, request, *args, **kwargs):
+    def list(self, request):
 
         # Only users who have submitted at least one response
         # Exclude anonymous (null user) responses
@@ -1354,32 +1430,35 @@ class MemberViewSet(viewsets.ReadOnlyModelViewSet):
             user_agg = user_agg.filter(form_id=form_id)
 
         paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(list(user_agg), request)
+        page = paginator.paginate_queryset(user_agg, request)
+        rows = page if page is not None else list(user_agg)
 
-        results = []
-        for row in (page or user_agg):
-            user_id = row['user']
-            forms_submitted = (
-                Response.objects
-                .filter(user_id=user_id, is_test_submission=False)
-                .select_related('form')
-                .order_by('-submitted_at')
-            )
-            results.append({
-                "user_id": user_id,
+        # One query for every member on this page, instead of one per member.
+        forms_by_user = defaultdict(list)
+        submissions = (
+            Response.objects
+            .filter(user_id__in=[row['user'] for row in rows], is_test_submission=False)
+            .order_by('-submitted_at')
+            .values('user_id', 'form_id', 'form__title', 'submitted_at')
+        )
+        for submission in submissions:
+            forms_by_user[submission['user_id']].append({
+                "form_id": submission['form_id'],
+                "form_title": submission['form__title'],
+                "submitted_at": submission['submitted_at'].isoformat(),
+            })
+
+        results = [
+            {
+                "user_id": row['user'],
                 "name": f"{row['user__first_name']} {row['user__last_name']}".strip(),
                 "email": row['user__email'],
                 "total_submissions": row['total_submissions'],
                 "last_active": row['last_active'].isoformat() if row['last_active'] else None,
-                "forms_submitted": [
-                    {
-                        "form_id": r.form.id,
-                        "form_title": r.form.title,
-                        "submitted_at": r.submitted_at.isoformat(),
-                    }
-                    for r in forms_submitted
-                ],
-            })
+                "forms_submitted": forms_by_user[row['user']],
+            }
+            for row in rows
+        ]
 
         if page is not None:
             return paginator.get_paginated_response(results)

@@ -655,7 +655,7 @@ The table below describes where and how backend database models map directly to 
 | **`JobListing`** | `/api/career/` | `/career`<br>`/admin` | `ContentHubTab.tsx` | Internship and full-time hiring board, stipend badges, deadline alerts, linked custom application forms. |
 | **`BlogPost`** | `/api/blogs/` | `/blogs`<br>`/admin` | `ContentHubTab.tsx` | Student engineering blog articles, tag filtering, cover image banners, author attribution. |
 | **`FeatureFlag`** | `/api/feature-flags/` | Everywhere | `FlagsTab.tsx`<br>`PlatformModulesGrid.tsx`<br>`Navbar.tsx` | Dynamic module access switches (enables/disables CodeQuest, Hackathons, Forms, etc. in realtime without redeployments). |
-| **`AuditLog`** | `/api/audit/` | `/admin` | `AuditLogsTab.tsx`<br>`DataHealthTab.tsx` | System mutation audit trail (flag toggles, bulk imports, schema updates, user role changes). |
+| **`AuditLog`** | `/api/audit/` | `/admin` | `AuditLogsTab.tsx`<br>`DataHealthTab.tsx` | System mutation audit trail (flag toggles, bulk imports, schema updates, user role changes). Paginated (50 per page) with server-side search across actor, action and target. |
 
 ---
 
