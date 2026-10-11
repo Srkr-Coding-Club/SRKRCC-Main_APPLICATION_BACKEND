@@ -51,6 +51,7 @@ The Forms & Data Management module powers dynamic registration forms, complex mu
 | `/api/forms/{slug}/check-duplicates/` | POST | Staff / Admin | Query existing email responses using JSONField-safe `Cast` lookup. |
 | `/api/forms/data-health/` | GET | Staff / Admin | Diagnostic statistics, active system warnings, and recent activity log. |
 | `/api/forms/{slug}/responses/` | GET | Staff / Admin | Paginated response viewer with search, date range, and flag filters. |
+| `/api/forms/{slug}/responses/export/` | GET | Staff / Admin | Exports every response matching the viewer filters (all pages) as CSV, XLSX or JSON, with every answer as a column. `?export_format=` selects the format (`format` is reserved by DRF). `?ids=1,2,3` limits it to a selection, even across pages. Audit-logged. |
 | `/api/forms/submissions/{id}/resend-confirmation-email/` | POST | Staff / Admin | Manually resend the confirmation email for a submission. |
 | `/api/forms/submissions/{id}/resend-notification/` | POST | Staff / Admin | Manually resend the in-app confirmation notification for a submission. |
 | `/api/members/` | GET | Staff / Admin | Aggregated member submissions directory with search and form filtering. |

@@ -1,4 +1,4 @@
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, _is_admin_or_club_lead
+from apps.core.cache import PublicReadCacheControlMixin
 
 from .models import (
     EntryStatus, Hackathon, HackathonAnnouncement, HackathonStatus, InviteStatus,
@@ -92,7 +93,7 @@ class IsSubmissionTeamMemberOrAdmin(permissions.BasePermission):
 # Hackathon CRUD (admin) + public read
 # ---------------------------------------------------------------------------
 
-class HackathonViewSet(viewsets.ModelViewSet):
+class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = HackathonSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'
@@ -186,6 +187,7 @@ class HackathonViewSet(viewsets.ModelViewSet):
 def _ps_queryset(hackathon):
     return hackathon.problem_statements.annotate(
         active_team_count=Count('teams', filter=Q(teams__status__in=ACTIVE), distinct=True),
+        total_team_count=Count('teams', distinct=True),
     )
 
 
@@ -343,7 +345,9 @@ class HackathonTeamsView(APIView):
             raise PermissionDenied('Only admins can list all teams.')
         hackathon = _get_hackathon(request, slug)
         qs = _team_queryset().filter(hackathon=hackathon).prefetch_related(
-            'memberships__user', 'round_entries__round',
+            Prefetch('memberships', queryset=TeamMember.objects.select_related('user')),
+            Prefetch('invites', queryset=TeamInvite.objects.select_related('invited_user', 'invited_by', 'hackathon', 'team')),
+            Prefetch('round_entries', queryset=RoundEntry.objects.select_related('round')),
         )
         params = request.query_params
         if params.get('status'):

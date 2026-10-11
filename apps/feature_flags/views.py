@@ -3,8 +3,9 @@ from .models import FeatureFlag
 from .serializers import FeatureFlagSerializer
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLeadOrReadOnly
+from apps.core.cache import PublicReadCacheControlMixin
 
-class FeatureFlagViewSet(viewsets.ModelViewSet):
+class FeatureFlagViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     queryset = FeatureFlag.objects.all()
     serializer_class = FeatureFlagSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]

@@ -5,9 +5,20 @@ from rest_framework.exceptions import ValidationError
 from .models import Problem, Submission, UserStreak
 from .serializers import ProblemSerializer, SubmissionSerializer, UserStreakSerializer, BatchScheduleSerializer, BatchScheduleProblemSerializer
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead, _is_admin_or_club_lead
+from apps.core.cache import PublicReadCacheControlMixin
+from apps.core.pagination import StandardPagination
 from .services import rebuild_user_streak
 
-class ProblemViewSet(viewsets.ModelViewSet):
+
+class SubmissionPagination(StandardPagination):
+    """Adds the accepted total across every submission, which the review summary needs."""
+
+    def get_paginated_response(self, data):
+        response_obj = super().get_paginated_response(data)
+        response_obj.data['accepted_count'] = self.page.paginator.object_list.filter(is_correct=True).count()
+        return response_obj
+
+class ProblemViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = ProblemSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'
@@ -24,12 +35,25 @@ class ProblemViewSet(viewsets.ModelViewSet):
 class SubmissionViewSet(viewsets.ModelViewSet):
     serializer_class = SubmissionSerializer
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrAdminOrClubLead]
+    pagination_class = SubmissionPagination
 
     def get_queryset(self):
         qs = Submission.objects.select_related('user', 'problem').all().order_by('-created_at')
         if _is_admin_or_club_lead(self.request.user):
             return qs
         return qs.filter(user=self.request.user)
+
+    @decorators.action(detail=False, methods=['get'], url_path='solved-dates')
+    def solved_dates(self, request):
+        """Scheduled dates of the problems the caller has solved, across all their submissions."""
+        dates = (
+            Submission.objects
+            .filter(user=request.user, is_correct=True)
+            .order_by()
+            .values_list('problem__scheduled_date', flat=True)
+            .distinct()
+        )
+        return response.Response({'dates': sorted(dates)})
 
     def perform_create(self, serializer):
         if serializer.validated_data['problem'].scheduled_date != timezone.localdate():
@@ -84,6 +108,7 @@ class BatchScheduleView(viewsets.ViewSet):
             dates = validated['scheduled_dates']
             difficulties = validated.get('difficulties', [])
             tags = validated.get('tags', [])
+            urls = validated.get('external_urls', [])
             problem_entries = [
                 {
                     'title': title,
@@ -91,6 +116,7 @@ class BatchScheduleView(viewsets.ViewSet):
                     'statement': f'Codequest problem: {title}',
                     'tags': tags[i] if i < len(tags) else [],
                     'scheduled_date': dates[i],
+                    'external_url': urls[i] if i < len(urls) else '',
                 }
                 for i, title in enumerate(titles)
             ]
