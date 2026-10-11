@@ -5,9 +5,10 @@ from rest_framework.exceptions import ValidationError
 from .models import Problem, Submission, UserStreak
 from .serializers import ProblemSerializer, SubmissionSerializer, UserStreakSerializer, BatchScheduleSerializer, BatchScheduleProblemSerializer
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead, _is_admin_or_club_lead
+from apps.core.cache import PublicReadCacheControlMixin
 from .services import rebuild_user_streak
 
-class ProblemViewSet(viewsets.ModelViewSet):
+class ProblemViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = ProblemSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'

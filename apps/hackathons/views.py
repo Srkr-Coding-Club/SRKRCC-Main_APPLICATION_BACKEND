@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, _is_admin_or_club_lead
+from apps.core.cache import PublicReadCacheControlMixin
 
 from .models import (
     EntryStatus, Hackathon, HackathonAnnouncement, HackathonStatus, InviteStatus,
@@ -92,7 +93,7 @@ class IsSubmissionTeamMemberOrAdmin(permissions.BasePermission):
 # Hackathon CRUD (admin) + public read
 # ---------------------------------------------------------------------------
 
-class HackathonViewSet(viewsets.ModelViewSet):
+class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = HackathonSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'
