@@ -276,8 +276,17 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
     def get_points(self, obj):
         points = 0
         try:
-            # 50 points per correct problem solved
-            points += obj.codequest_submissions.filter(is_correct=True).count() * 50
+            # Lifetime CodeQuest XP comes from the auditable XPReward ledger
+            # (see apps/codequest/services.py). If a member has no ledger rows
+            # yet (pre-gamification history), fall back to the legacy
+            # 50-points-per-accepted heuristic so existing profiles don't
+            # regress to a misleading zero.
+            from apps.codequest.models import XPReward
+            ledger_xp = XPReward.objects.filter(user=obj).aggregate(total=models.Sum('amount'))['total']
+            if ledger_xp is not None:
+                points += ledger_xp
+            else:
+                points += obj.codequest_submissions.filter(is_correct=True).count() * 50
         except Exception:
             pass
         try:

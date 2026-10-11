@@ -274,3 +274,9 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'SRKR Coding Club <noreply@srkrcc.in>')
 
+# CodeQuest gamification tuning. Every key is optional and shallow-merged over
+# the defaults in apps/codequest/gamification.py (XP per difficulty, POTD
+# bonus, level base, streak milestones, configurable badge thresholds). Leave
+# empty to use the documented defaults; uncomment a key to override it.
+CODEQUEST_GAMIFICATION = {}
+

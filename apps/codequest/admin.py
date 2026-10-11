@@ -1,6 +1,15 @@
 from django.contrib import admin
 from django.urls import path
-from .models import Problem, Submission, UserStreak
+from .models import (
+    BadgeDefinition,
+    CodingGoal,
+    CodingStreak,
+    Problem,
+    Submission,
+    UserBadge,
+    UserStreak,
+    XPReward,
+)
 
 
 @admin.register(Problem)
@@ -91,3 +100,45 @@ class SubmissionAdmin(admin.ModelAdmin):
 @admin.register(UserStreak)
 class UserStreakAdmin(admin.ModelAdmin):
     list_display = ['user', 'current_streak', 'max_streak', 'last_solved_date']
+
+
+@admin.register(CodingStreak)
+class CodingStreakAdmin(admin.ModelAdmin):
+    list_display = ['user', 'current_streak', 'max_streak', 'last_active_date']
+
+
+@admin.register(XPReward)
+class XPRewardAdmin(admin.ModelAdmin):
+    """The XP ledger is server-written; keep it read-only in admin for audit."""
+    list_display = ['user', 'reward_type', 'amount', 'difficulty', 'problem', 'scheduled_date', 'created_at']
+    list_filter = ['reward_type', 'difficulty']
+    search_fields = ['user__email', 'problem__title']
+    readonly_fields = ['user', 'reward_type', 'problem', 'scheduled_date', 'amount', 'difficulty', 'created_at', 'updated_at']
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(BadgeDefinition)
+class BadgeDefinitionAdmin(admin.ModelAdmin):
+    list_display = ['code', 'name', 'category', 'metric', 'threshold']
+    list_filter = ['category', 'metric']
+    search_fields = ['code', 'name']
+
+
+@admin.register(UserBadge)
+class UserBadgeAdmin(admin.ModelAdmin):
+    """Earned badges are awarded by the achievement service; read-only here."""
+    list_display = ['user', 'badge', 'earned_at']
+    list_filter = ['badge__category']
+    search_fields = ['user__email', 'badge__code']
+    readonly_fields = ['user', 'badge', 'earned_at', 'created_at', 'updated_at']
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(CodingGoal)
+class CodingGoalAdmin(admin.ModelAdmin):
+    list_display = ['user', 'daily_problems', 'weekly_problems', 'updated_at']
+    search_fields = ['user__email']

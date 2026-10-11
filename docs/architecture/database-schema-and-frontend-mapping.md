@@ -443,7 +443,7 @@ API-only (not DB columns — annotated in `HackathonViewSet.get_queryset()` / se
 
 ---
 
-### 3.5. CodeQuest Daily Streak Engine (`apps/codequest/models.py`)
+### 3.5. CodeQuest Engine — POTD, Streaks, XP & Badges (`apps/codequest/models.py`)
 
 #### `Problem` (Table: `codequest_problem`)
 - `id` (`BigAutoField`, PK)
@@ -454,6 +454,8 @@ API-only (not DB columns — annotated in `HackathonViewSet.get_queryset()` / se
 - `constraints` (`TextField`, blank)
 - `sample_input` / `sample_output` (`TextField`, blank)
 - `tags` (`JSONField`, default: `list`)
+- `external_url` (`URLField`, blank; external judge link, required by the admin workflow)
+- `external_platform` (`CharField(80)`, blank; e.g. LeetCode/Codeforces)
 - `scheduled_date` (`DateField`, Unique; drives Daily Challenge publication)
 
 #### `Submission` (Table: `codequest_submission`)
@@ -461,15 +463,54 @@ API-only (not DB columns — annotated in `HackathonViewSet.get_queryset()` / se
 - `problem_id` (`ForeignKey -> Problem`, `on_delete=CASCADE`, `related_name='submissions'`)
 - `user_id` (`ForeignKey -> User`, `on_delete=CASCADE`, `related_name='codequest_submissions'`)
 - `code` (`TextField`)
-- `language` (`CharField(50)`, default: `'python'`)
-- `is_correct` (`BooleanField`, default: False)
+- `language` (`CharField(50)`, default: `python`)
+- `is_correct` (`BooleanField`, default: `False`; verdict is admin-review-only)
+- `reviewed_by` (`ForeignKey -> User`, `on_delete=SET_NULL`, nullable, `related_name='codequest_reviews'`; who recorded the verdict)
+- `reviewed_at` (`DateTimeField`, nullable; a null value marks the submission **pending**)
+- Indexes: `(user, is_correct)`, `(user, created_at)`, `(reviewed_at)`.
 
 #### `UserStreak` (Table: `codequest_userstreak`)
 - `id` (`BigAutoField`, PK)
 - `user_id` (`OneToOneField -> User`, `on_delete=CASCADE`, `related_name='streak'`)
-- `current_streak` (`PositiveIntegerField`, default: 0)
-- `max_streak` (`PositiveIntegerField`, default: 0)
+- `current_streak` (`PositiveIntegerField`, default: `0`)
+- `max_streak` (`PositiveIntegerField`, default: `0`)
 - `last_solved_date` (`DateField`, nullable, blank)
+
+#### `CodingStreak` (Table: `codequest_codingstreak`)
+- `id` (`BigAutoField`, PK)
+- `user_id` (`OneToOneField -> User`, `on_delete=CASCADE`, `related_name='coding_streak'`)
+- `current_streak` / `max_streak` (`PositiveIntegerField`, default: `0`) — consecutive days with ≥1 submission of *any* verdict (distinct from the POTD `UserStreak`)
+- `last_active_date` (`DateField`, nullable, blank)
+
+#### `XPReward` (Table: `codequest_xpreward`)
+- `id` (`BigAutoField`, PK)
+- `user_id` (`ForeignKey -> User`, `on_delete=CASCADE`, `related_name='codequest_rewards'`)
+- `reward_type` (`CharField(20)`, choices: `SOLVE`, `POTD_BONUS`)
+- `problem_id` (`ForeignKey -> Problem`, `on_delete=CASCADE`, nullable, blank)
+- `scheduled_date` (`DateField`, nullable, blank; POTD bonuses credit the scheduled day)
+- `amount` (`PositiveIntegerField`) and `difficulty` (`CharField(10)`, blank; a snapshot taken at award time)
+- Immutable ledger: awards only ever written by the server review flow.
+- Unique constraints: `codequest_uniq_solve_xp_per_user_problem` (`user, reward_type, problem` where `SOLVE`), `codequest_uniq_potd_bonus_per_user_day` (`user, reward_type, scheduled_date` where `POTD_BONUS`); index on `(user, created_at)`.
+
+#### `BadgeDefinition` (Table: `codequest_badgedefinition`)
+- `id` (`BigAutoField`, PK)
+- `code` (`SlugField(64)`, Unique), `name` (`CharField(100)`), `description` (`CharField(255)`)
+- `category` (`CharField(20)`, choices: `SOLVING`, `CONSISTENCY`, `POTD`, `DIFFICULTY`, `XP_LEVEL`)
+- `metric` (`CharField(20)`, choices: `UNIQUE_SOLVED`, `ACTIVE_DAYS`, `CODING_STREAK`, `POTD_COMPLETED`, `POTD_STREAK`, `MEDIUM_SOLVED`, `HARD_SOLVED`, `LIFETIME_XP`, `LEVEL`)
+- `threshold` (`PositiveIntegerField`; configurable), `icon` (`CharField(40)`, blank)
+
+#### `UserBadge` (Table: `codequest_userbadge`)
+- `id` (`BigAutoField`, PK)
+- `user_id` (`ForeignKey -> User`, `on_delete=CASCADE`, `related_name='earned_badges'`)
+- `badge_id` (`ForeignKey -> BadgeDefinition`, `on_delete=CASCADE`, `related_name='earned_by'`)
+- `earned_at` (`DateTimeField`, default `now`)
+- Unique constraint: `codequest_uniq_user_badge` (`user, badge`).
+
+#### `CodingGoal` (Table: `codequest_codinggoal`)
+- `id` (`BigAutoField`, PK)
+- `user_id` (`OneToOneField -> User`, `on_delete=CASCADE`, `related_name='coding_goal'`)
+- `daily_problems` (`PositiveIntegerField`, default `1`) / `weekly_problems` (`PositiveIntegerField`, default `5`)
+- A missing row falls back to the configured defaults; goals never affect XP, streaks, or badges.
 
 ---
 
@@ -540,8 +581,9 @@ The table below describes where and how backend database models map directly to 
 | **`Event`** | `/api/events/` | `/`<br>`/events`<br>`/admin` | `UpcomingEventsGrid.tsx`<br>`EventsHackathonsTab.tsx` | Home page event grid, venue/capacity indicators, direct "Register Now" redirect to linked `registration_form` slug. |
 | **`Hackathon`** | `/api/hackathons/` | `/`<br>`/hackathons`<br>`/iconcoders`<br>`/admin` | `PlatformModulesGrid.tsx`<br>`EventsHackathonsTab.tsx` | Hackathon showcase, flagship IconCoders banners, prize pool callouts, countdown timers, linked registration forms. |
 | **`Team`** & **`Submission`** (Hackathon) | `/api/hackathons/{id}/teams/`<br>`/api/hackathons/{id}/submissions/` | `/hackathons` | `EventsHackathonsTab.tsx` | Team creation with leader + members multi-select, GitHub repo and demo video project submission, leaderboard score display. |
-| **`Problem`** | `/api/codequest/daily/`<br>`/api/codequest/` | `/codequest`<br>`/admin` | `PlatformModulesGrid.tsx` | Daily CodeQuest puzzle display based on `scheduled_date`, difficulty badges (Easy, Medium, Hard), tags filter. |
-| **`Submission`** & **`UserStreak`** (Codequest) | `/api/codequest/submit/`<br>`/api/codequest/leaderboard/` | `/codequest`<br>`/profile` | `StatsBar.tsx` | Live code submission tester, streak tracker counter (`current_streak`, `max_streak`), solved problem statistics. |
+| **`Problem`** | `/api/codequest/`<br>`/api/codequest/batch-schedule/` | `/codequest`<br>`/codequest/batch-schedule`<br>`/admin/codequest` | `CodeQuestChallengeBoard.tsx`<br>`PotdCalendar.tsx`<br>`ProblemCard.tsx`<br>`CodeQuestTab.tsx`<br>`CodeQuestMiniCalendar.tsx` | Daily CodeQuest puzzle display keyed to `scheduled_date` (future problems hidden), difficulty badges, a monthly challenge calendar (today ring, star-on-solved, monthly solved-progress ring), external judge links, single and batch scheduling, and the admin Problems list + right-side scheduling mini-calendar. |
+| **`Submission`** & **`UserStreak`** (Codequest) | `/api/codequest/submissions/`<br>`/api/codequest/submissions/{id}/review/` | `/codequest`<br>`/admin/codequest` | `ProblemCard.tsx`<br>`CodeQuestTab.tsx` | Member submissions and admin/club-lead review verdicts (with reviewer provenance); POTD streak tracker counter (`current_streak`, `max_streak`) rebuilt server-side from accepted distinct scheduled dates. |
+| **`CodingStreak`**, **`XPReward`**, **`BadgeDefinition`**, **`UserBadge`**, **`CodingGoal`** (Codequest gamification) | `/api/codequest/stats/` (`overview`, `daily`, `heatmap`, `streak`, `potd-streak`, `xp`, `badges`, `goals`, `report`, `leaderboard`, `analytics`) plus the admin-gated `admin-overview`, `admin-members`, `<id>/member`, `admin-analytics`, `admin-streaks`, `admin-gamification`, `admin-export` | `/codequest/stats`<br>`/profile`<br>`/admin/codequest/stats`<br>`/admin/codequest/analytics` | `StatsDashboard.tsx`<br>`ActivityHeatmap.tsx`<br>`StreaksPanel.tsx`<br>`XpPanel.tsx`<br>`StatsCharts.tsx`<br>`BadgesGrid.tsx`<br>`WeeklyReportPanel.tsx`<br>`LeaderboardPanel.tsx`<br>`CodeQuestStats.tsx`<br>`CodeQuestOverview.tsx`<br>`CodeQuestMembers.tsx`<br>`CodeQuestAnalytics.tsx`<br>`CodeQuestMonitoring.tsx`<br>`CodeQuestGamification.tsx`<br>`CodeQuestAudit.tsx` | Server-authoritative XP ledger, levels, badges, coding/POTD streaks, analytics charts, weekly report & missions, club leaderboard, the full-width yearly submission heatmap (also read-only on the member `/profile`, hidden for `ADMIN`/`CLUB_LEAD`), and the club-wide admin stats/analytics surfaces with CSV export + audit trail. |
 | **`JobListing`** | `/api/career/` | `/career`<br>`/admin` | `ContentHubTab.tsx` | Internship and full-time hiring board, stipend badges, deadline alerts, linked custom application forms. |
 | **`BlogPost`** | `/api/blogs/` | `/blogs`<br>`/admin` | `ContentHubTab.tsx` | Student engineering blog articles, tag filtering, cover image banners, author attribution. |
 | **`FeatureFlag`** | `/api/feature-flags/` | Everywhere | `FlagsTab.tsx`<br>`PlatformModulesGrid.tsx`<br>`Navbar.tsx` | Dynamic module access switches (enables/disables CodeQuest, Hackathons, Forms, etc. in realtime without redeployments). |

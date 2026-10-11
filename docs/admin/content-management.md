@@ -17,10 +17,10 @@ Full detail: [../modules/blogs.md](../modules/blogs.md).
 Full detail: [../modules/career.md](../modules/career.md).
 
 ## Codequest (Daily Problems)
-1. **Admin → Codequest → Problems** — add problems to the bank: statement, difficulty, tags, correct answer/grading notes.
-2. **Admin → Codequest → Schedule** — assign each problem to a specific future date. The system auto-publishes it as "today's problem" at midnight on that date, and auto-archives the previous day's problem — no manual action needed.
-3. For problems needing manual verification (not auto-graded), review submissions under **Admin → Codequest → Submissions**.
-4. Monitor engagement (streaks, top solvers) via the [Leaderboard](../modules/codequest.md) and [Analytics](../features/analytics-insights.md).
+1. **Admin → Codequest → Problems** — the problem bank: add/edit/delete problems and filter the list by upcoming/archived/all, with per-problem submission and solved counts.
+2. **Admin → Codequest → mini-calendar** — schedule each problem by picking a future day on the right-side POTD calendar (days already holding a problem are highlighted, past days are locked). The system auto-publishes it as "today's problem" at midnight on that date, and auto-archives the previous day's problem — no manual action needed. Use the **Batch Schedule** action to queue up to five problems in one request.
+3. **Admin → Codequest → Review** — for problems needing manual verification (not auto-graded), review submissions (pending/all queue) and record pass/fail verdicts.
+4. Monitor engagement (streaks, top solvers) on **Admin → Codequest → Stats** (Overview, Members, Insights, Audit) and the club **Analytics** page; members see their own dashboard at `/codequest/stats`.
 
 Full detail: [../modules/codequest.md](../modules/codequest.md).
 

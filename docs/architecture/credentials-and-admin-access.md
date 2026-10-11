@@ -32,7 +32,7 @@ The Django Admin is active on the backend at:
 | **Forms** | `Form`, `FormField` (inline), `Response`, `Answer` (inline), `BulkIngestSession`, `MemberNote` |
 | **Events** | `Event` (category, venue, timestamps, capacity, registration_form) |
 | **Hackathons** | `Hackathon`, `Team`, `Submission` |
-| **CodeQuest** | `Problem`, `Submission`, `UserStreak` |
+| **CodeQuest** | `Problem`, `Submission`, `UserStreak`, `CodingStreak`, `XPReward` (read-only), `BadgeDefinition`, `UserBadge` (read-only), `CodingGoal` |
 | **Career** | `JobListing`, `JobApplication` |
 | **Blogs** | `BlogPost` |
 | **Feature Flags** | `FeatureFlag` |

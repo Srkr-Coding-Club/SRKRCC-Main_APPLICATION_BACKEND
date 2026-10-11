@@ -23,6 +23,10 @@ class ProblemSerializer(serializers.ModelSerializer):
     scheduled_date = serializers.DateField()
     # External judge link is required for every scheduled problem.
     external_url = serializers.URLField(required=True, allow_blank=False)
+    # Annotated by ProblemViewSet for the list/detail routes (default 0 when the
+    # queryset isn't annotated, e.g. a freshly created instance).
+    submissions_count = serializers.IntegerField(read_only=True, default=0)
+    solved_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Problem
@@ -71,15 +75,20 @@ class SubmissionSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source='user.email', read_only=True)
     problem_title = serializers.CharField(source='problem.title', read_only=True)
     scheduled_date = serializers.DateField(source='problem.scheduled_date', read_only=True)
+    reviewed_by_name = serializers.CharField(source='reviewed_by.full_name', read_only=True, default=None)
+    is_reviewed = serializers.SerializerMethodField()
 
     class Meta:
         model = Submission
-        fields = ['id', 'problem', 'problem_title', 'scheduled_date', 'user', 'user_name', 'user_email', 'code', 'language', 'is_correct', 'created_at', 'updated_at']
+        fields = ['id', 'problem', 'problem_title', 'scheduled_date', 'user', 'user_name', 'user_email', 'code', 'language', 'is_correct', 'is_reviewed', 'reviewed_by', 'reviewed_by_name', 'reviewed_at', 'created_at', 'updated_at']
         # is_correct has no automated grader wired up yet; if it becomes user-writable,
         # any member can mark their own submission correct and inflate their leaderboard
         # points (see UserProfileDetailSerializer.get_points). user is set server-side
         # from the authenticated caller so nobody can submit on another user's behalf.
-        read_only_fields = ['is_correct', 'user']
+        read_only_fields = ['is_correct', 'user', 'reviewed_by', 'reviewed_at', 'is_reviewed']
+
+    def get_is_reviewed(self, obj):
+        return obj.reviewed_at is not None
 
 
 class UserStreakSerializer(serializers.ModelSerializer):
