@@ -55,7 +55,7 @@ DEFAULT_USERS = [
         'password': 'Member@123',
         'first_name': 'Student',
         'last_name': 'Member',
-        'role': UserRole.MEMBER,
+        'role': UserRole.NON_AFFILIATE,
         'is_staff': False,
         'is_superuser': False,
         'branch': 'CSE',
