@@ -6,9 +6,10 @@ from rest_framework.response import Response as DRFResponse
 from .models import Event, EventStatus
 from .serializers import EventSerializer
 from apps.core.permissions import IsAdminOrClubLeadOrReadOnly, _is_admin_or_club_lead
+from apps.core.cache import PublicReadCacheControlMixin
 from apps.audit.utils import log_audit_event
 
-class EventViewSet(viewsets.ModelViewSet):
+class EventViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = EventSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'

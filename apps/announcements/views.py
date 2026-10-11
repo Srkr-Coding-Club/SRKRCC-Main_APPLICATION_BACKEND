@@ -3,6 +3,7 @@ from .models import Announcement
 from .serializers import AnnouncementSerializer
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLeadOrReadOnly
+from apps.core.cache import PublicReadCacheControlMixin
 
 
 def _is_admin_or_club_lead(user) -> bool:
@@ -13,7 +14,7 @@ def _is_admin_or_club_lead(user) -> bool:
     return getattr(user, 'role', None) in ('ADMIN', 'CLUB_LEAD')
 
 
-class AnnouncementViewSet(viewsets.ModelViewSet):
+class AnnouncementViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     """
     Public GET is filtered to is_active=True (what the landing page shows) -
     an admin/club-lead viewer sees everything, including inactive ones they're

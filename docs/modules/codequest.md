@@ -38,13 +38,19 @@ The admin workspace uses the same API as the public problem feed. `POST`, `PATCH
 `DELETE /api/codequest/` are restricted to Admin and Club Lead users. The public `GET /api/codequest/`
 response contains today's problem and the completed archive, but never future scheduled problems;
 authenticated Admin and Club Lead callers receive the complete scheduling calendar. A problem carries its
-scheduled date, statement, samples, tags, and optional external judge link; the backend derives
+scheduled date, statement, samples, tags, and a mandatory external judge link; the backend derives
 its unique slug from the title.
+
+Creating or editing a problem validates the schedule the same way the batch endpoint does:
+`scheduled_date` cannot be set to a past date or to a date that already hosts another problem
+(the exception is an edit that leaves an already-published problem's own date unchanged), and
+`external_url` is required and must be a valid `https://` link. The admin scheduling form mirrors
+these rules client-side (`min` date, inline conflict/URL errors) before the request is ever sent.
 
 Admins and Club Leads can also create a batch through
 `POST /api/codequest/batch-schedule/` using a `problems` array (one to five entries). Each
 entry has the same problem content fields as the single-problem endpoint, including its own
-`scheduled_date`. Dates in the batch must be unique and cannot already be assigned. The batch
+`scheduled_date` and a required `external_url`. Dates in the batch must be unique and cannot already be assigned. The batch
 is saved atomically, and public list/detail visibility still follows `scheduled_date <=
 timezone.localdate()`; members cannot discover a future problem before its date.
 

@@ -5,9 +5,10 @@ from rest_framework.exceptions import ValidationError
 from .models import Problem, Submission, UserStreak
 from .serializers import ProblemSerializer, SubmissionSerializer, UserStreakSerializer, BatchScheduleSerializer, BatchScheduleProblemSerializer
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead, _is_admin_or_club_lead
+from apps.core.cache import PublicReadCacheControlMixin
 from .services import rebuild_user_streak
 
-class ProblemViewSet(viewsets.ModelViewSet):
+class ProblemViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = ProblemSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'
@@ -84,6 +85,7 @@ class BatchScheduleView(viewsets.ViewSet):
             dates = validated['scheduled_dates']
             difficulties = validated.get('difficulties', [])
             tags = validated.get('tags', [])
+            urls = validated.get('external_urls', [])
             problem_entries = [
                 {
                     'title': title,
@@ -91,6 +93,7 @@ class BatchScheduleView(viewsets.ViewSet):
                     'statement': f'Codequest problem: {title}',
                     'tags': tags[i] if i < len(tags) else [],
                     'scheduled_date': dates[i],
+                    'external_url': urls[i] if i < len(urls) else '',
                 }
                 for i, title in enumerate(titles)
             ]
