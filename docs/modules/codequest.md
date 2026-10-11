@@ -60,6 +60,11 @@ The endpoint locks the submission, records the verdict, and rebuilds the member'
 maximum streak from distinct accepted problem dates. Verdicts and points therefore never depend
 on a browser-side calculation.
 
+`GET /api/codequest/submissions/` is paginated (50 per page; `?page=`, `?page_size=` up to 200) and
+includes `accepted_count`, the accepted total across every submission, for the review summary.
+`GET /api/codequest/submissions/solved-dates/` returns `{ "dates": [...] }`, the scheduled dates the
+caller has solved, so member calendar badges don't depend on the paginated list.
+
 ```mermaid
 flowchart LR
     A{Codequest module enabled?} -- No --> Z[Hidden entirely]
