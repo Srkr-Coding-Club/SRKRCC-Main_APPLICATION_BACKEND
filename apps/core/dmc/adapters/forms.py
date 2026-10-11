@@ -297,7 +297,9 @@ class FormIndividualAdapter(BaseDatasetAdapter):
 
         sort_field = "submitted_at" if query_req.sort.field not in {"id", "submitted_at"} else query_req.sort.field
         prefix = "-" if query_req.sort.direction == "desc" else ""
-        qs = qs.order_by(f"{prefix}{sort_field}")
+        # pk breaks ties so OFFSET pages never overlap or skip rows that share a timestamp.
+        ordering = (f"{prefix}{sort_field}", f"{prefix}pk")
+        qs = qs.order_by(*ordering)
 
         total = qs.count()
         offset = (query_req.page - 1) * query_req.page_size
@@ -308,7 +310,7 @@ class FormIndividualAdapter(BaseDatasetAdapter):
             Response.objects.filter(pk__in=page_ids)
             .select_related("user", "form")
             .prefetch_related("answers__field")
-            .order_by(f"{prefix}{sort_field}")
+            .order_by(*ordering)
         )
 
         field_set = {ff.id for ff in self._fields}
@@ -339,7 +341,9 @@ class FormIndividualAdapter(BaseDatasetAdapter):
             qs = self._apply_filters(qs, query_req.filters)
         field_set = {ff.id for ff in self._fields}
 
-        # Stream in chunks of 200 responses; for each chunk prefetch answers
+        # Stream in chunks of 200 responses; for each chunk prefetch answers.
+        # OFFSET chunking is only safe over a deterministic order, so pk is pinned.
+        qs = qs.order_by("pk")
         CHUNK = 200
         offset = 0
         while True:
@@ -350,6 +354,7 @@ class FormIndividualAdapter(BaseDatasetAdapter):
                 Response.objects.filter(pk__in=chunk_ids)
                 .select_related("user", "form")
                 .prefetch_related("answers__field")
+                .order_by("pk")
             )
             for r in chunk:
                 yield self._normalize_full(r, field_set)

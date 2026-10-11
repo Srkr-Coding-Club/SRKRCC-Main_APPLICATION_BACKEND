@@ -89,6 +89,9 @@ class ProblemStatementSerializer(serializers.ModelSerializer):
         return self._count(obj)
 
     def get_total_teams_count(self, obj):
+        annotated = getattr(obj, 'total_team_count', None)
+        if annotated is not None:
+            return annotated
         return obj.teams.count()
 
     def get_slots_left(self, obj):
@@ -222,15 +225,19 @@ class TeamSerializer(serializers.ModelSerializer):
             'domain': obj.custom_problem_domain,
         }
 
+    # These read through `.all()` and filter in Python so the caller's prefetch cache is used;
+    # a fresh `.filter()` or `.select_related()` here would issue one query per team.
     def get_members(self, obj):
-        memberships = obj.memberships.select_related('user').all()
-        return self.member_serializer_class(memberships, many=True).data
+        return self.member_serializer_class(obj.memberships.all(), many=True).data
 
     def get_member_count(self, obj):
         return obj.memberships.count()
 
     def get_pending_invites(self, obj):
-        invites = obj.invites.filter(status=InviteStatus.PENDING).select_related('invited_user', 'invited_by', 'hackathon', 'team')
+        invites = [invite for invite in obj.invites.all() if invite.status == InviteStatus.PENDING]
+        for invite in invites:
+            # Same team, already loaded: point at it so the invite's member count reuses its prefetch.
+            invite.team = obj
         return TeamInviteSerializer(invites, many=True).data
 
 
@@ -258,7 +265,7 @@ class AdminTeamSerializer(TeamSerializer):
         fields = TeamSerializer.Meta.fields + ['leader_email', 'round_entries']
 
     def get_round_entries(self, obj):
-        return RoundEntryBriefSerializer(obj.round_entries.select_related('round').all(), many=True).data
+        return RoundEntryBriefSerializer(obj.round_entries.all(), many=True).data
 
 
 # ---------------------------------------------------------------------------
