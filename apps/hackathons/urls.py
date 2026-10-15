@@ -15,15 +15,18 @@ urlpatterns = [
     path('invites/<int:pk>/<str:decision>/', views.InviteRespondView.as_view(), name='hackathon-invite-respond'),
 
     path('teams/<int:pk>/', views.TeamDetailView.as_view(), name='hackathon-team-detail'),
+    path('teams/<int:pk>/invite-by-email/', views.TeamEmailInviteView.as_view(), name='hackathon-team-email-invite'),
     path('teams/<int:pk>/<str:team_action>/', views.TeamActionView.as_view(), name='hackathon-team-action'),
 
     path('<slug:slug>/my-team/', views.MyTeamView.as_view(), name='hackathon-my-team'),
     path('<slug:slug>/teams/', views.HackathonTeamsView.as_view(), name='hackathon-teams'),
     path('<slug:slug>/user-lookup/', views.UserLookupView.as_view(), name='hackathon-user-lookup'),
     path('<slug:slug>/stats/', views.HackathonStatsView.as_view(), name='hackathon-stats'),
+    path('<slug:slug>/remind-forming/', views.FormingTeamsReminderView.as_view(), name='hackathon-remind-forming'),
 
     path('<slug:slug>/problem-statements/', views.ProblemStatementListView.as_view(), name='hackathon-ps-list'),
     path('<slug:slug>/problem-statements/upload/', views.ProblemStatementUploadView.as_view(), name='hackathon-ps-upload'),
+    path('<slug:slug>/problem-statements/reorder/', views.ProblemStatementReorderView.as_view(), name='hackathon-ps-reorder'),
     path('<slug:slug>/problem-statements/<int:pk>/', views.ProblemStatementDetailView.as_view(), name='hackathon-ps-detail'),
 
     path('<slug:slug>/rounds/', views.RoundListView.as_view(), name='hackathon-round-list'),

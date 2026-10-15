@@ -1,3 +1,4 @@
+from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -13,6 +14,8 @@ class HackathonSerializer(serializers.ModelSerializer):
     form_title = serializers.CharField(source='registration_form.title', read_only=True)
     registration_count = serializers.IntegerField(read_only=True, default=0)
     team_count = serializers.IntegerField(read_only=True, default=0)
+    # Teams that actually meet the minimum size; team_count also includes ones still forming.
+    registered_team_count = serializers.IntegerField(read_only=True, default=0)
     is_hidden = serializers.SerializerMethodField()
     is_registration_open = serializers.BooleanField(read_only=True)
 
@@ -22,9 +25,9 @@ class HackathonSerializer(serializers.ModelSerializer):
             'id', 'title', 'slug', 'is_flagship', 'theme', 'description',
             'prize_pool', 'banner_image', 'status', 'start_date', 'end_date',
             'visible_from', 'visible_until', 'is_hidden', 'registration_form',
-            'form_slug', 'form_title', 'registration_count', 'team_count',
+            'form_slug', 'form_title', 'registration_count', 'team_count', 'registered_team_count',
             'registration_opens_at', 'registration_closes_at', 'min_team_size', 'max_team_size',
-            'team_edits_locked', 'allow_open_innovation', 'required_profile_fields', 'is_registration_open',
+            'team_edits_locked', 'allow_open_innovation', 'required_profile_fields', 'faq', 'is_registration_open',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['status']
@@ -37,6 +40,33 @@ class HackathonSerializer(serializers.ModelSerializer):
         if obj.visible_until and obj.visible_until <= now:
             return True
         return False
+
+    MAX_FAQ_ITEMS = 20
+
+    def validate_faq(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Must be a list of {question, answer}.')
+        if len(value) > self.MAX_FAQ_ITEMS:
+            raise serializers.ValidationError(f'At most {self.MAX_FAQ_ITEMS} questions.')
+        cleaned = []
+        for item in value:
+            question = str((item or {}).get('question', '')).strip() if isinstance(item, dict) else ''
+            answer = str((item or {}).get('answer', '')).strip() if isinstance(item, dict) else ''
+            if not question or not answer:
+                raise serializers.ValidationError('Every FAQ entry needs both a question and an answer.')
+            if len(question) > 200 or len(answer) > 2000:
+                raise serializers.ValidationError('Questions are limited to 200 characters and answers to 2000.')
+            cleaned.append({'question': question, 'answer': answer})
+        return cleaned
+
+    RESERVED_SLUGS = {'my-teams', 'my-invites', 'teams', 'invites', 'submissions'}
+
+    def validate_slug(self, value):
+        if self.instance is not None and value != self.instance.slug:
+            raise serializers.ValidationError('The slug cannot be changed after creation: it is part of every shared link.')
+        if self.instance is None and value in self.RESERVED_SLUGS:
+            raise serializers.ValidationError('That slug is reserved. Choose another.')
+        return value
 
     def validate_required_profile_fields(self, value):
         if not isinstance(value, list):
@@ -54,6 +84,26 @@ class HackathonSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'min_team_size': 'Must be at least 1.'})
         if hi < lo:
             raise serializers.ValidationError({'max_team_size': 'Must be greater than or equal to the minimum team size.'})
+        if self.instance is not None and 'max_team_size' in attrs:
+            largest = (
+                self.instance.teams.filter(status__in=(TeamStatus.FORMING, TeamStatus.REGISTERED))
+                .annotate(size=Count('memberships')).order_by('-size').values_list('size', flat=True).first() or 0
+            )
+            if hi < largest:
+                raise serializers.ValidationError({
+                    'max_team_size': f'A team already has {largest} members. Remove members first or choose at least {largest}.',
+                })
+        start = attrs.get('start_date', getattr(self.instance, 'start_date', None))
+        end = attrs.get('end_date', getattr(self.instance, 'end_date', None))
+        if ('start_date' in attrs or 'end_date' in attrs) and start and end and end <= start:
+            raise serializers.ValidationError({'end_date': 'Must be after the start date.'})
+        shown_from = attrs.get('visible_from', getattr(self.instance, 'visible_from', None))
+        shown_until = attrs.get('visible_until', getattr(self.instance, 'visible_until', None))
+        if ('visible_from' in attrs or 'visible_until' in attrs) and shown_from and shown_until and shown_until <= shown_from:
+            raise serializers.ValidationError({'visible_until': 'Must be after the "visible from" time.'})
+        reg_closes = attrs.get('registration_closes_at', getattr(self.instance, 'registration_closes_at', None))
+        if ('registration_closes_at' in attrs or 'end_date' in attrs) and reg_closes and end and reg_closes > end:
+            raise serializers.ValidationError({'registration_closes_at': 'Registration must close before the hackathon ends.'})
         opens = attrs.get('registration_opens_at', getattr(self.instance, 'registration_opens_at', None))
         closes = attrs.get('registration_closes_at', getattr(self.instance, 'registration_closes_at', None))
         if opens and closes and closes <= opens:
@@ -157,13 +207,18 @@ class TeamMemberSerializer(serializers.ModelSerializer):
 
 
 class AdminTeamMemberSerializer(TeamMemberSerializer):
+    college = serializers.SerializerMethodField()
     phone_number = serializers.CharField(source='user.phone_number', read_only=True)
     branch = serializers.CharField(source='user.branch', read_only=True)
     year = serializers.IntegerField(source='user.year', read_only=True)
     roll_number = serializers.CharField(source='user.roll_number', read_only=True)
 
     class Meta(TeamMemberSerializer.Meta):
-        fields = TeamMemberSerializer.Meta.fields + ['phone_number', 'branch', 'year', 'roll_number']
+        fields = TeamMemberSerializer.Meta.fields + ['phone_number', 'branch', 'year', 'roll_number', 'college']
+
+    def get_college(self, obj):
+        user = obj.user
+        return user.college.name if user.college_id else (user.other_college_name or '')
 
 
 class TeamInviteSerializer(serializers.ModelSerializer):
@@ -203,6 +258,7 @@ class TeamSerializer(serializers.ModelSerializer):
     open_innovation = serializers.SerializerMethodField()
     members = serializers.SerializerMethodField()
     pending_invites = serializers.SerializerMethodField()
+    pending_email_invites = serializers.SerializerMethodField()
     leader_id = serializers.IntegerField(read_only=True)
     member_count = serializers.SerializerMethodField()
 
@@ -212,7 +268,7 @@ class TeamSerializer(serializers.ModelSerializer):
         model = Team
         fields = [
             'id', 'name', 'hackathon_slug', 'status', 'problem_statement', 'open_innovation', 'leader_id',
-            'members', 'member_count', 'pending_invites', 'created_at', 'updated_at',
+            'members', 'member_count', 'pending_invites', 'pending_email_invites', 'created_at', 'updated_at',
         ]
 
     def get_open_innovation(self, obj):
@@ -232,6 +288,12 @@ class TeamSerializer(serializers.ModelSerializer):
 
     def get_member_count(self, obj):
         return obj.memberships.count()
+
+    def get_pending_email_invites(self, obj):
+        return [
+            {'id': invite.id, 'email': invite.email, 'created_at': invite.created_at}
+            for invite in obj.email_invites.all() if invite.status == 'PENDING'
+        ]
 
     def get_pending_invites(self, obj):
         invites = [invite for invite in obj.invites.all() if invite.status == InviteStatus.PENDING]
@@ -288,17 +350,23 @@ class RoundSerializer(serializers.ModelSerializer):
         extra_kwargs = {'order': {'required': False}}
 
     def get_entry_counts(self, obj):
-        counts = {s: 0 for s in EntryStatus.values}
-        for status_value in obj.entries.values_list('status', flat=True):
-            counts[status_value] = counts.get(status_value, 0) + 1
-        counts['total'] = sum(counts.values())
-        counts['details_submitted'] = obj.entries.filter(details_response__isnull=False).count()
+        counts = {status_value: 0 for status_value in EntryStatus.values}
+        totals = obj.entries.aggregate(
+            total=Count('id'),
+            details_submitted=Count('id', filter=Q(details_response__isnull=False)),
+            **{status_value: Count('id', filter=Q(status=status_value)) for status_value in EntryStatus.values},
+        )
+        for status_value in EntryStatus.values:
+            counts[status_value] = totals[status_value]
+        counts['total'] = totals['total']
+        counts['details_submitted'] = totals['details_submitted']
         next_round = obj.hackathon.rounds.filter(order__gt=obj.order).order_by('order').first()
         if next_round:
             counts['next_round_id'] = next_round.id
             counts['next_round_name'] = next_round.name
-            shortlisted_team_ids = set(obj.entries.filter(status=EntryStatus.SHORTLISTED).values_list('team_id', flat=True))
-            counts['promoted_to_next'] = next_round.entries.filter(team_id__in=shortlisted_team_ids).count() if shortlisted_team_ids else 0
+            counts['promoted_to_next'] = next_round.entries.filter(
+                team_id__in=obj.entries.filter(status=EntryStatus.SHORTLISTED).values('team_id'),
+            ).count()
         else:
             counts['next_round_id'] = None
             counts['next_round_name'] = None
@@ -349,7 +417,8 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
         ]
 
     def get_member_count(self, obj):
-        return obj.team.memberships.count()
+        annotated = getattr(obj, 'member_total', None)
+        return annotated if annotated is not None else obj.team.memberships.count()
 
     def get_problem_code(self, obj):
         team = obj.team
@@ -363,6 +432,9 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
     def get_is_promoted_to_next(self, obj):
         if obj.status != EntryStatus.SHORTLISTED:
             return False
+        annotated = getattr(obj, 'promoted_total', None)
+        if annotated is not None:
+            return bool(annotated)
         next_round = obj.round.hackathon.rounds.filter(order__gt=obj.round.order).order_by('order').first()
         if not next_round:
             return False
@@ -395,8 +467,9 @@ class AdminHackathonAnnouncementSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'message', 'type', 'audience', 'audience_label', 'round', 'round_name',
             'target_teams', 'target_team_names', 'is_active', 'publish_at', 'expires_at',
-            'send_email', 'created_by_name', 'created_at', 'updated_at',
+            'send_email', 'emailed_at', 'created_by_name', 'created_at', 'updated_at',
         ]
+        read_only_fields = ['emailed_at']
 
     def get_target_team_names(self, obj):
         return list(obj.target_teams.values_list('name', flat=True))
@@ -427,7 +500,7 @@ class AdminHackathonAnnouncementSerializer(serializers.ModelSerializer):
         if publish_at and expires_at and expires_at <= publish_at:
             raise serializers.ValidationError({'expires_at': 'Must be after the publish time.'})
         audience = attrs.get('audience', getattr(self.instance, 'audience', AnnouncementAudience.PUBLIC))
-        if audience not in (AnnouncementAudience.ROUND_ALL, AnnouncementAudience.ROUND_SHORTLISTED):
+        if audience not in (AnnouncementAudience.ROUND_ALL, AnnouncementAudience.ROUND_SHORTLISTED, AnnouncementAudience.ROUND_REJECTED):
             attrs['round'] = None
         return attrs
 
@@ -439,3 +512,8 @@ class SubmissionSerializer(serializers.ModelSerializer):
         # score is judge/admin-only (assigned via Django admin); no grading UI writes it yet,
         # so leaving it writable would let a team self-assign its own hackathon score.
         read_only_fields = ['score']
+
+    def validate_team(self, team):
+        if self.instance is not None and team != self.instance.team:
+            raise serializers.ValidationError('A submission cannot be moved to another team.')
+        return team

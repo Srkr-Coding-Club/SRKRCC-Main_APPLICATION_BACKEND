@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 
 from django.contrib.auth import get_user_model
@@ -25,12 +26,17 @@ from apps.core.permissions import _is_admin_or_club_lead
 
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, InviteStatus,
-    ProblemStatement, Round, RoundEntry, Team, TeamInvite, TeamMember, TeamRole, TeamStatus,
+    EmailInviteStatus, ProblemStatement, Round, RoundEntry, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamRole,
+    TeamStatus,
 )
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 ACTIVE_TEAM_STATUSES = (TeamStatus.FORMING, TeamStatus.REGISTERED)
+ROUND_SCOPED_AUDIENCES = (
+    AnnouncementAudience.ROUND_ALL, AnnouncementAudience.ROUND_SHORTLISTED, AnnouncementAudience.ROUND_REJECTED,
+)
 
 
 class HackathonError(APIException):
@@ -38,11 +44,13 @@ class HackathonError(APIException):
     status_code = 400
     default_code = 'HACKATHON_ERROR'
 
-    def __init__(self, message, code='HACKATHON_ERROR', field=None):
-        detail = {'detail': message, 'code': code}
+    def __init__(self, message, code='HACKATHON_ERROR', field=None, status=None, **extra):
+        detail = {'detail': message, 'code': code, **extra}
         if field:
             detail['field'] = field
         self.detail = detail
+        if status:
+            self.status_code = status
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +126,10 @@ MAX_PROBLEM_DESCRIPTION = 5000
 
 
 def _check_problem_statement(hackathon: Hackathon, ps: ProblemStatement, *, exclude_team: Team | None = None):
+    # A team keeps the statement it already holds even after an admin deactivates it,
+    # so it can still be renamed; only picking a new statement needs an active one.
+    if exclude_team is not None and exclude_team.problem_statement_id == ps.id:
+        return
     if ps.hackathon_id != hackathon.id or not ps.is_active:
         raise HackathonError('That problem statement is not available.', 'PROBLEM_STATEMENT_INVALID', field='problem_statement')
     if ps.max_teams:
@@ -232,6 +244,105 @@ def send_invite_email(invite_id: int) -> bool:
     return EmailNotificationService.send_email(user.email, subject, text, html)
 
 
+def _notify_users(users, title: str, message: str, hackathon: Hackathon, actor=None) -> None:
+    """In-app notification that can never fail its caller (own savepoint, errors logged)."""
+    users = [u for u in users if u is not None]
+    if not users:
+        return
+    try:
+        from apps.notifications.models import NotificationCategory, NotificationType
+        from apps.notifications.services import NotificationService
+
+        with transaction.atomic():
+            NotificationService.create_bulk_notifications(
+                users, title=title, message=message, type=NotificationType.INFO,
+                category=NotificationCategory.HACKATHON, link_url=f'/hackathons/{hackathon.slug}/dashboard',
+                created_by=actor,
+            )
+    except Exception:
+        logger.exception('Could not create hackathon notification %r', title)
+
+
+def _notify_after_commit(users, title: str, message: str, hackathon: Hackathon, actor=None) -> None:
+    users = list(users)
+    transaction.on_commit(lambda: _notify_users(users, title, message, hackathon, actor))
+
+
+def _slots_used(team: Team) -> int:
+    """Members plus every outstanding invite (account or email) - what max_team_size is checked against."""
+    return (
+        team.memberships.count()
+        + team.invites.filter(status=InviteStatus.PENDING).count()
+        + team.email_invites.filter(status=EmailInviteStatus.PENDING).count()
+    )
+
+
+def send_email_invite(invite_id: int) -> bool:
+    """Tell an address with no account that a team wants them. Looked up by id - runs on a background thread."""
+    from django.conf import settings
+    from django.utils.html import escape
+    from apps.core.services.email_service import EmailNotificationService
+
+    invite = (
+        TeamEmailInvite.objects.select_related('team', 'hackathon', 'invited_by')
+        .filter(pk=invite_id, status=EmailInviteStatus.PENDING).first()
+    )
+    if invite is None:
+        return False
+    base = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+    url = f"{base}/signup?next=/hackathons/{invite.hackathon.slug}/dashboard"
+    inviter = (invite.invited_by.get_full_name() or invite.invited_by.email) if invite.invited_by else 'A team leader'
+    subject = f'[{invite.hackathon.title}] {inviter} invited you to join team {invite.team.name}'
+    text = (
+        f'{inviter} invited you to join the team "{invite.team.name}" for {invite.hackathon.title}.\n\n'
+        f'Create your SRKR Coding Club account with this email address and the invite will be waiting on your team dashboard:\n{url}\n'
+    )
+    html = (
+        f'<p>{escape(inviter)} invited you to join the team <strong>{escape(invite.team.name)}</strong> '
+        f'for {escape(invite.hackathon.title)}.</p>'
+        f'<p><a href="{escape(url)}">Create your account with this email address</a> and the invite will be waiting on your team dashboard.</p>'
+    )
+    return EmailNotificationService.send_email(invite.email, subject, text, html)
+
+
+def send_forming_reminder_email(team_id: int) -> bool:
+    from django.conf import settings
+    from django.utils.html import escape
+    from apps.core.services.email_service import EmailNotificationService
+
+    team = Team.objects.select_related('hackathon', 'leader').filter(pk=team_id, status=TeamStatus.FORMING).first()
+    if team is None or team.leader is None:
+        return False
+    hackathon = team.hackathon
+    needed = max(hackathon.min_team_size - team.memberships.count(), 1)
+    closes = (
+        f" Registration closes {timezone.localtime(hackathon.registration_closes_at).strftime('%d %b %Y, %I:%M %p')}."
+        if hackathon.registration_closes_at else ''
+    )
+    url = f"{getattr(settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')}/hackathons/{hackathon.slug}/dashboard"
+    first_name = team.leader.first_name or team.leader.email.split('@')[0]
+    subject = f'[{hackathon.title}] Your team needs {needed} more member{"s" if needed != 1 else ""}'
+    text = (
+        f'Hi {first_name},\n\nYour team "{team.name}" has not reached the minimum team size of {hackathon.min_team_size} yet, '
+        f'so it is not registered. Invite {needed} more member{"s" if needed != 1 else ""} from your dashboard.{closes}\n\n{url}\n'
+    )
+    html = (
+        f'<p>Hi {escape(first_name)},</p>'
+        f'<p>Your team <strong>{escape(team.name)}</strong> has not reached the minimum team size of {hackathon.min_team_size} yet, '
+        f'so it is not registered. Invite {needed} more member{"s" if needed != 1 else ""} from your dashboard.{escape(closes)}</p>'
+        f'<p><a href="{escape(url)}">Open your team dashboard</a></p>'
+    )
+    return EmailNotificationService.send_email(team.leader.email, subject, text, html)
+
+
+def _problem_differs(team: Team, problem: dict) -> bool:
+    if problem['is_open_innovation'] != team.is_open_innovation:
+        return True
+    if problem['is_open_innovation']:
+        return any(problem[f] != getattr(team, f) for f in ('custom_problem_title', 'custom_problem_description', 'custom_problem_domain'))
+    return problem['problem_statement'] != team.problem_statement
+
+
 def _audit(actor, action, team: Team, **details):
     log_audit_event(
         actor=actor, action=action, target_model='HackathonTeam', target_id=team.pk,
@@ -258,6 +369,8 @@ class TeamService:
         hackathon = Hackathon.objects.select_for_update().get(pk=hackathon.pk)
         if not (actor and _is_admin_or_club_lead(actor)):
             _require_registration_open(hackathon)
+            if hackathon.team_edits_locked:
+                raise HackathonError('Team changes are locked for this hackathon, so new teams cannot be created.', 'TEAM_EDITS_LOCKED')
             _require_profile_complete(hackathon, leader)
         if TeamMember.objects.filter(hackathon=hackathon, user=leader).exists():
             raise HackathonError('You are already in a team for this hackathon.' if (not actor or actor == leader) else 'That user is already in a team for this hackathon.', 'ALREADY_IN_TEAM')
@@ -301,6 +414,15 @@ class TeamService:
         if change_problem:
             before = problem_label(team)
             problem = _resolve_problem(team.hackathon, problem_statement, open_innovation, exclude_team=team)
+            if (
+                not _is_admin_or_club_lead(actor)
+                and team.round_entries.exists()
+                and _problem_differs(team, problem)
+            ):
+                raise HackathonError(
+                    'Your team is already part of a round, so its problem can no longer be changed. Contact the organizers.',
+                    'PROBLEM_LOCKED', field='problem_statement',
+                )
             for field, value in problem.items():
                 setattr(team, field, value)
             after = problem_label(team)
@@ -323,7 +445,7 @@ class TeamService:
             return False, 'Already in another team for this hackathon.'
         if team.invites.filter(invited_user=user, status=InviteStatus.PENDING).exists():
             return False, 'Already invited.'
-        slots = hackathon.max_team_size - team.memberships.count() - team.invites.filter(status=InviteStatus.PENDING).count()
+        slots = hackathon.max_team_size - _slots_used(team)
         if slots <= 0:
             return False, f'Team is full (max {hackathon.max_team_size} incl. pending invites).'
         return True, ''
@@ -351,20 +473,102 @@ class TeamService:
         try:
             from apps.notifications.services import NotificationService
             from apps.notifications.models import NotificationType, NotificationCategory
-            NotificationService.create_notification(
-                recipient=target,
-                title=f"Team Invite: {team.name}",
-                message=f"You have been invited by {actor.first_name or actor.username} to join team '{team.name}' for {team.hackathon.title}.",
-                type=NotificationType.INFO,
-                category=NotificationCategory.HACKATHON,
-                link_url=f"/hackathons/{team.hackathon.slug}",
-                created_by=actor,
-            )
+            # Its own savepoint: if this insert fails the invite itself must still commit.
+            with transaction.atomic():
+                NotificationService.create_notification(
+                    recipient=target,
+                    title=f"Team Invite: {team.name}",
+                    message=f"You have been invited by {actor.first_name or actor.username} to join team '{team.name}' for {team.hackathon.title}.",
+                    type=NotificationType.INFO,
+                    category=NotificationCategory.HACKATHON,
+                    link_url=f"/hackathons/{team.hackathon.slug}/dashboard",
+                    created_by=actor,
+                )
         except Exception:
-            pass
+            logger.exception('Could not create the in-app notification for team invite %s', invite.pk)
         invite_id = invite.pk
         transaction.on_commit(lambda: _run_in_background(lambda: send_invite_email(invite_id)))
         return invite
+
+    @staticmethod
+    @transaction.atomic
+    def invite_by_email(team: Team, actor, email: str) -> TeamEmailInvite:
+        """Invite someone who has no account yet; the invite is waiting for them once they sign up."""
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from django.core.validators import validate_email
+
+        team = _lock_team(team)
+        _require_leader(team, actor)
+        _require_team_editable(team, actor)
+        email = (email or '').strip().lower()
+        try:
+            validate_email(email)
+        except DjangoValidationError:
+            raise HackathonError('Enter a valid email address.', 'EMAIL_INVALID', field='email')
+        if User.objects.filter(email__iexact=email).exists():
+            raise HackathonError(
+                'That email already has an account. Search for them and send a normal invite.', 'ACCOUNT_EXISTS', field='email',
+            )
+        if _slots_used(team) >= team.hackathon.max_team_size:
+            raise HackathonError(
+                f'Team is full (max {team.hackathon.max_team_size} incl. pending invites).', 'TEAM_FULL', field='email',
+            )
+        try:
+            invite = TeamEmailInvite.objects.create(team=team, hackathon=team.hackathon, email=email, invited_by=actor)
+        except IntegrityError:
+            raise HackathonError('Already invited.', 'CANNOT_INVITE', field='email')
+        _audit(actor, 'Invited Hackathon Team Member By Email', team, invitee=email)
+        invite_id = invite.pk
+        transaction.on_commit(lambda: _run_in_background(lambda: send_email_invite(invite_id)))
+        return invite
+
+    @staticmethod
+    @transaction.atomic
+    def cancel_email_invite(invite: TeamEmailInvite, actor) -> TeamEmailInvite:
+        team = _lock_team(invite.team)
+        _require_leader(team, actor)
+        invite = TeamEmailInvite.objects.select_for_update().get(pk=invite.pk)
+        if invite.status != EmailInviteStatus.PENDING:
+            raise HackathonError('This invite is no longer pending.', 'INVITE_NOT_PENDING')
+        invite.status = EmailInviteStatus.CANCELLED
+        invite.resolved_at = timezone.now()
+        invite.save(update_fields=['status', 'resolved_at'])
+        _audit(actor, 'Cancelled Hackathon Team Email Invite', team, invitee=invite.email)
+        return invite
+
+    @staticmethod
+    @transaction.atomic
+    def claim_email_invites(user) -> int:
+        """Turn every pending email invite for this new account into a normal pending TeamInvite."""
+        claimed = 0
+        pending = list(
+            TeamEmailInvite.objects.select_for_update()
+            .filter(email__iexact=user.email, status=EmailInviteStatus.PENDING).select_related('team__hackathon')
+        )
+        for email_invite in pending:
+            team = Team.objects.select_for_update().select_related('hackathon').get(pk=email_invite.team_id)
+            hackathon = team.hackathon
+            usable = (
+                team.status in ACTIVE_TEAM_STATUSES
+                and hackathon.is_registration_open
+                and not hackathon.team_edits_locked
+                and not TeamMember.objects.filter(hackathon=hackathon, user=user).exists()
+                # this email invite itself still counts as one slot, so only others are compared
+                and _slots_used(team) - 1 < hackathon.max_team_size
+            )
+            email_invite.status = EmailInviteStatus.CLAIMED if usable else EmailInviteStatus.CANCELLED
+            email_invite.resolved_at = timezone.now()
+            email_invite.save(update_fields=['status', 'resolved_at'])
+            if not usable:
+                continue
+            TeamInvite.objects.create(team=team, hackathon=hackathon, invited_user=user, invited_by=email_invite.invited_by)
+            claimed += 1
+            _notify_after_commit(
+                [user], f'Team invite: {team.name}',
+                f"You were invited to join team '{team.name}' for {hackathon.title}. Open your team dashboard to accept.",
+                hackathon, email_invite.invited_by,
+            )
+        return claimed
 
     @staticmethod
     @transaction.atomic
@@ -417,6 +621,12 @@ class TeamService:
 
         _recompute_status(team)
         _audit(user, 'Joined Hackathon Team', team)
+        if team.leader_id and team.leader_id != user.id:
+            _notify_after_commit(
+                [team.leader], f'{user.first_name or user.email} joined {team.name}',
+                f"{user.first_name or user.email} accepted your invite and joined team '{team.name}'.",
+                hackathon, user,
+            )
         return team
 
     @staticmethod
@@ -431,6 +641,12 @@ class TeamService:
         invite.responded_at = timezone.now()
         invite.save(update_fields=['status', 'responded_at'])
         _audit(user, 'Declined Hackathon Team Invite', invite.team)
+        if invite.invited_by_id and invite.invited_by_id != user.id:
+            _notify_after_commit(
+                [invite.invited_by], f'{user.first_name or user.email} declined your invite',
+                f"{user.first_name or user.email} declined the invite to team '{invite.team.name}'.",
+                invite.team.hackathon, user,
+            )
         return invite
 
     # -- membership changes -------------------------------------------------
@@ -447,9 +663,15 @@ class TeamService:
         if membership.user_id == team.leader_id:
             raise HackathonError('Transfer leadership before removing the leader.', 'CANNOT_REMOVE_LEADER')
         email = membership.user.email
+        removed_user = membership.user
         membership.delete()
         _recompute_status(team)
         _audit(actor, 'Removed Hackathon Team Member', team, removed=email)
+        _notify_after_commit(
+            [removed_user], f'You were removed from {team.name}',
+            f"You are no longer on team '{team.name}' for {team.hackathon.title}. You can join or create another team while registration is open.",
+            team.hackathon, actor,
+        )
         return team
 
     @staticmethod
@@ -499,7 +721,50 @@ class TeamService:
         team.leader = new_leader.user
         team.save(update_fields=['leader', 'updated_at'])
         _audit(actor, 'Transferred Hackathon Team Leadership', team, old_leader=old, new_leader=new_leader.user.email)
+        _notify_after_commit(
+            [new_leader.user], f'You now lead {team.name}',
+            f"You are the leader of team '{team.name}' for {team.hackathon.title}. You can edit the team and invite members.",
+            team.hackathon, actor,
+        )
         return team
+
+    @staticmethod
+    def forming_teams(hackathon: Hackathon):
+        """Teams still below the minimum size, with how many members they have."""
+        return (
+            hackathon.teams.filter(status=TeamStatus.FORMING).select_related('leader')
+            .annotate(member_total=Count('memberships')).order_by('name')
+        )
+
+    @staticmethod
+    def remind_forming_teams(hackathon: Hackathon, actor) -> int:
+        """Nudge the leader of every team below the minimum size (in-app + email). Returns how many were reminded."""
+        teams = [team for team in TeamService.forming_teams(hackathon) if team.leader_id]
+        for team in teams:
+            needed = max(hackathon.min_team_size - team.member_total, 1)
+            _notify_users(
+                [team.leader], f'{team.name} needs {needed} more member{"s" if needed != 1 else ""}',
+                f"Your team '{team.name}' is below the minimum size of {hackathon.min_team_size}, so it is not registered yet. Invite more members from your dashboard.",
+                hackathon, actor,
+            )
+            team_id = team.pk
+            _run_in_background(lambda team_id=team_id: send_forming_reminder_email(team_id))
+        log_audit_event(
+            actor=actor, action='Reminded Forming Hackathon Teams', target_model='Hackathon', target_id=hackathon.slug,
+            details={'teams': len(teams)},
+        )
+        return len(teams)
+
+    @staticmethod
+    @transaction.atomic
+    def recompute_statuses(hackathon: Hackathon) -> int:
+        """Re-evaluate FORMING/REGISTERED for every active team (after min_team_size changed)."""
+        changed = 0
+        for team in hackathon.teams.filter(status__in=ACTIVE_TEAM_STATUSES).select_related('hackathon'):
+            before = team.status
+            _recompute_status(team)
+            changed += int(team.status != before)
+        return changed
 
     # -- admin overrides ------------------------------------------------------
 
@@ -524,6 +789,11 @@ class TeamService:
         ).update(status=InviteStatus.CANCELLED, responded_at=timezone.now())
         _recompute_status(team)
         _audit(actor, 'Admin Added Hackathon Team Member', team, added=user.email)
+        _notify_after_commit(
+            [user], f'You were added to {team.name}',
+            f"An organizer added you to team '{team.name}' for {team.hackathon.title}.",
+            team.hackathon, actor,
+        )
         return team
 
     @staticmethod
@@ -538,6 +808,17 @@ class TeamService:
         if new_status in ACTIVE_TEAM_STATUSES:
             _recompute_status(team)
         _audit(actor, 'Admin Changed Hackathon Team Status', team, old=old, new=team.status)
+        if team.status != old:
+            wording = {
+                TeamStatus.DISQUALIFIED: 'was disqualified by the organizers. Contact them if you think this is a mistake.',
+                TeamStatus.WITHDRAWN: 'was marked as withdrawn by the organizers.',
+                TeamStatus.REGISTERED: 'is registered.',
+                TeamStatus.FORMING: 'is still forming: it needs more members to be registered.',
+            }.get(team.status, f'is now {team.status.lower()}.')
+            _notify_after_commit(
+                [m.user for m in team.memberships.select_related('user')],
+                f"{team.name}: status updated", f"Your team '{team.name}' {wording}", team.hackathon, actor,
+            )
         return team
 
 
@@ -564,6 +845,26 @@ class ProblemStatementService:
             if match:
                 highest = max(highest, int(match.group(1)))
         return f'PS-{highest + 1:03d}'
+
+    @staticmethod
+    @transaction.atomic
+    def reorder(hackathon: Hackathon, actor, ids: list[int]) -> None:
+        """Set the display order to the given id sequence (1, 2, 3, ...) in one transaction."""
+        Hackathon.objects.select_for_update().get(pk=hackathon.pk)
+        statements = {s.pk: s for s in hackathon.problem_statements.all()}
+        if len(ids) != len(set(ids)) or set(ids) != set(statements):
+            raise HackathonError('Send every problem statement of this hackathon exactly once.', 'REORDER_MISMATCH', field='ids')
+        changed = []
+        for position, statement_id in enumerate(ids, start=1):
+            statement = statements[statement_id]
+            if statement.order != position:
+                statement.order = position
+                changed.append(statement)
+        ProblemStatement.objects.bulk_update(changed, ['order'])
+        log_audit_event(
+            actor=actor, action='Reordered Problem Statements', target_model='Hackathon', target_id=hackathon.slug,
+            details={'moved': len(changed)},
+        )
 
     @staticmethod
     @transaction.atomic
@@ -710,10 +1011,44 @@ class RoundService:
 
     @staticmethod
     @transaction.atomic
-    def decide(round_obj: Round, actor, team_ids: list[int], status: str, *, feedback=None, admin_notes=None) -> int:
+    def delete_round(round_obj: Round, actor) -> None:
+        """Delete a round without losing the announcements that were tied to it.
+
+        Announcements aimed at "teams in round X" would otherwise vanish with the
+        round (including ones already emailed), so they are converted to the same
+        audience expressed as specific teams.
+        """
+        for announcement in round_obj.announcements.all():
+            if announcement.audience == AnnouncementAudience.ROUND_SHORTLISTED:
+                entries = round_obj.entries.filter(status=EntryStatus.SHORTLISTED)
+            else:
+                entries = round_obj.entries.all()
+            team_ids = list(entries.values_list('team_id', flat=True))
+            announcement.audience = AnnouncementAudience.TEAMS
+            announcement.round = None
+            announcement.save(update_fields=['audience', 'round', 'updated_at'])
+            announcement.target_teams.set(team_ids)
+        name, round_id = round_obj.name, round_obj.pk
+        hackathon_slug = round_obj.hackathon.slug
+        round_obj.delete()
+        log_audit_event(
+            actor=actor, action='Deleted Hackathon Round', target_model='HackathonRound',
+            target_id=round_id, details={'hackathon': hackathon_slug, 'round': name},
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def decide(round_obj: Round, actor, team_ids: list[int], status: str, *, feedback=None, admin_notes=None,
+               confirm_published=False) -> int:
         if status not in EntryStatus.values:
             raise HackathonError('Unknown entry status.', 'INVALID_STATUS', field='status')
+        if round_obj.results_published and not confirm_published:
+            raise HackathonError(
+                'Results for this round are already published, so this change is visible to the teams immediately. '
+                'Confirm to continue.', 'RESULTS_PUBLISHED', field='confirm_published', status=409,
+            )
         entries = round_obj.entries.filter(team_id__in=team_ids)
+        changed_team_ids = list(entries.exclude(status=status).values_list('team_id', flat=True))
         update = {'status': status, 'decided_by': actor, 'decided_at': timezone.now()}
         if feedback is not None:
             update['feedback'] = feedback
@@ -722,13 +1057,21 @@ class RoundService:
         count = entries.update(**update)
         log_audit_event(
             actor=actor, action='Decided Hackathon Round Entries', target_model='HackathonRound',
-            target_id=round_obj.pk, details={'round': round_obj.name, 'status': status, 'teams': list(team_ids), 'updated': count},
+            target_id=round_obj.pk, details={
+                'round': round_obj.name, 'status': status, 'teams': list(team_ids), 'updated': count,
+                'after_publish': round_obj.results_published,
+            },
         )
+        if round_obj.results_published and changed_team_ids:
+            transaction.on_commit(lambda: _notify_result_changed(round_obj, changed_team_ids, actor))
         return count
 
     @staticmethod
     @transaction.atomic
-    def publish_results(round_obj: Round, actor, *, announce=False, message='', email=False) -> Round:
+    def publish_results(round_obj: Round, actor, *, announce=False, message='', email=False,
+                        announce_rejected=False, rejected_message='') -> Round:
+        if round_obj.results_published:
+            raise HackathonError('Results for this round are already published.', 'ALREADY_PUBLISHED', status=409)
         round_obj.results_published = True
         round_obj.save(update_fields=['results_published', 'updated_at'])
         log_audit_event(
@@ -744,6 +1087,17 @@ class RoundService:
                     'Check your team dashboard for next steps.'
                 ),
                 audience=AnnouncementAudience.ROUND_SHORTLISTED, round=round_obj, type='SUCCESS',
+                send_email=email,
+            )
+        if announce_rejected:
+            AnnouncementService.create(
+                round_obj.hackathon, actor,
+                title=f'{round_obj.name}: results are out',
+                message=rejected_message or (
+                    f'Thank you for taking part in **{round_obj.name}**. Your team was not shortlisted this time. '
+                    'Open your team dashboard to read any feedback from the organizers.'
+                ),
+                audience=AnnouncementAudience.ROUND_REJECTED, round=round_obj, type='INFO',
                 send_email=email,
             )
         return round_obj
@@ -838,6 +1192,26 @@ class RoundService:
         return deleted_count > 0
 
 
+def _notify_result_changed(round_obj: Round, team_ids: list[int], actor) -> None:
+    """Tell team members their already-published round result was changed. Never fails the caller."""
+    try:
+        from apps.notifications.models import NotificationCategory, NotificationType
+        from apps.notifications.services import NotificationService
+
+        recipients = User.objects.filter(hackathon_memberships__team_id__in=team_ids).distinct()
+        NotificationService.create_bulk_notifications(
+            recipients,
+            title=f'{round_obj.name}: your result was updated',
+            message='The organizers updated your team\'s result for this round. Open your team dashboard for details.',
+            type=NotificationType.INFO,
+            category=NotificationCategory.HACKATHON,
+            link_url=f'/hackathons/{round_obj.hackathon.slug}/dashboard',
+            created_by=actor,
+        )
+    except Exception:
+        logger.exception('Could not notify teams about a changed round result')
+
+
 def _prepare_details_form(form):
     """A round's details form takes one response per team leader."""
     if form.allow_multiple_responses:
@@ -887,6 +1261,14 @@ def check_round_form_access(form, user) -> RoundEntry | None:
 class AnnouncementService:
 
     @staticmethod
+    def live_all():
+        now = timezone.now()
+        return (
+            HackathonAnnouncement.objects.filter(is_active=True, publish_at__lte=now)
+            .filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now))
+        )
+
+    @staticmethod
     def live(hackathon: Hackathon):
         now = timezone.now()
         return (
@@ -910,6 +1292,10 @@ class AnnouncementService:
                 audience=AnnouncementAudience.ROUND_SHORTLISTED,
                 round__in=entries.filter(status=EntryStatus.SHORTLISTED, round__results_published=True).values('round'),
             )
+            | Q(
+                audience=AnnouncementAudience.ROUND_REJECTED,
+                round__in=entries.filter(status=EntryStatus.REJECTED, round__results_published=True).values('round'),
+            )
             | Q(audience=AnnouncementAudience.TEAMS, target_teams=team)
         ).distinct()
 
@@ -925,13 +1311,17 @@ class AnnouncementService:
             teams = hackathon.teams.filter(
                 round_entries__round=announcement.round, round_entries__status=EntryStatus.SHORTLISTED,
             )
+        elif audience == AnnouncementAudience.ROUND_REJECTED:
+            teams = hackathon.teams.filter(
+                round_entries__round=announcement.round, round_entries__status=EntryStatus.REJECTED,
+            )
         else:
             teams = announcement.target_teams.all()
         return User.objects.filter(hackathon_memberships__team__in=teams).distinct()
 
     @staticmethod
     def validate(audience, round_obj, target_team_ids, hackathon):
-        if audience in (AnnouncementAudience.ROUND_ALL, AnnouncementAudience.ROUND_SHORTLISTED):
+        if audience in ROUND_SCOPED_AUDIENCES:
             if round_obj is None:
                 raise HackathonError('Pick the round this announcement is for.', 'ROUND_REQUIRED', field='round')
             if round_obj.hackathon_id != hackathon.id:
@@ -953,9 +1343,25 @@ class AnnouncementService:
             actor=actor, action='Created Hackathon Announcement', target_model='HackathonAnnouncement',
             target_id=announcement.pk, details={'hackathon': hackathon.slug, 'title': announcement.title, 'audience': announcement.audience},
         )
-        if announcement.send_email:
-            transaction.on_commit(lambda: AnnouncementService.notify(announcement))
+        if announcement.send_email and announcement.publish_at <= timezone.now():
+            transaction.on_commit(lambda: AnnouncementService.dispatch_email(announcement))
         return announcement
+
+    @staticmethod
+    def dispatch_email(announcement: HackathonAnnouncement) -> int:
+        """Email the audience exactly once: the first caller to stamp ``emailed_at`` sends."""
+        claimed = HackathonAnnouncement.objects.filter(
+            pk=announcement.pk, emailed_at__isnull=True,
+        ).update(emailed_at=timezone.now())
+        return AnnouncementService.notify(announcement) if claimed else 0
+
+    @staticmethod
+    def send_due_emails(hackathon: Hackathon | None = None) -> int:
+        """Send emails for announcements that asked for one and have now been published."""
+        due = AnnouncementService.live_all().filter(send_email=True, emailed_at__isnull=True)
+        if hackathon is not None:
+            due = due.filter(hackathon=hackathon)
+        return sum(AnnouncementService.dispatch_email(announcement) for announcement in due)
 
     @staticmethod
     def notify(announcement: HackathonAnnouncement) -> int:
@@ -965,6 +1371,7 @@ class AnnouncementService:
         from apps.core.services.email_service import EmailNotificationService, MemberEmailContext
         from apps.core.tasks import run_in_background, process_email_job
 
+        HackathonAnnouncement.objects.filter(pk=announcement.pk).update(emailed_at=timezone.now())
         users = list(AnnouncementService.recipients(announcement))
         if not users:
             return 0

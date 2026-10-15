@@ -31,7 +31,7 @@ flowchart TD
 
 | Model | Purpose | Key rules |
 |---|---|---|
-| `Hackathon` | The event. Registration settings: `registration_opens_at`, `registration_closes_at`, `min_team_size`, `max_team_size`, `team_edits_locked`, `allow_open_innovation` (default on), `required_profile_fields` (list of `forms.ProfileField` keys every member must have on their profile). | `is_registration_open` = `status == LIVE` and now inside the (optional) window. |
+| `Hackathon` | The event. Registration settings: `registration_opens_at`, `registration_closes_at`, `min_team_size`, `max_team_size`, `team_edits_locked`, `allow_open_innovation` (default on), `required_profile_fields` (list of `forms.ProfileField` keys every member must have on their profile). | `status` is `DRAFT` (created via the API; admin-only, nothing open), `LIVE` or `CLOSED`. `is_registration_open` = `status == LIVE` and now inside the (optional) window. The slug is immutable after creation and a few slugs are reserved (`my-teams`, `my-invites`, `teams`, `invites`, `submissions`). Date rules: end after start, `visible_until` after `visible_from`, registration closes before the event ends; `max_team_size` cannot drop below an existing team. Changing `min_team_size` re-evaluates every active team's FORMING/REGISTERED status. |
 | `ProblemStatement` | Admin-defined problem: `title`, Markdown `description`, `domain`, `tags`, `max_teams` (blank = unlimited), `is_active`, `order`, plus a `code` the **application generates** (`PS-001`, `PS-002`, …; unique per hackathon, never typed or edited by an admin). | Title, description and domain are required. Statements are public (inactive ones are hidden from non-admins). A statement that teams have picked cannot be deleted (deactivate it instead). |
 | `Team` | `name` (unique per hackathon, case-insensitive), `leader`, `problem_statement` (SET_NULL), `is_open_innovation` with `custom_problem_title` / `custom_problem_description` / `custom_problem_domain`, `status`: `FORMING` / `REGISTERED` / `DISQUALIFIED` / `WITHDRAWN`. | A team has **either** a statement **or** an open-innovation problem, never both. Open-innovation teams are known as `OI-<team id>` (`Team.open_innovation_code`). Also, `FORMING` ↔ `REGISTERED` is recomputed from member count vs `min_team_size` on every membership change. |
 | `TeamMember` | Through-table for `Team.members`: `team`, `hackathon` (denormalized), `user`, `role` (`LEADER`/`MEMBER`), `joined_at`. | DB `UniqueConstraint(hackathon, user)` — one team per user per hackathon. |
@@ -46,6 +46,8 @@ Migrations `0004`–`0008`: `0008` renames `ProblemStatement.category` to `domai
 ## Business Rules (`services.py`)
 
 **Team formation** — `TeamService`
+- While `team_edits_locked` is on, participants cannot create teams either (admins can).
+- `my-team` returns the round list only to members of a team.
 - *Create team*: registration open; caller not already in a team for this hackathon; caller's profile has every `required_profile_fields` value; name not taken; a problem is chosen (see below). Creating a team cancels the caller's other pending invites for that hackathon.
 - *Problem choice* (`_resolve_problem`, used by create and edit): the team picks one **active statement** (under its `max_teams`) **or** goes **open innovation** — never both (`PROBLEM_CHOICE_CONFLICT`). Open innovation requires `allow_open_innovation` (`OPEN_INNOVATION_DISABLED`) and a non-blank **title** (≤255), **description** (≤5000) and **domain** (≤100) — each missing or overlong value fails with `OPEN_INNOVATION_INCOMPLETE` / `OPEN_INNOVATION_TOO_LONG` naming the field. With neither, a problem is mandatory only once the hackathon has active statements (`PROBLEM_STATEMENT_REQUIRED`). Switching either way is validated before anything is saved; leaving a statement frees its slot, and open-innovation teams never use up statement slots.
 - *Invite*: leader only; exact email of an existing account (`USER_NOT_FOUND` otherwise); invitee not already in any team of this hackathon; no duplicate pending invite; `members + pending invites < max_team_size`. After the transaction commits, `send_invite_email` emails the invitee a link to their dashboard on a background thread (a send failure never affects the invite).
@@ -56,8 +58,8 @@ Migrations `0004`–`0008`: `0008` renames `ProblemStatement.category` to `domai
 **Rounds** — `RoundService`
 - Round 1 entries = every `REGISTERED` team. Round N entries = `REGISTERED` teams `SHORTLISTED` in round N−1. `populate` adds teams that became eligible after the round was created.
 - `decide` sets status (and optionally feedback/notes) for many teams at once.
-- Until `results_published`, participants see their entry as `PENDING` with no feedback. `publish` can also post a `ROUND_SHORTLISTED` announcement (`announce: true`) and email it to the shortlisted teams' members (`email: true`).
-- A round cannot be deleted while later rounds exist (they depend on its shortlist).
+- Until `results_published`, participants see their entry as `PENDING` with no feedback. `publish` can also post a `ROUND_SHORTLISTED` announcement (`announce: true`) and a `ROUND_REJECTED` thank-you note (`announce_rejected: true`), and email either to those teams' members (`email: true`). Publishing an already-published round is a 409 (`ALREADY_PUBLISHED`); unpublish first. Once published, `decide` needs `confirm_published: true` (else 409 `RESULTS_PUBLISHED`), and every team whose result actually changes gets an in-app notification.
+- A round cannot be deleted while later rounds exist (they depend on its shortlist). Deleting one keeps its announcements: `RoundService.delete_round` converts round-scoped announcements into `TEAMS` announcements for the same teams (all entries, or only the shortlisted ones).
 
 **Details forms** — `check_round_form_access(form, user)` is called by `apps/forms/views.py` on submit and on edit. If the form is any round's `details_form`, only the **leader** of a `REGISTERED` team **shortlisted** in that round, after results are **published**, may submit (`403 ROUND_FORM_RESTRICTED` otherwise). The saved `Response` is linked to `RoundEntry.details_response`. Forms not attached to a round are unaffected.
 
@@ -69,9 +71,10 @@ Migrations `0004`–`0008`: `0008` renames `ProblemStatement.category` to `domai
 | `PARTICIPANTS` | Members of any `FORMING`/`REGISTERED` team |
 | `ROUND_ALL` | Teams with an entry in the chosen round |
 | `ROUND_SHORTLISTED` | Teams shortlisted in the chosen round, **only once that round's results are published** |
+| `ROUND_REJECTED` | Teams not shortlisted in the chosen round, **only once that round's results are published** |
 | `TEAMS` | Members of the selected teams |
 
-Only active announcements with `publish_at <= now` and not past `expires_at` are shown. `send_email=True` (or the admin "notify" action) emails the audience through the shared email-job engine; see [Email & Notifications](../features/email-notifications.md).
+Only active announcements with `publish_at <= now` and not past `expires_at` are shown. `send_email=True` (or the admin "notify" action) emails the audience through the shared email-job engine. A scheduled announcement (`publish_at` in the future) is emailed only once it publishes: the first read of the hackathon's announcements after that time, or `python manage.py send_due_hackathon_emails` from cron, dispatches it; `emailed_at` records the send so it happens once; see [Email & Notifications](../features/email-notifications.md).
 
 ## API (`/api/hackathons/`)
 
@@ -83,7 +86,7 @@ Participant / public:
 | GET | `/{slug}/announcements/` | Anyone (filtered by audience) | Announcements visible to the caller |
 | GET | `/{slug}/my-team/` | Authenticated | Dashboard payload: hackathon, `profile_missing`, team, `is_leader`, pending invites, rounds (entry status/feedback hidden until published, details-form eligibility) |
 | POST | `/{slug}/teams/` | Authenticated | Create a team `{name, problem_statement}` **or** `{name, open_innovation: {title, description, domain}}` |
-| GET | `/{slug}/user-lookup/` | Authenticated, throttled `hackathon_lookup` 30/min | User lookup supporting exact `?email=` or instant autocomplete prefix/partial search `?q=` (searches name, email, club ID) with optional `&team_id=`. Returns minimal fields: `id, name, email, club_id, can_invite, reason, results` |
+| GET | `/{slug}/user-lookup/` | Team leader of the target team, or admin (403 otherwise); throttled `hackathon_lookup` 30/min; `?q=` needs 3+ characters and returns at most 5 matches | User lookup supporting exact `?email=` or instant autocomplete prefix/partial search `?q=` (searches name, email, club ID) with optional `&team_id=`. Returns minimal fields: `id, name, email, club_id, can_invite, reason, results` |
 | GET | `/my-teams/`, `/my-invites/` | Authenticated | Caller's teams / pending invites across hackathons |
 | POST | `/invites/{id}/accept/`, `/invites/{id}/decline/` | Invitee | Respond to an invite |
 | GET, PATCH | `/teams/{id}/` | Members read; leader/admin write | Team detail (admins also get members' contact details and round history). PATCH accepts `problem_statement` or `open_innovation` to change the problem; a body without either leaves it untouched |
@@ -96,16 +99,18 @@ Admin (`IsAdminOrClubLead`):
 | Method | Path | Purpose |
 |---|---|---|
 | PATCH | `/{slug}/` | Registration settings (validated: `max_team_size >= min_team_size >= 1`, closes after opens, known profile-field keys) |
-| POST | `/{slug}/close/`, `/{slug}/reopen/`, `/{slug}/hide/`, `/{slug}/show/` | Hackathon status / public visibility |
+| POST | `/{slug}/publish/` | DRAFT to LIVE. 400 `PUBLISH_CHECKLIST` (with `items`) unless it has a description, a problem option (an active statement or open innovation) and a future end date |
+| POST | `/{slug}/close/`, `/{slug}/reopen/`, `/{slug}/hide/`, `/{slug}/show/` | Hackathon status / public visibility (`close` only from LIVE; `reopen` not from DRAFT) |
 | GET | `/{slug}/stats/` | Teams by status, participants, pending invites, per-statement uptake, per-round funnel |
 | POST, PATCH, DELETE | `/{slug}/problem-statements/[{id}/]` | Manage statements. `POST {title, description, domain, tags?, max_teams?}` — the `code` is generated and any `code` sent is ignored. `DELETE ?force=true` force-unassigns any assigned teams before deletion |
+| POST | `/{slug}/problem-statements/reorder/` | `{ids: [...]}`: every statement id of the hackathon, once, in the new order; sets `order` 1..n in one transaction (400 `REORDER_MISMATCH` otherwise) |
 | POST | `/{slug}/problem-statements/upload/` | Multipart `file`: a CSV with `title`, `description`, `domain` columns (aliases such as `problem title`, `details`, `category`/`track` accepted; UTF-8, ≤1 MB, ≤500 rows). Generates IDs, skips rows repeating an existing title + domain, reports invalid rows by row number: `{created, skipped, errors, codes}` |
 | GET | `/{slug}/teams/?status=&problem_statement=&round=&entry_status=&search=` | All teams with members' contact details (`problem_statement=open_innovation` lists open-innovation teams) |
 | POST | `/{slug}/teams/` | Admin creation: accepts `leader_email` to register a team directly on behalf of a student, bypassing registration closed checks |
 | DELETE | `/teams/{id}/` | Delete a team permanently with DB-level cascading of memberships, invites, round entries, and submissions |
 | GET, POST, PATCH, DELETE | `/{slug}/rounds/[{id}/]` | Manage rounds (`POST` auto-populates entries unless `populate=false`) |
 | GET | `/{slug}/rounds/{id}/entries/?status=&search=` | Teams in a round |
-| POST | `/{slug}/rounds/{id}/decide/` | `{team_ids, status, feedback?, admin_notes?}` |
+| POST | `/{slug}/rounds/{id}/decide/` | `{team_ids, status, feedback?, admin_notes?, confirm_published?}` |
 | POST | `/{slug}/rounds/{id}/publish/`, `/unpublish/`, `/populate/` | Results visibility / sync eligible teams |
 | POST | `/{slug}/rounds/{id}/advance/` | Advance all `SHORTLISTED` teams to the next round; automatically creates Round N+1 if it does not yet exist |
 | POST | `/{slug}/rounds/{id}/add-team/` | `{team_id}`: wildcard promotion / manual addition of an eligible team to this round |
@@ -142,3 +147,15 @@ DMC datasets `hackathon_participants` (one row per `TeamMember`, role Leader/Mem
 - [../admin/event-hackathon-management.md](../admin/event-hackathon-management.md) — admin walkthrough
 - [forms.md](forms.md) — details forms and profile auto-fill fields
 - [iconcoders.md](iconcoders.md) — the flagship hackathon built on this module
+
+Public hackathon payloads carry `registered_team_count` (teams that meet the minimum size) next to `team_count` (forming + registered). Public pages show the former. The in-app invite notification links to the team dashboard, and a failure creating it is logged without losing the invite.
+
+## Notifications, email invites, reminders and FAQ
+
+- **In-app notifications** (never block the action; own savepoint, errors logged): a removed member, a new leader, an admin-added member, every member when an admin changes the team's status, the leader when an invite is accepted or declined, and teams whose published round result changes.
+- **Invite by email** - `POST /teams/{id}/invite-by-email/ {email}` (leader; throttled `hackathon_email_invite`, 20/hour). For an address with no account it stores a `TeamEmailInvite`, emails a sign-up link and counts as one team slot (`ACCOUNT_EXISTS` points an existing account to the normal invite). When an account with that address is created (a `post_save` signal in `signals.py`, so signup, admin creation and imports are all covered) pending email invites become normal `TeamInvite`s plus a notification, unless the team can no longer take them (then they are cancelled). Cancel with `POST /teams/{id}/cancel-email-invite/ {invite_id}`. `pending_email_invites` is part of the team payload.
+- **Forming teams** - `/stats/` lists `forming_teams` (name, leader, members, `needed`); `POST /{slug}/remind-forming/` (admin) sends the leader of each a notification and an email.
+- **Problem lock** - once a team has a round entry, only admins can change its problem (`PROBLEM_LOCKED`); renaming and resending the same problem still work.
+- **FAQ** - `Hackathon.faq` is a list of `{question, answer}` (max 20; 200/2000 chars). Empty = the standard FAQ.
+- Admin team members carry `college` (catalogue name or the typed one); participants never see it.
+- The round entries list and round counts run a fixed number of queries (annotated member count and promotion flag; one aggregate for counts), pinned by tests.

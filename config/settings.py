@@ -213,6 +213,9 @@ REST_FRAMEWORK = {
         # Hackathon teammate lookup by exact email - authenticated, but
         # limited so it can't be used to enumerate which emails have accounts.
         'hackathon_lookup': '30/minute',
+        # Team leaders emailing people who have no account yet: it sends mail to arbitrary
+        # addresses, so it is kept low.
+        'hackathon_email_invite': '20/hour',
         # Public college dropdown on the signup page: one request per debounced
         # keystroke burst, so it needs headroom above a form submit but stays bounded.
         'college_search': '120/minute',
