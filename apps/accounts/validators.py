@@ -16,6 +16,11 @@ NAME_REGEX = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿ]+(?:[ '\-.][A-Za-zÀ-ÖØ-öø
 NAME_MIN_LENGTH = 2
 NAME_MAX_LENGTH = 60
 
+# Free-text college for members whose institution is not in the catalogue.
+OTHER_COLLEGE_NAME_REGEX = re.compile(r"^[A-Za-z0-9À-ÖØ-öø-ÿ][A-Za-z0-9À-ÖØ-öø-ÿ &.,'()/\-]*$")
+OTHER_COLLEGE_NAME_MIN_LENGTH = 3
+OTHER_COLLEGE_NAME_MAX_LENGTH = 150
+
 # Exactly 10 alphanumeric characters starting with 2-digit year, stored uppercase (e.g. 21B91A0501).
 ROLL_NUMBER_REGEX = re.compile(r"^[0-9]{2}[A-Z0-9]{8}$")
 ROLL_NUMBER_LENGTH = 10

@@ -56,7 +56,7 @@ class UserListView(generics.ListCreateAPIView):
     Admin/club-lead member directory. Not for public consumption - returns
     every member's email, phone, roll number, branch, and social links.
     """
-    queryset = User.objects.all().order_by('-created_at')
+    queryset = User.objects.select_related('college').order_by('-created_at')
     serializer_class = UserSerializer
     permission_classes = [IsAdminOrClubLead]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -97,7 +97,7 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
     carries no such privilege risk, so it has no extra restriction beyond
     IsAdminOrClubLead.
     """
-    queryset = User.objects.all()
+    queryset = User.objects.select_related('college')
     serializer_class = UserRoleUpdateSerializer
     permission_classes = [IsAdminOrClubLead]
 

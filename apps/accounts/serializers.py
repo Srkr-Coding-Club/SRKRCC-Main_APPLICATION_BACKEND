@@ -6,7 +6,12 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
+from apps.colleges.models import College, get_default_college
+from apps.colleges.serializers import CollegeSerializer
 from apps.accounts.validators import (
+    OTHER_COLLEGE_NAME_MAX_LENGTH,
+    OTHER_COLLEGE_NAME_MIN_LENGTH,
+    OTHER_COLLEGE_NAME_REGEX,
     EMAIL_MAX_LENGTH,
     EMAIL_REGEX,
     NAME_MAX_LENGTH,
@@ -23,6 +28,34 @@ from apps.accounts.validators import (
     normalize_phone_number,
     normalize_roll_number,
 )
+
+def validate_other_college_name(value):
+    name = normalize_name(value)
+    if not name:
+        return ""
+    if len(name) < OTHER_COLLEGE_NAME_MIN_LENGTH:
+        raise serializers.ValidationError(f"College name must be at least {OTHER_COLLEGE_NAME_MIN_LENGTH} characters long.")
+    if len(name) > OTHER_COLLEGE_NAME_MAX_LENGTH:
+        raise serializers.ValidationError(f"College name must be at most {OTHER_COLLEGE_NAME_MAX_LENGTH} characters long.")
+    if not OTHER_COLLEGE_NAME_REGEX.match(name):
+        raise serializers.ValidationError("College name may only contain letters, numbers, spaces and . , & ' ( ) / -")
+    return name
+
+
+def reconcile_college_choice(attrs, current_other_name=""):
+    """
+    A member's college is either a catalogue row or a typed-in name, never both:
+    picking a catalogue college clears the typed name, and typing a name clears the
+    catalogue link. Clearing the link without supplying a name is rejected.
+    """
+    if attrs.get('college') is not None:
+        attrs['other_college_name'] = ''
+    elif attrs.get('other_college_name'):
+        attrs['college'] = None
+    elif 'college' in attrs and not current_other_name:
+        raise serializers.ValidationError({'college_id': "Select a college or enter your college name."})
+    return attrs
+
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
@@ -92,12 +125,13 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     referred_by_display = serializers.SerializerMethodField()
+    college = CollegeSerializer(read_only=True)
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name',
-            'role', 'club_id', 'membership_status', 'roll_number', 'branch', 'year', 'phone_number',
+            'role', 'club_id', 'membership_status', 'roll_number', 'college', 'other_college_name', 'branch', 'year', 'phone_number',
             'github_profile', 'linkedin_profile', 'registered_at', 'created_from',
             'referred_by_raw', 'referred_by_display', 'created_at'
         ]
@@ -253,12 +287,24 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
     registered_events = serializers.SerializerMethodField()
     badges = serializers.SerializerMethodField()
     referred_by_display = serializers.SerializerMethodField()
+    college = CollegeSerializer(read_only=True)
+    college_id = serializers.PrimaryKeyRelatedField(
+        source='college', queryset=College.objects.all(), write_only=True, required=False, allow_null=True,
+        error_messages={'does_not_exist': 'Select a college from the list.', 'incorrect_type': 'Select a college from the list.'},
+    )
+    other_college_name = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_other_college_name(self, value):
+        return validate_other_college_name(value)
+
+    def validate(self, attrs):
+        return reconcile_college_choice(attrs, current_other_name=self.instance.other_college_name if self.instance else '')
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 
-            'role', 'club_id', 'membership_status', 'roll_number', 'branch', 'year', 'phone_number',
+            'role', 'club_id', 'membership_status', 'roll_number', 'college', 'college_id', 'other_college_name', 'branch', 'year', 'phone_number',
             'github_profile', 'linkedin_profile', 'registered_at', 'referred_by_raw', 'referred_by_display', 'created_at',
             'streak', 'points', 'events_count', 'projects_count',
             'registered_events', 'badges'
@@ -481,6 +527,12 @@ class RegisterSerializer(serializers.ModelSerializer):
     branch = serializers.CharField()
     year = serializers.IntegerField()
     phone_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    # Optional so older clients keep working; omitted means the club's home college.
+    college_id = serializers.PrimaryKeyRelatedField(
+        source='college', queryset=College.objects.all(), required=False,
+        error_messages={'does_not_exist': 'Select a college from the list.', 'incorrect_type': 'Select a college from the list.'},
+    )
+    other_college_name = serializers.CharField(required=False, allow_blank=True)
     # Derived from email: echoed back in the response, never read from the request.
     username = serializers.CharField(read_only=True)
 
@@ -519,8 +571,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'username', 'email', 'password', 'first_name', 'last_name',
-            'role', 'roll_number', 'branch', 'year', 'club_id', 'phone_number',
+            'role', 'roll_number', 'college_id', 'other_college_name', 'branch', 'year', 'club_id', 'phone_number',
         ]
+
+    def validate_other_college_name(self, value):
+        return validate_other_college_name(value)
 
     def validate_email(self, value):
         email = normalize_email(value)
@@ -649,6 +704,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         # normalized it to canonical form, or to None if blank/omitted - this
         # runs after both validate_role() and validate_club_id() since DRF
         # calls per-field validators before this object-level one).
+        reconcile_college_choice(attrs)
         if attrs.get('role') == 'AFFILIATE' and not attrs.get('club_id'):
             raise serializers.ValidationError({
                 'club_id': "Affiliate members must provide a valid Club ID. "
@@ -675,6 +731,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             candidate = f"{base[:140 - len(tail)]}{tail}"
         return candidate
 
+    @staticmethod
+    def _resolve_college(validated_data):
+        if validated_data.get('college') is not None:
+            return validated_data['college']
+        return None if validated_data.get('other_college_name') else get_default_college()
+
     def create(self, validated_data):
         from django.db import IntegrityError, transaction
 
@@ -695,6 +757,8 @@ class RegisterSerializer(serializers.ModelSerializer):
                     first_name=validated_data.get('first_name', ''),
                     last_name=validated_data.get('last_name', ''),
                     roll_number=roll_number,
+                    college=self._resolve_college(validated_data),
+                    other_college_name=validated_data.get('other_college_name', ''),
                     branch=validated_data.get('branch', ''),
                     year=validated_data.get('year', None),
                     role=validated_data.get('role') or 'NON_AFFILIATE',
