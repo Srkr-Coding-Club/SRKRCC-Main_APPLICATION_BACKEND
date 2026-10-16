@@ -10,6 +10,7 @@ User = get_user_model()
 from apps.colleges.models import College, get_default_college
 from apps.colleges.serializers import CollegeSerializer
 from apps.accounts.validators import (
+    ALLOWED_EMAIL_DOMAINS,
     OTHER_COLLEGE_NAME_MAX_LENGTH,
     OTHER_COLLEGE_NAME_MIN_LENGTH,
     OTHER_COLLEGE_NAME_REGEX,
@@ -577,6 +578,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             'role', 'roll_number', 'college_id', 'other_college_name', 'branch', 'year', 'club_id', 'phone_number',
         ]
 
+    def _is_admin_caller(self):
+        requester = getattr(self.context.get('request'), 'user', None)
+        return bool(requester and requester.is_authenticated and (
+            requester.is_staff or requester.is_superuser or getattr(requester, 'role', None) in ('ADMIN', 'CLUB_LEAD')
+        ))
+
     def validate_other_college_name(self, value):
         return validate_other_college_name(value)
 
@@ -584,6 +591,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         email = normalize_email(value)
         if not EMAIL_REGEX.match(email):
             raise serializers.ValidationError("Enter a valid email address, for example you@example.com.")
+        if not self._is_admin_caller() and email.rsplit('@', 1)[-1] not in ALLOWED_EMAIL_DOMAINS:
+            raise serializers.ValidationError(
+                "Registration is open to @gmail.com or @srkrec.ac.in email addresses only."
+            )
         if User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError(
                 "An account with this email already exists. Sign in instead, or use "
@@ -661,11 +672,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return phone
 
     def validate_role(self, value):
-        requester = getattr(self.context.get('request'), 'user', None)
-        is_admin_caller = bool(requester and requester.is_authenticated and (
-            requester.is_staff or requester.is_superuser or getattr(requester, 'role', None) in ('ADMIN', 'CLUB_LEAD')
-        ))
-        allowed = self.ADMIN_GRANTABLE_ROLES if is_admin_caller else self.SELF_REGISTERABLE_ROLES
+        allowed = self.ADMIN_GRANTABLE_ROLES if self._is_admin_caller() else self.SELF_REGISTERABLE_ROLES
         return value if value in allowed else 'NON_AFFILIATE'
 
     def validate_club_id(self, value):
