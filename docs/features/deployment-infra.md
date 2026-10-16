@@ -46,6 +46,12 @@ the running system.
 - Costs only start appearing once the platform is genuinely successful (high usage), at which point the club can budget for it.
 - The target architecture above is deliberately provider-agnostic (e.g. Redis via Upstash, Postgres via Neon/Supabase) so the club isn't locked into one vendor if pricing changes — but none of that is provisioned yet; today it's a single Render web service and a single Render Postgres database.
 
+## AWS Lambda secrets (prepared, not the live Render service)
+
+Render is unchanged: `build.sh` still runs `migrate` at build time, and the start command is Gunicorn with `SECRET_KEY` and `DATABASE_URL` from the Render environment. That path does not set `SERVERLESS` or `AWS_LAMBDA_FUNCTION_NAME`, so it never calls Parameter Store.
+
+On Lambda, `config/ssm_secrets.py` loads those two values from `/srkrcc/<env>/backend/` before Django reads settings. The image entrypoint runs `migrate` only when `RUN_STARTUP_TASKS=1`. Terraform does not set that flag, so a Lambda cold start does not migrate. Apply migrations with a one-off command against Neon before sending traffic.
+
 ## Continuous Integration / Deployment
 
 **Target design, not current**: no `.github/workflows/` directory exists in either repo today, so there is no automated CI (tests/lint/build checks) or automated deploy pipeline yet. Render deploys directly from a pushed branch (its own built-in git integration), which is not the same as a GitHub Actions pipeline running checks first.
