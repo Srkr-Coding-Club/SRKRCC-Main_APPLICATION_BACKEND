@@ -36,6 +36,14 @@ staticfiles/
 # Environment variables
 .env
 
+# Terraform (keep *.tf, terraform.tfvars.example, and .terraform.lock.hcl)
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+!infra/terraform/terraform.tfvars.example
+infra/terraform/crash.log
+
 # Testing / Coverage
 .cache
 .pytest_cache/

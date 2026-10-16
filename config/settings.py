@@ -5,13 +5,69 @@ from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
 
 from config.email_config import resolve_email_settings
+from config.ssm_secrets import INSECURE_DEFAULT_SECRET_KEY, load_serverless_secrets
 
 load_dotenv()
+# Local and Render already have SECRET_KEY and DATABASE_URL. Lambda does not;
+# load them from Parameter Store before Django reads them. No-op otherwise.
+load_serverless_secrets()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-_INSECURE_DEFAULT_SECRET_KEY = 'django-insecure-srkrcc-dev-secret-key-change-in-prod'
+_INSECURE_DEFAULT_SECRET_KEY = INSECURE_DEFAULT_SECRET_KEY
 SECRET_KEY = os.getenv('SECRET_KEY', _INSECURE_DEFAULT_SECRET_KEY)
+
+
+def _env_truthy(name: str, default: str = '') -> bool:
+    return os.getenv(name, default).lower() in ('true', '1', 't')
+
+
+def _is_serverless() -> bool:
+    """True only when Lambda (or an explicit SERVERLESS flag) is active.
+
+    Absent both AWS_LAMBDA_FUNCTION_NAME and SERVERLESS, Render and local
+    keep the historical connection and media behaviour.
+    """
+    return bool(os.getenv('AWS_LAMBDA_FUNCTION_NAME')) or _env_truthy('SERVERLESS')
+
+
+def database_conn_max_age() -> int:
+    # Persistent connections leak on Lambda because the process is frozen after
+    # the response. Neon pooled URLs also expect short-lived clients.
+    return 0 if _is_serverless() else 600
+
+
+def resolve_media_root() -> Path:
+    # /tmp is writable on Lambda. This does not move existing files to S3;
+    # backups and DMC exports still use local paths.
+    return Path('/tmp/media') if _is_serverless() else (BASE_DIR / 'media')
+
+
+def _use_s3() -> bool:
+    return _env_truthy('USE_S3')
+
+
+FILESYSTEM_STORAGE_BACKEND = 'django.core.files.storage.FileSystemStorage'
+S3_STORAGE_BACKEND = 'storages.backends.s3.S3Storage'
+WHITENOISE_STORAGE_BACKEND = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+
+def default_storage_backend() -> str:
+    return S3_STORAGE_BACKEND if _use_s3() else FILESYSTEM_STORAGE_BACKEND
+
+
+def s3_storage_options() -> dict:
+    """Bucket/region from env. Credentials come from the process role or default chain — never from this file."""
+    return {
+        'bucket_name': os.getenv('AWS_STORAGE_BUCKET_NAME', '').strip(),
+        'region_name': os.getenv('AWS_S3_REGION_NAME', os.getenv('AWS_REGION', 'ap-south-1')).strip() or 'ap-south-1',
+        'default_acl': None,
+        'querystring_auth': True,
+        'file_overwrite': False,
+        'signature_version': 's3v4',
+        'location': 'media',
+        'object_parameters': {'CacheControl': 'max-age=86400'},
+    }
 
 # Defaults to False (secure-by-default) if the env var is entirely absent, e.g. a
 # fresh deploy with no .env configured. Local dev sets DEBUG=True explicitly in .env.
@@ -146,11 +202,12 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
-# Database Configuration: Uses local PostgreSQL by default
+# Database Configuration: Uses local PostgreSQL by default.
+# DATABASE_URL still comes only from the environment (or the local default).
 DATABASES = {
     'default': dj_database_url.config(
         default=os.getenv('DATABASE_URL', 'postgres://postgres:postgres@localhost:5432/srkrcc_db'),
-        conn_max_age=600,
+        conn_max_age=database_conn_max_age(),
     )
 }
 
@@ -180,7 +237,35 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 WHITENOISE_MANIFEST_STRICT = False
 
 MEDIA_URL = 'media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = resolve_media_root()
+
+# Optional S3 for Django's default storage (FileField / ImageField) only.
+# Backups and DMC exports use open() on MEDIA_ROOT / tempfile — they do not
+# follow this backend. Static files stay on WhiteNoise, never S3.
+# Objects are private (presigned URLs). Do not set a public CloudFront domain
+# here; this app has no FileFields today and backups must not be world-readable.
+if _use_s3():
+    _s3_opts = s3_storage_options()
+    if not _s3_opts['bucket_name']:
+        raise ImproperlyConfigured('USE_S3=true requires AWS_STORAGE_BUCKET_NAME.')
+    AWS_STORAGE_BUCKET_NAME = _s3_opts['bucket_name']
+    AWS_S3_REGION_NAME = _s3_opts['region_name']
+    AWS_S3_SIGNATURE_VERSION = 's3v4'
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = True
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_LOCATION = 'media'
+    if 'storages' not in INSTALLED_APPS:
+        INSTALLED_APPS.append('storages')
+    STORAGES = {
+        'default': {
+            'BACKEND': S3_STORAGE_BACKEND,
+            'OPTIONS': _s3_opts,
+        },
+        'staticfiles': {
+            'BACKEND': WHITENOISE_STORAGE_BACKEND,
+        },
+    }
 
 # Dynamic-form FILE / MULTI_FILE answers are captured inline as base64 data URLs
 # (there is no binary-upload endpoint), so a submission body can carry a few MB

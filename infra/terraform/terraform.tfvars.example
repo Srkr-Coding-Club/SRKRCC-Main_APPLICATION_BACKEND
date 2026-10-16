@@ -1,0 +1,28 @@
+aws_region   = "ap-south-1"
+aws_profile  = "terraform-dev"
+project_name = "srkrcc"
+environment  = "dev"
+
+# Defaults from locals if omitted: ECR srkrcc-backend, Lambda srkrcc-dev-backend,
+# role srkrcc-dev-backend-lambda-execution, bucket srkrcc-dev-media-<account-id>.
+ecr_repository_name = "srkrcc-backend"
+s3_bucket_name      = ""
+
+# Leave empty until you have pushed an image to the ECR URL from the first apply.
+lambda_image_uri = ""
+
+lambda_memory  = 1024
+lambda_timeout = 60
+
+enable_s3_storage = false
+
+# NONE = anyone who knows the URL can hit Django. Django JWT still applies
+# to protected routes. Review ALLOWED_HOSTS / CORS / CSRF before sharing the URL.
+function_url_authorization_type = "NONE"
+
+allowed_hosts        = ".lambda-url.ap-south-1.on.aws,localhost,127.0.0.1"
+cors_allowed_origins = "http://localhost:3000"
+csrf_trusted_origins = "http://localhost:3000"
+frontend_url         = "http://localhost:3000"
+
+log_retention_days = 14
