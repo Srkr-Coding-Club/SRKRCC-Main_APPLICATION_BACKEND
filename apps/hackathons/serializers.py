@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.forms.models import ProfileField
 from .models import (
-    AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, InviteStatus,
+    AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, HackathonStage, InviteStatus,
     ProblemStatement, Round, RoundEntry, Submission, Team, TeamInvite, TeamMember, TeamStatus,
 )
 
@@ -26,6 +26,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'prize_pool', 'banner_image', 'status', 'start_date', 'end_date',
             'visible_from', 'visible_until', 'is_hidden', 'registration_form',
             'form_slug', 'form_title', 'registration_count', 'team_count', 'registered_team_count',
+            'mode', 'venue', 'organizer_name', 'logo_image', 'tags', 'prizes', 'problem_domains',
             'registration_opens_at', 'registration_closes_at', 'min_team_size', 'max_team_size',
             'team_edits_locked', 'allow_open_innovation', 'required_profile_fields', 'faq', 'is_registration_open',
             'created_at', 'updated_at',
@@ -40,6 +41,61 @@ class HackathonSerializer(serializers.ModelSerializer):
         if obj.visible_until and obj.visible_until <= now:
             return True
         return False
+
+    MAX_TAGS = 10
+    MAX_PRIZES = 12
+    MAX_DOMAINS = 30
+
+    def validate_problem_domains(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Must be a list of domain names.')
+        if len(value) > self.MAX_DOMAINS:
+            raise serializers.ValidationError(f'At most {self.MAX_DOMAINS} domains.')
+        cleaned = []
+        for item in value:
+            name = ' '.join(str(item).split())
+            if not name:
+                continue
+            if len(name) > 100:
+                raise serializers.ValidationError('Each domain is limited to 100 characters.')
+            if name.lower() not in {existing.lower() for existing in cleaned}:
+                cleaned.append(name)
+        return cleaned
+
+    def validate_tags(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Must be a list of short labels.')
+        if len(value) > self.MAX_TAGS:
+            raise serializers.ValidationError(f'At most {self.MAX_TAGS} tags.')
+        cleaned = []
+        for tag in value:
+            label = str(tag).strip()
+            if not label:
+                continue
+            if len(label) > 40:
+                raise serializers.ValidationError('Each tag is limited to 40 characters.')
+            if label.lower() not in {existing.lower() for existing in cleaned}:
+                cleaned.append(label)
+        return cleaned
+
+    def validate_prizes(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Must be a list of {title, amount, description}.')
+        if len(value) > self.MAX_PRIZES:
+            raise serializers.ValidationError(f'At most {self.MAX_PRIZES} prizes.')
+        cleaned = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise serializers.ValidationError('Every prize needs a title.')
+            title = str(item.get('title', '')).strip()
+            amount = str(item.get('amount', '')).strip()
+            description = str(item.get('description', '')).strip()
+            if not title:
+                raise serializers.ValidationError('Every prize needs a title.')
+            if len(title) > 100 or len(amount) > 60 or len(description) > 500:
+                raise serializers.ValidationError('Prize title (100), amount (60) and description (500) are too long.')
+            cleaned.append({'title': title, 'amount': amount, 'description': description})
+        return cleaned
 
     MAX_FAQ_ITEMS = 20
 
@@ -77,7 +133,23 @@ class HackathonSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"Unknown profile field(s): {', '.join(map(str, bad))}.")
         return list(dict.fromkeys(value))
 
+    def _check_domains_still_cover_statements(self, attrs):
+        """Every domain a problem statement uses must stay in the configured list."""
+        if self.instance is None or 'problem_domains' not in attrs:
+            return
+        kept = {name.lower() for name in attrs['problem_domains']}
+        missing = sorted({
+            statement_domain for statement_domain in self.instance.problem_statements.values_list('domain', flat=True)
+            if statement_domain and statement_domain.lower() not in kept
+        })
+        if missing:
+            raise serializers.ValidationError({
+                'problem_domains': f"These domains are used by problem statements and must stay in the list: {', '.join(missing)}. "
+                                   'Move or delete those statements first.',
+            })
+
     def validate(self, attrs):
+        self._check_domains_still_cover_statements(attrs)
         lo = attrs.get('min_team_size', getattr(self.instance, 'min_team_size', 1))
         hi = attrs.get('max_team_size', getattr(self.instance, 'max_team_size', 4))
         if lo < 1:
@@ -150,9 +222,16 @@ class ProblemStatementSerializer(serializers.ModelSerializer):
         return max(obj.max_teams - self._count(obj), 0)
 
     def validate_domain(self, value):
-        value = (value or '').strip()
+        value = ' '.join((value or '').split())
         if not value:
             raise serializers.ValidationError('Domain is required.')
+        hackathon = self.context.get('hackathon')
+        configured = (hackathon.problem_domains if hackathon else None) or []
+        if configured:
+            match = next((name for name in configured if name.lower() == value.lower()), None)
+            if match is None:
+                raise serializers.ValidationError("Pick one of this hackathon's domains, or add the domain to the list first.")
+            return match
         return value
 
     def validate_description(self, value):
@@ -175,7 +254,18 @@ class ProblemStatementSerializer(serializers.ModelSerializer):
     def validate_tags(self, value):
         if not isinstance(value, list):
             raise serializers.ValidationError('Must be a list.')
-        return [str(t).strip() for t in value if str(t).strip()]
+        cleaned = []
+        for tag in value:
+            label = ' '.join(str(tag).split())
+            if not label:
+                continue
+            if len(label) > 30:
+                raise serializers.ValidationError('Each tag is limited to 30 characters.')
+            if label.lower() not in {existing.lower() for existing in cleaned}:
+                cleaned.append(label)
+        if len(cleaned) > 10:
+            raise serializers.ValidationError('At most 10 tags per statement.')
+        return cleaned
 
 
 class ProblemStatementBriefSerializer(serializers.ModelSerializer):
@@ -393,6 +483,57 @@ class RoundSerializer(serializers.ModelSerializer):
         ends = attrs.get('ends_at', getattr(self.instance, 'ends_at', None))
         if starts and ends and ends <= starts:
             raise serializers.ValidationError({'ends_at': 'Must be after the start time.'})
+        return attrs
+
+
+STAGE_PUBLIC_FIELDS = [
+    'id', 'order', 'title', 'description', 'starts_at', 'ends_at', 'badge', 'location',
+    'tone', 'marker', 'icon', 'link_label', 'link_url',
+]
+
+
+class PublicStageSerializer(serializers.ModelSerializer):
+    """What the public hackathon page shows for a stage: nothing about teams, results or forms."""
+
+    class Meta:
+        model = HackathonStage
+        fields = STAGE_PUBLIC_FIELDS
+        read_only_fields = STAGE_PUBLIC_FIELDS
+
+
+class AdminStageSerializer(serializers.ModelSerializer):
+    source_round_name = serializers.CharField(source='source_round.name', read_only=True)
+
+    class Meta:
+        model = HackathonStage
+        fields = STAGE_PUBLIC_FIELDS + ['is_visible', 'source_round', 'source_round_name', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'order', 'source_round', 'created_at', 'updated_at']
+        extra_kwargs = {'title': {'required': True}}
+
+    def validate_title(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('A stage needs a title.')
+        return value
+
+    def validate_description(self, value):
+        if len(value or '') > 5000:
+            raise serializers.ValidationError('The description is limited to 5000 characters.')
+        return (value or '').strip()
+
+    def validate(self, attrs):
+        starts = attrs.get('starts_at', getattr(self.instance, 'starts_at', None))
+        ends = attrs.get('ends_at', getattr(self.instance, 'ends_at', None))
+        if starts and ends and ends <= starts:
+            raise serializers.ValidationError({'ends_at': 'Must be after the start time.'})
+        url = attrs.get('link_url', getattr(self.instance, 'link_url', ''))
+        label = attrs.get('link_label', getattr(self.instance, 'link_label', ''))
+        if url and not url.lower().startswith(('http://', 'https://')):
+            raise serializers.ValidationError({'link_url': 'Use a full http(s) link.'})
+        if url and not label.strip():
+            raise serializers.ValidationError({'link_label': 'Give the button a label.'})
+        if label.strip() and not url:
+            raise serializers.ValidationError({'link_url': 'A button needs a link.'})
         return attrs
 
 

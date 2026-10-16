@@ -18,6 +18,8 @@ from apps.feature_flags.models import FeatureFlag
 from apps.audit.models import AuditLog
 
 def seed_database():
+    from apps.core.dev_guard import require_development
+    require_development('scripts/seed_full_database.py')
     print("=" * 70)
     print("SRKRCC Platform - Master Database Seeder (Live DB Population)")
     print("=" * 70)

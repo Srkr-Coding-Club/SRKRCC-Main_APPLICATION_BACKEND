@@ -1,3 +1,4 @@
+import logging
 import re
 from django.db import models
 from rest_framework import serializers
@@ -28,6 +29,8 @@ from apps.accounts.validators import (
     normalize_phone_number,
     normalize_roll_number,
 )
+
+logger = logging.getLogger(__name__)
 
 def validate_other_college_name(value):
     name = normalize_name(value)

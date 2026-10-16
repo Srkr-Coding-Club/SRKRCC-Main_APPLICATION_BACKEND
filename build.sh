@@ -15,6 +15,10 @@ pip install -r requirements.txt
 echo "--> Running database migrations..."
 python manage.py migrate --noinput
 
+# 2b. Cache table backing the shared rate-limit counters
+echo "--> Creating cache table..."
+python manage.py createcachetable
+
 # 3. Collect Static Files for WhiteNoise
 echo "--> Collecting static files..."
 python manage.py collectstatic --noinput

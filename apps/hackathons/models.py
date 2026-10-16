@@ -14,6 +14,12 @@ class HackathonStatus(models.TextChoices):
     CLOSED = 'CLOSED', 'Closed'
 
 
+class HackathonMode(models.TextChoices):
+    ONLINE = 'ONLINE', 'Online'
+    OFFLINE = 'OFFLINE', 'Offline'
+    HYBRID = 'HYBRID', 'Hybrid'
+
+
 class Hackathon(TimeStampedModel):
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
@@ -22,6 +28,17 @@ class Hackathon(TimeStampedModel):
     description = models.TextField()
     prize_pool = models.CharField(max_length=100, default='₹50,000')
     banner_image = models.URLField(blank=True, null=True)
+
+    # --- Public page presentation (all optional, all editable by admins) ----------
+    mode = models.CharField(max_length=10, choices=HackathonMode.choices, default=HackathonMode.ONLINE)
+    venue = models.CharField(max_length=200, blank=True, help_text='Where it happens, for offline/hybrid events.')
+    organizer_name = models.CharField(max_length=150, blank=True, help_text='Shown under the title. Blank = the club.')
+    logo_image = models.URLField(blank=True, null=True)
+    tags = models.JSONField(default=list, blank=True, help_text='Short category labels shown as chips, e.g. ["AI", "Web"].')
+    prizes = models.JSONField(
+        default=list, blank=True,
+        help_text='List of {title, amount, description} shown in the Prizes section. Blank = only the prize pool.',
+    )
     status = models.CharField(max_length=20, choices=HackathonStatus.choices, default=HackathonStatus.LIVE)
 
     start_date = models.DateTimeField()
@@ -45,6 +62,10 @@ class Hackathon(TimeStampedModel):
     allow_open_innovation = models.BooleanField(
         default=True,
         help_text="Let teams bring their own problem (title, description, domain) instead of picking an admin-defined statement.",
+    )
+    problem_domains = models.JSONField(
+        default=list, blank=True,
+        help_text='Domains problem statements are filed under (e.g. ["AI", "EdTech"]). Admin-configured; statements pick from this list.',
     )
     faq = models.JSONField(
         default=list, blank=True,
@@ -250,6 +271,59 @@ class Round(TimeStampedModel):
 
     def __str__(self):
         return f"{self.hackathon.title}, Round {self.order}: {self.name}"
+
+
+class StageTone(models.TextChoices):
+    ORANGE = 'ORANGE', 'Orange'
+    BLUE = 'BLUE', 'Blue'
+    GREEN = 'GREEN', 'Green'
+    PURPLE = 'PURPLE', 'Purple'
+    RED = 'RED', 'Red'
+    SLATE = 'SLATE', 'Grey'
+
+
+class StageMarker(models.TextChoices):
+    DATE = 'DATE', 'Date badge'
+    ICON = 'ICON', 'Icon'
+
+
+class StageIcon(models.TextChoices):
+    FLAG = 'FLAG', 'Flag'
+    CODE = 'CODE', 'Code'
+    MIC = 'MIC', 'Presentation'
+    TROPHY = 'TROPHY', 'Trophy'
+    CALENDAR = 'CALENDAR', 'Calendar'
+    USERS = 'USERS', 'Team'
+    LIGHTBULB = 'LIGHTBULB', 'Idea'
+    ROCKET = 'ROCKET', 'Launch'
+    CLIPBOARD = 'CLIPBOARD', 'Submission'
+    AWARD = 'AWARD', 'Award'
+
+
+class HackathonStage(TimeStampedModel):
+    """One entry of the public "Stages and Timelines" section. Independent of rounds, so it can
+    describe things rounds never model (registration, idea submission, results, ceremonies)."""
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='stages')
+    title = models.CharField(max_length=150)
+    description = models.TextField(blank=True, help_text='Markdown.')
+    starts_at = models.DateTimeField(blank=True, null=True)
+    ends_at = models.DateTimeField(blank=True, null=True)
+    badge = models.CharField(max_length=40, blank=True, help_text='Small label on the card, e.g. "Online" or "Mandatory".')
+    location = models.CharField(max_length=150, blank=True, help_text='Where or how, e.g. "Auditorium" or "Google Meet".')
+    tone = models.CharField(max_length=10, choices=StageTone.choices, default=StageTone.ORANGE)
+    marker = models.CharField(max_length=5, choices=StageMarker.choices, default=StageMarker.DATE)
+    icon = models.CharField(max_length=12, choices=StageIcon.choices, default=StageIcon.FLAG)
+    link_label = models.CharField(max_length=40, blank=True)
+    link_url = models.URLField(blank=True)
+    is_visible = models.BooleanField(default=True)
+    order = models.PositiveIntegerField(default=0)
+    source_round = models.ForeignKey(Round, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return f"{self.hackathon.title}: {self.title}"
 
 
 class EntryStatus(models.TextChoices):

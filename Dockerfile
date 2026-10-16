@@ -22,10 +22,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy project files
 COPY . .
 
-# Ensure entrypoint and scripts are executable
-RUN chmod +x entrypoint.sh build.sh || true
+# Run as an unprivileged user; it only needs to write collected static files and uploaded media.
+RUN chmod +x entrypoint.sh build.sh || true &&     useradd --system --create-home --uid 10001 app &&     mkdir -p /app/media /app/staticfiles &&     chown -R app:app /app
+USER app
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3     CMD curl -fsS http://localhost:8000/api/ping/ || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 

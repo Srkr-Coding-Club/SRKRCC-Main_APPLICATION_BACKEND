@@ -26,7 +26,7 @@ from apps.core.permissions import _is_admin_or_club_lead
 
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, InviteStatus,
-    EmailInviteStatus, ProblemStatement, Round, RoundEntry, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamRole,
+    EmailInviteStatus, HackathonStage, ProblemStatement, Round, RoundEntry, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamRole,
     TeamStatus,
 )
 
@@ -871,6 +871,9 @@ class ProblemStatementService:
     def create(hackathon: Hackathon, actor, **fields) -> ProblemStatement:
         # Serialise ID generation per hackathon so two admins can't be handed the same ID.
         Hackathon.objects.select_for_update().get(pk=hackathon.pk)
+        if not fields.get('order'):
+            # New statements go to the end; admins reorder from the list.
+            fields['order'] = (hackathon.problem_statements.order_by('-order').values_list('order', flat=True).first() or 0) + 1
         statement = ProblemStatement.objects.create(
             hackathon=hackathon, code=ProblemStatementService.next_code(hackathon), **fields,
         )
@@ -916,6 +919,7 @@ class ProblemStatementService:
             raise HackathonError(f'Too many rows (max {CSV_MAX_ROWS} per upload).', 'CSV_TOO_MANY_ROWS', field='file')
 
         Hackathon.objects.select_for_update().get(pk=hackathon.pk)
+        domains = list(hackathon.problem_domains or [])
         seen = {(t.lower(), d.lower()) for t, d in hackathon.problem_statements.values_list('title', 'domain')}
         next_number = int(ProblemStatementService.next_code(hackathon).split('-')[1])
         next_order = (hackathon.problem_statements.order_by('-order').values_list('order', flat=True).first() or 0) + 1
@@ -933,6 +937,12 @@ class ProblemStatementService:
             if problem:
                 errors.append({'row': line_number, 'message': problem})
                 continue
+            values['domain'] = ' '.join(values['domain'].split())
+            known = next((name for name in domains if name.lower() == values['domain'].lower()), None)
+            if known is None:
+                domains.append(values['domain'])
+            else:
+                values['domain'] = known
             key = (values['title'].lower(), values['domain'].lower())
             if key in seen:
                 skipped += 1
@@ -946,6 +956,10 @@ class ProblemStatementService:
             next_order += 1
 
         ProblemStatement.objects.bulk_create(created)
+        # An uploaded CSV introduces its domains: keep the configured list in step with the statements.
+        if domains != list(hackathon.problem_domains or []):
+            hackathon.problem_domains = domains[:30]
+            hackathon.save(update_fields=['problem_domains', 'updated_at'])
         log_audit_event(
             actor=actor, action='Imported Problem Statements', target_model='Hackathon', target_id=hackathon.slug,
             details={'created': len(created), 'skipped_duplicates': skipped, 'errors': len(errors)},
@@ -954,6 +968,65 @@ class ProblemStatementService:
             'created': len(created), 'skipped': skipped, 'errors': errors,
             'codes': [statement.code for statement in created],
         }
+
+
+# ---------------------------------------------------------------------------
+# Public timeline
+# ---------------------------------------------------------------------------
+
+class StageService:
+    """Admin-curated entries of the public "Stages and Timelines" section."""
+
+    @staticmethod
+    @transaction.atomic
+    def create(hackathon: Hackathon, actor, **fields) -> HackathonStage:
+        Hackathon.objects.select_for_update().get(pk=hackathon.pk)
+        last = hackathon.stages.order_by('-order').values_list('order', flat=True).first() or 0
+        stage = HackathonStage.objects.create(hackathon=hackathon, order=last + 1, **fields)
+        log_audit_event(
+            actor=actor, action='Created Hackathon Stage', target_model='HackathonStage', target_id=stage.pk,
+            details={'hackathon': hackathon.slug, 'title': stage.title},
+        )
+        return stage
+
+    @staticmethod
+    @transaction.atomic
+    def reorder(hackathon: Hackathon, actor, ids: list[int]) -> None:
+        Hackathon.objects.select_for_update().get(pk=hackathon.pk)
+        stages = {stage.pk: stage for stage in hackathon.stages.all()}
+        if len(ids) != len(set(ids)) or set(ids) != set(stages):
+            raise HackathonError('Send every stage of this hackathon exactly once.', 'REORDER_MISMATCH', field='ids')
+        changed = []
+        for position, stage_id in enumerate(ids, start=1):
+            if stages[stage_id].order != position:
+                stages[stage_id].order = position
+                changed.append(stages[stage_id])
+        HackathonStage.objects.bulk_update(changed, ['order'])
+        log_audit_event(
+            actor=actor, action='Reordered Hackathon Stages', target_model='Hackathon', target_id=hackathon.slug,
+            details={'moved': len(changed)},
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def import_rounds(hackathon: Hackathon, actor) -> int:
+        """Copy every round that has no stage yet into the timeline (name, description, dates)."""
+        Hackathon.objects.select_for_update().get(pk=hackathon.pk)
+        already = set(hackathon.stages.exclude(source_round__isnull=True).values_list('source_round_id', flat=True))
+        order = hackathon.stages.order_by('-order').values_list('order', flat=True).first() or 0
+        created = []
+        for round_obj in hackathon.rounds.exclude(pk__in=already):
+            order += 1
+            created.append(HackathonStage(
+                hackathon=hackathon, title=round_obj.name, description=round_obj.description,
+                starts_at=round_obj.starts_at, ends_at=round_obj.ends_at, order=order, source_round=round_obj,
+            ))
+        HackathonStage.objects.bulk_create(created)
+        log_audit_event(
+            actor=actor, action='Imported Rounds Into Timeline', target_model='Hackathon', target_id=hackathon.slug,
+            details={'created': len(created)},
+        )
+        return len(created)
 
 
 # ---------------------------------------------------------------------------

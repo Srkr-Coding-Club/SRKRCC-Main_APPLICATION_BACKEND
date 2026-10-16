@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response as DRFResponse
-from rest_framework.throttling import ScopedRateThrottle
+from apps.core.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.audit.utils import log_audit_event
@@ -20,10 +20,10 @@ from .models import (
 from .serializers import (
     AdminHackathonAnnouncementSerializer, AdminRoundEntrySerializer, AdminTeamSerializer,
     HackathonAnnouncementSerializer, HackathonSerializer, ProblemStatementSerializer,
-    RoundSerializer, SubmissionSerializer, TeamInviteSerializer, TeamSerializer,
+    AdminStageSerializer, PublicStageSerializer, RoundSerializer, SubmissionSerializer, TeamInviteSerializer, TeamSerializer,
 )
 from .services import (
-    AnnouncementService, HackathonError, ProblemStatementService, RoundService, TeamService, is_leader, is_member,
+    AnnouncementService, HackathonError, ProblemStatementService, RoundService, StageService, TeamService, is_leader, is_member,
     membership_of, missing_profile_fields, round_entry_for_details_form,
 )
 
@@ -342,6 +342,83 @@ def _round_payload(round_obj, entry, *, viewer_is_leader, user):
                 'can_submit': viewer_is_leader and round_entry_for_details_form(form, user) is not None,
             }
     return data
+
+
+class HackathonStagesView(APIView):
+    """GET /api/hackathons/{slug}/stages/ - the visible entries of the public timeline (no auth)."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        return DRFResponse(PublicStageSerializer(hackathon.stages.filter(is_visible=True), many=True).data)
+
+
+class StageListView(APIView):
+    """GET / POST (admin) /api/hackathons/{slug}/timeline/ - every timeline entry, hidden ones included."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def get(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        return DRFResponse(AdminStageSerializer(hackathon.stages.select_related('source_round'), many=True).data)
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        serializer = AdminStageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        stage = StageService.create(hackathon, request.user, **serializer.validated_data)
+        return DRFResponse(AdminStageSerializer(stage).data, status=status.HTTP_201_CREATED)
+
+
+class StageDetailView(APIView):
+    """PATCH / DELETE (admin) /api/hackathons/{slug}/timeline/{id}/"""
+    permission_classes = [IsAdminOrClubLead]
+
+    def _get(self, request, slug, pk):
+        hackathon = _get_hackathon(request, slug)
+        return hackathon, get_object_or_404(hackathon.stages.select_related('source_round'), pk=pk)
+
+    def patch(self, request, slug, pk):
+        _, stage = self._get(request, slug, pk)
+        serializer = AdminStageSerializer(stage, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        log_audit_event(actor=request.user, action='Updated Hackathon Stage', target_model='HackathonStage',
+                        target_id=stage.pk, details={'fields': list(serializer.validated_data)})
+        return DRFResponse(AdminStageSerializer(stage).data)
+
+    def delete(self, request, slug, pk):
+        _, stage = self._get(request, slug, pk)
+        title = stage.title
+        stage.delete()
+        log_audit_event(actor=request.user, action='Deleted Hackathon Stage', target_model='HackathonStage',
+                        target_id=pk, details={'title': title})
+        return DRFResponse({'deleted': True, 'id': pk})
+
+
+class StageReorderView(APIView):
+    """POST (admin) /api/hackathons/{slug}/timeline/reorder/ - {ids: [every stage id, in the new order]}."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        ids = request.data.get('ids')
+        if not isinstance(ids, list):
+            raise HackathonError('ids must be a list.', 'INVALID', field='ids')
+        StageService.reorder(hackathon, request.user, [_int(i, 'ids') for i in ids])
+        return DRFResponse(AdminStageSerializer(hackathon.stages.select_related('source_round'), many=True).data)
+
+
+class StageImportRoundsView(APIView):
+    """POST (admin) /api/hackathons/{slug}/timeline/import-rounds/ - add a stage for every round not yet in the timeline."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        created = StageService.import_rounds(hackathon, request.user)
+        return DRFResponse({
+            'created': created,
+            'stages': AdminStageSerializer(hackathon.stages.select_related('source_round'), many=True).data,
+        })
 
 
 class MyTeamView(APIView):

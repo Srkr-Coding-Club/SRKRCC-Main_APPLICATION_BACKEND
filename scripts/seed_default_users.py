@@ -65,6 +65,8 @@ DEFAULT_USERS = [
 ]
 
 def seed_users():
+    from apps.core.dev_guard import require_development
+    require_development('scripts/seed_default_users.py')
     print("=" * 60)
     print("SRKRCC Platform - Default Users & Credentials Seeder")
     print("=" * 60)

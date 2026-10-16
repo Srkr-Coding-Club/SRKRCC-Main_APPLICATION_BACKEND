@@ -1,6 +1,6 @@
 from django.db.models import Case, IntegerField, Value, When
 from rest_framework import generics, permissions
-from rest_framework.throttling import ScopedRateThrottle
+from apps.core.throttling import ScopedRateThrottle
 
 from apps.core.pagination import StandardPagination
 

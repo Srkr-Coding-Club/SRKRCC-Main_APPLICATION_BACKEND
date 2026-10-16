@@ -18,6 +18,11 @@ urlpatterns = [
     path('teams/<int:pk>/invite-by-email/', views.TeamEmailInviteView.as_view(), name='hackathon-team-email-invite'),
     path('teams/<int:pk>/<str:team_action>/', views.TeamActionView.as_view(), name='hackathon-team-action'),
 
+    path('<slug:slug>/stages/', views.HackathonStagesView.as_view(), name='hackathon-stages'),
+    path('<slug:slug>/timeline/', views.StageListView.as_view(), name='hackathon-timeline'),
+    path('<slug:slug>/timeline/reorder/', views.StageReorderView.as_view(), name='hackathon-timeline-reorder'),
+    path('<slug:slug>/timeline/import-rounds/', views.StageImportRoundsView.as_view(), name='hackathon-timeline-import'),
+    path('<slug:slug>/timeline/<int:pk>/', views.StageDetailView.as_view(), name='hackathon-timeline-detail'),
     path('<slug:slug>/my-team/', views.MyTeamView.as_view(), name='hackathon-my-team'),
     path('<slug:slug>/teams/', views.HackathonTeamsView.as_view(), name='hackathon-teams'),
     path('<slug:slug>/user-lookup/', views.UserLookupView.as_view(), name='hackathon-user-lookup'),
