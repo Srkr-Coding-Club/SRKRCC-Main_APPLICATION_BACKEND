@@ -7,11 +7,11 @@ services:
     environment:
       POSTGRES_DB: srkrcc_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d srkrcc_db"]
       interval: 5s
@@ -24,18 +24,18 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
-      DEBUG: "False"
-      SECRET_KEY: "prod-secret-srkr-coding-club-change-this-in-live-prod"
-      DATABASE_URL: "postgres://postgres:postgrespassword@db:5432/srkrcc_db"
+      DEBUG: "${DEBUG:-True}"
+      SECRET_KEY: "${SECRET_KEY:?set SECRET_KEY in .env}"
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD}@db:5432/srkrcc_db"
       ALLOWED_HOSTS: "localhost,127.0.0.1,backend"
       CORS_ALLOW_ALL_ORIGINS: "True"
       RUN_STARTUP_TASKS: "1"
       WEB_CONCURRENCY: "3"
       EMAIL_PROVIDER: "console"
       DJANGO_SUPERUSER_EMAIL: "admin@srkr.ac.in"
-      DJANGO_SUPERUSER_PASSWORD: "Admin@123"
+      DJANGO_SUPERUSER_PASSWORD: "${DJANGO_SUPERUSER_PASSWORD:?set DJANGO_SUPERUSER_PASSWORD in .env}"
       DJANGO_SUPERUSER_USERNAME: "admin"
     command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
     volumes:

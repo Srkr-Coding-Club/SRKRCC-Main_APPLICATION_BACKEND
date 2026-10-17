@@ -19,3 +19,12 @@ staticfiles/
 media/
 *.sqlite3
 sample_backups/
+docs/
+database.csv.bak
+.env.*
+*.env
+.pytest_cache/
+.mypy_cache/
+tests/
+*.md
+!README.md

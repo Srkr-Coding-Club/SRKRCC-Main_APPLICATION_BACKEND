@@ -12,6 +12,7 @@ from .serializers import (
     CustomTokenObtainPairSerializer,
 )
 from apps.core.permissions import IsAdminOrClubLead
+from apps.core.throttling import ScopedRateThrottle
 from apps.audit.utils import log_audit_event
 
 User = get_user_model()
@@ -21,6 +22,8 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     Custom login view returning access token, refresh token, and user profile data.
     """
     serializer_class = CustomTokenObtainPairSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -56,7 +59,7 @@ class UserListView(generics.ListCreateAPIView):
     Admin/club-lead member directory. Not for public consumption - returns
     every member's email, phone, roll number, branch, and social links.
     """
-    queryset = User.objects.all().order_by('-created_at')
+    queryset = User.objects.select_related('college').order_by('-created_at')
     serializer_class = UserSerializer
     permission_classes = [IsAdminOrClubLead]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -97,7 +100,7 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
     carries no such privilege risk, so it has no extra restriction beyond
     IsAdminOrClubLead.
     """
-    queryset = User.objects.all()
+    queryset = User.objects.select_related('college')
     serializer_class = UserRoleUpdateSerializer
     permission_classes = [IsAdminOrClubLead]
 
@@ -177,6 +180,8 @@ class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = [permissions.AllowAny]
     serializer_class = RegisterSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'register'
 
     def perform_create(self, serializer):
         user = serializer.save()

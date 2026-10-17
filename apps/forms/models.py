@@ -45,6 +45,7 @@ class ProfileField(models.TextChoices):
     PHONE_NUMBER = 'phone_number', 'Phone Number'
     BRANCH = 'branch', 'Branch'
     ROLL_NUMBER = 'roll_number', 'Roll Number'
+    COLLEGE = 'college', 'College'
     YEAR = 'year', 'Year'
     CLUB_ID = 'club_id', 'Club ID'
 

@@ -1,3 +1,5 @@
+import logging
+
 from rest_framework import status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -10,18 +12,9 @@ from apps.accounts.services.password_setup_service import (
 )
 
 
-def get_client_ip(request) -> str | None:
-    # This deployment sits behind exactly one trusted reverse proxy
-    # (SECURE_PROXY_SSL_HEADER in settings.py confirms it terminates TLS in
-    # front of Django). That proxy appends the real client IP as the LAST hop
-    # of X-Forwarded-For rather than replacing whatever the client already
-    # sent - so the first entry is attacker-controlled and picking it let
-    # anyone reset their own 20/hr/IP setup-link rate limit on every request
-    # by sending a fresh forged X-Forwarded-For value each time.
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        return x_forwarded_for.split(',')[-1].strip()
-    return request.META.get('REMOTE_ADDR')
+from apps.core.client_ip import get_client_ip  # noqa: F401  (shared, spoof-resistant definition)
+
+logger = logging.getLogger(__name__)
 
 
 class PasswordSetupRequestView(APIView):
@@ -104,5 +97,10 @@ class PasswordSetupConfirmView(APIView):
             return Response({"error": str(ex)}, status=status.HTTP_400_BAD_REQUEST)
         except ValidationError as ex:
             return Response({"error": ex.messages if hasattr(ex, 'messages') else str(ex)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as ex:
-            return Response({"error": f"Password confirmation failed: {str(ex)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            # Details go to the log, never to an anonymous caller.
+            logger.exception("Password setup confirmation failed unexpectedly")
+            return Response(
+                {"error": "We could not set your password right now. Please try again, or request a new link."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )

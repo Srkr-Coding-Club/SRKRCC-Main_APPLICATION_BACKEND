@@ -42,10 +42,6 @@ RUN SECRET_KEY=collectstatic-build-placeholder-not-used-at-runtime \
 
 EXPOSE 8000
 
-# entrypoint.sh: startup tasks only when RUN_STARTUP_TASKS=1 (Compose).
-# Then Gunicorn serves config.wsgi:application. Lambda Web Adapter forwards
-# Function URL HTTP to 0.0.0.0:8000. One worker is the Lambda default;
-# Compose overrides this CMD to three workers.
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "120"]

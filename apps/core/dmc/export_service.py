@@ -64,6 +64,20 @@ def _format_json_cell(cv: CanonicalValue | Any) -> Any:
     return {"state": cv.state, "value": cv.value, "display_value": cv.display_value}
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", chr(9), chr(13))
+
+
+def _safe_cell(value: str) -> str:
+    """Neutralise spreadsheet formula injection: Excel/Sheets run cells that start with = + - @.
+
+    User-controlled text (names, answers, team names) must never be interpreted as a formula, so a
+    leading apostrophe forces it to plain text. The "-" placeholder for not-applicable is left alone.
+    """
+    if value and value != "-" and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 # ---------------------------------------------------------------------------
 # CSV generator
 # ---------------------------------------------------------------------------
@@ -74,10 +88,10 @@ def _generate_csv(
 ) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow([c.label for c in columns])
+    writer.writerow([_safe_cell(c.label) for c in columns])
     keys = [c.key for c in columns]
     for record in records:
-        writer.writerow([_format_cell(record.get(k)) for k in keys])
+        writer.writerow([_safe_cell(_format_cell(record.get(k))) for k in keys])
     return buf.getvalue().encode("utf-8-sig")
 
 
@@ -99,11 +113,11 @@ def _generate_xlsx(
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("DMC Export")
     from openpyxl.styles import Font
-    header = [c.label for c in columns]
+    header = [_safe_cell(c.label) for c in columns]
     ws.append(header)
     keys = [c.key for c in columns]
     for record in records:
-        ws.append([_format_cell(record.get(k)) for k in keys])
+        ws.append([_safe_cell(_format_cell(record.get(k))) for k in keys])
     wb.save(buf)
     return buf.getvalue()
 

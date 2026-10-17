@@ -51,6 +51,9 @@ flowchart LR
 - **Two triggers exist today**:
   1. **Member import welcome email** — `MemberImportService.commit_import`
      (CSV/XLSX backup import), optional per import.
+  0. **Password setup link** — `PasswordSetupService.request_setup_link` sends it
+     directly. The API reply is always the same generic message (anti-enumeration), so a
+     provider failure shows up only as a `PASSWORD_SETUP_EMAIL_FAILED` log line.
   2. **Form submission confirmation** — `Form.confirmation_email_enabled` +
      `confirmation_email_template`, configured per-form in the
      [Form Builder's Automation section](dynamic-form-builder.md#automation-club-id--confirmation-email).
