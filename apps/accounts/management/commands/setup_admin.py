@@ -66,11 +66,16 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         email = options['email'].strip().lower()
-        password = self._resolve_password(options['password'])
         username = options['username'].strip()
         first_name = options['first_name'].strip()
         last_name = options['last_name'].strip()
         force_reset = options['reset_password']
+
+        # The password is only used when the admin is created or reset, so it is only checked
+        # then. An existing admin must not fail a redeploy over an unused environment value.
+        password = None
+        if force_reset or not User.objects.filter(email=email).exists():
+            password = self._resolve_password(options['password'])
 
         with transaction.atomic():
             user, created = User.objects.get_or_create(
@@ -92,6 +97,10 @@ class Command(BaseCommand):
             )
 
             if created:
+                # `password` is already set unless another process created the admin between
+                # the existence check above and get_or_create.
+                if password is None:
+                    password = self._resolve_password(options['password'])
                 user.set_password(password)
                 user.save()
                 self.stdout.write(

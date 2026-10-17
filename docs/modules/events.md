@@ -47,6 +47,19 @@ flowchart TD
     F --> G[Attend + admin marks attendance]
 ```
 
+## One-Click Registration
+When an admin creates or edits an event they choose how members register:
+
+- **Custom form**: link a form built in the Form Builder (as before).
+- **One-click**: tick which member details to collect (name and email are always included; phone, branch, roll number, college, year and Club ID are optional). No form to build.
+
+How it works (`apps/events/quick_registration.py`): saving an event with `quick_registration_fields` creates (or updates) a normal published form made only of profile-bound fields and links it as the event's `registration_form`. The server fills every answer from the signed-in member's own profile (`FormField.profile_field`), so responses, exports, confirmation emails, attendance badges and duplicate prevention all work unchanged.
+
+- The event's `capacity` becomes the form's `max_total_responses`, so registration closes by itself when the event is full. Renaming the event or changing its capacity keeps the form in step.
+- A form counts as one-click when every active field is profile-bound. Adding an ordinary question to it in the Form Builder turns it into a custom form. The event API reports this as `is_quick_registration` and `registration_profile_fields`.
+- Switching an event from a custom form to one-click creates a new form; the custom form and its responses are never modified.
+- On the public pages a signed-in member registers with one click (`QuickRegisterButton` in the frontend). A signed-out visitor is sent to login and back. A member whose profile lacks a chosen detail is told which one and linked to their profile. Registering needs a signed-in account.
+
 ## Key Features Used
 - [Dynamic Form Builder](../features/dynamic-form-builder.md)
 - [Feature Flags](../features/feature-flags.md) — module + date-based visibility

@@ -7,8 +7,8 @@ from .models import (
 
 @admin.register(Hackathon)
 class HackathonAdmin(admin.ModelAdmin):
-    list_display = ['title', 'is_flagship', 'theme', 'status', 'start_date', 'end_date']
-    list_filter = ['is_flagship', 'status', 'start_date']
+    list_display = ['title', 'theme', 'status', 'start_date', 'end_date']
+    list_filter = ['status', 'start_date']
 
 
 class TeamMemberInline(admin.TabularInline):

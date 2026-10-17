@@ -77,8 +77,7 @@ class Hackathon(TimeStampedModel):
     )
 
     def __str__(self):
-        flag_str = " (IconCoders Flagship)" if self.is_flagship else ""
-        return f"{self.title}{flag_str}"
+        return self.title
 
     @property
     def is_registration_open(self) -> bool:
