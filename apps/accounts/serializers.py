@@ -689,24 +689,15 @@ class RegisterSerializer(serializers.ModelSerializer):
         return canonical
 
     def validate(self, attrs):
-        # Password strength is checked here rather than in validate_password()
-        # because UserAttributeSimilarityValidator needs the rest of the payload:
-        # it is what rejects a password built out of the applicant's own email or
-        # name, and DRF runs per-field validators before those siblings exist.
+        # Password strength is checked here so every failure is reported under
+        # the 'password' key alongside the other field errors of this payload.
         from django.contrib.auth.password_validation import validate_password
         from django.core.exceptions import ValidationError as DjangoValidationError
 
         password = attrs.get('password')
         if password:
-            email = attrs.get('email', '')
-            candidate = User(
-                email=email,
-                username=email.split('@')[0],
-                first_name=attrs.get('first_name', ''),
-                last_name=attrs.get('last_name', ''),
-            )
             try:
-                validate_password(password, user=candidate)
+                validate_password(password)
             except DjangoValidationError as ex:
                 raise serializers.ValidationError({'password': list(ex.messages)})
 
