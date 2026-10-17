@@ -1,0 +1,168 @@
+name: Deploy Lambda
+
+# Deploy only after a commit lands on main. Pull requests never run this
+# workflow. Render and Vercel are not part of it.
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: lambda-deploy-main
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: 745999343357.dkr.ecr.ap-south-1.amazonaws.com
+  ECR_REPOSITORY: srkrcc-backend
+  IMAGE_TAG: ${{ github.sha }}
+  LAMBDA_FUNCTION_NAME: srkrcc-dev-backend
+  # Fixed on purpose. A repository variable must not be able to point this
+  # check at Render or any other host. /api/ping/ does not query the database.
+  LAMBDA_HEALTH_URL: https://bpta2b57zq225e7w7gsmr4mjom0lxqpx.lambda-url.ap-south-1.on.aws/api/ping/
+  SSM_SECRET_KEY_NAME: /srkrcc/dev/backend/secret_key
+  SSM_DATABASE_URL_NAME: /srkrcc/dev/backend/database_url
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the GitHub Actions deploy role
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$AWS_DEPLOY_ROLE_ARN" ]; then
+            echo "::error::Set the repository variable AWS_DEPLOY_ROLE_ARN to the IAM role GitHub Actions may assume."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Record the Lambda image currently in service
+        run: |
+          set -euo pipefail
+          previous="$(aws lambda get-function \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --region "$AWS_REGION" \
+            --query "Code.ImageUri" \
+            --output text)"
+          echo "PREVIOUS_IMAGE_URI=$previous" >> "$GITHUB_ENV"
+          echo "Current Lambda image: $previous"
+
+      - name: Build, push, and resolve the image digest
+        run: |
+          set -euo pipefail
+          image="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build --platform linux/amd64 --provenance=false -t "$image" .
+          docker push "$image" | tee "$RUNNER_TEMP/docker-push.txt"
+          pushed_digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' "$RUNNER_TEMP/docker-push.txt" | tail -1)"
+          ecr_digest="$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$IMAGE_TAG" \
+            --region "$AWS_REGION" \
+            --query "imageDetails[0].imageDigest" \
+            --output text)"
+          if ! printf '%s' "$ecr_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::ECR did not return a digest for the image built from $IMAGE_TAG."
+            exit 1
+          fi
+          if [ "$pushed_digest" != "$ecr_digest" ]; then
+            echo "::error::The digest registered in ECR does not match the image pushed from this commit."
+            exit 1
+          fi
+          local_digest="$(docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -F@ -v repo="$ECR_REGISTRY/$ECR_REPOSITORY" '$1 == repo { print $2; exit }')"
+          if [ -n "$local_digest" ] && [ "$local_digest" != "$ecr_digest" ]; then
+            echo "::error::The local image digest does not match the digest registered in ECR."
+            exit 1
+          fi
+          immutable="$ECR_REGISTRY/$ECR_REPOSITORY@$ecr_digest"
+          echo "IMMUTABLE_IMAGE=$immutable" >> "$GITHUB_ENV"
+          echo "Deploying immutable image $immutable"
+
+      - name: Apply database migrations once
+        run: |
+          set -euo pipefail
+          # Migrations must remain compatible with the Lambda image still in
+          # service. This step does not roll the database back on failure.
+          # Output stays inside the container so URLs and secrets are not logged.
+          if ! docker run --rm --entrypoint python \
+            -e AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY \
+            -e AWS_SESSION_TOKEN \
+            -e AWS_REGION \
+            -e AWS_DEFAULT_REGION="$AWS_REGION" \
+            -e SERVERLESS=1 \
+            -e DEBUG=False \
+            -e EMAIL_PROVIDER=console \
+            -e SSM_SECRET_KEY_NAME \
+            -e SSM_DATABASE_URL_NAME \
+            "$IMMUTABLE_IMAGE" \
+            manage.py migrate --noinput >/dev/null 2>&1; then
+            echo "::error::Database migration failed. Command output was discarded."
+            exit 1
+          fi
+
+      - name: Verify the database accepts the migrated schema
+        run: |
+          set -euo pipefail
+          # migrate --check connects and reports unapplied migrations. It does
+          # not change the schema. /api/ping/ is not this check.
+          if ! docker run --rm --entrypoint python \
+            -e AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY \
+            -e AWS_SESSION_TOKEN \
+            -e AWS_REGION \
+            -e AWS_DEFAULT_REGION="$AWS_REGION" \
+            -e SERVERLESS=1 \
+            -e DEBUG=False \
+            -e EMAIL_PROVIDER=console \
+            -e SSM_SECRET_KEY_NAME \
+            -e SSM_DATABASE_URL_NAME \
+            "$IMMUTABLE_IMAGE" \
+            manage.py migrate --check >/dev/null 2>&1; then
+            echo "::error::Database verification failed. The database was unreachable or migrations are still unapplied. Command output was discarded."
+            exit 1
+          fi
+
+      - name: Update the existing Lambda function
+        run: |
+          set -euo pipefail
+          aws lambda update-function-code \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --image-uri "$IMMUTABLE_IMAGE" \
+            --region "$AWS_REGION" \
+            --query "Code.ImageUri" \
+            --output text
+          aws lambda wait function-updated \
+            --function-name "$LAMBDA_FUNCTION_NAME" \
+            --region "$AWS_REGION"
+
+      - name: Check that the process is answering
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 "$LAMBDA_HEALTH_URL" || echo "000")"
+            if [ "$code" = "200" ]; then
+              echo "Process liveness check returned HTTP 200. This does not prove a database query succeeded."
+              exit 0
+            fi
+            echo "Attempt ${attempt} returned HTTP ${code}."
+            sleep 10
+          done
+          echo "::error::Process liveness check failed. The database was not rolled back."
+          echo "Previous Lambda image: ${PREVIOUS_IMAGE_URI}"
+          echo "Restore that image only after confirming it still works with the migrated schema. Do not run migrate backwards automatically."
+          exit 1
