@@ -77,8 +77,8 @@ We recommend **Neon.tech** for the database because its free tier **never suspen
    | `DEBUG` | `False` | Production secure mode |
    | `SECRET_KEY` | *(Click Generate or paste a 50+ char random string)* | Required |
    | `DATABASE_URL` | *(Paste Neon connection string from Step 1)* | PostgreSQL DB |
-   | `ALLOWED_HOSTS` | *(your custom API hostname, if any)* | `.onrender.com` is added automatically on Render; the app refuses to start with `DEBUG=False` and no hosts elsewhere |
-   | `FRONTEND_URL` | `https://your-frontend.example` | **Required.** Public frontend address used in email links; localhost is rejected |
+   | `ALLOWED_HOSTS` | *(your custom API hostname, if any)* | With `DEBUG=False` the app refuses to start unless a host is named here or in `PLATFORM_HOSTS` (hostnames your platform assigns, e.g. `.example-host.com`). On Render the legacy `RENDER` variable still adds `.onrender.com` automatically |
+   | `FRONTEND_URL` | `https://your-frontend.example` | **Strongly recommended.** Public frontend address used in email links. If unset it defaults to localhost, so password-setup, reset and invite emails would link to a local machine (`manage.py check` warns with `core.W005`) |
    | `CORS_ALLOWED_ORIGINS` | `https://your-frontend.example` | Exact frontend origin(s). `CORS_ALLOW_ALL_ORIGINS` is refused when `DEBUG=False` |
    | `CSRF_TRUSTED_ORIGINS` | `https://your-frontend.example` | Exact origin(s); no wildcards |
    | `DJANGO_SUPERUSER_EMAIL` | `admin@srkr.ac.in` | **Super Admin Email** |

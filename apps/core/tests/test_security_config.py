@@ -33,9 +33,21 @@ class ProductionSettingsTests(SimpleTestCase):
         with self.assertRaisesMessage(ImproperlyConfigured, 'ALLOWED_HOSTS'):
             resolve_security_settings({'FRONTEND_URL': 'https://srkrcc.in'}, debug=False)
 
-    def test_render_adds_its_hostname_suffix_without_a_wildcard_default(self):
-        resolved = resolve_security_settings({'FRONTEND_URL': 'https://srkrcc.in', 'RENDER': 'true'}, debug=False)
+    def test_platform_hosts_are_allowed_without_allowed_hosts(self):
+        resolved = resolve_security_settings({'PLATFORM_HOSTS': '.host.example, svc.host.example'}, debug=False)
+        self.assertIn('.host.example', resolved['ALLOWED_HOSTS'])
+        self.assertIn('svc.host.example', resolved['ALLOWED_HOSTS'])
+        self.assertNotIn('*', resolved['ALLOWED_HOSTS'])
+
+    def test_platform_hosts_are_added_to_allowed_hosts(self):
+        resolved = prod(PLATFORM_HOSTS='.host.example')
+        self.assertIn('api.srkrcc.in', resolved['ALLOWED_HOSTS'])
+        self.assertIn('.host.example', resolved['ALLOWED_HOSTS'])
+
+    def test_legacy_render_variables_still_work(self):
+        resolved = resolve_security_settings({'RENDER': 'true', 'RENDER_EXTERNAL_HOSTNAME': 'svc.onrender.com'}, debug=False)
         self.assertIn('.onrender.com', resolved['ALLOWED_HOSTS'])
+        self.assertIn('svc.onrender.com', resolved['ALLOWED_HOSTS'])
 
     def test_cors_and_csrf_use_only_listed_origins(self):
         resolved = prod()
@@ -55,15 +67,11 @@ class ProductionSettingsTests(SimpleTestCase):
         with self.assertRaisesMessage(ImproperlyConfigured, 'CORS_ALLOW_ALL_ORIGINS'):
             prod(CORS_ALLOW_ALL_ORIGINS='True')
 
-    def test_frontend_url_must_be_public(self):
+    def test_frontend_url_falls_back_to_localhost_when_unset(self):
         self.assertEqual(prod()['FRONTEND_URL'], 'https://srkrcc.in')
-        for bad in ({'FRONTEND_URL': 'http://localhost:3000'}, {'FRONTEND_URL': 'http://127.0.0.1:3000'}):
-            with self.assertRaisesMessage(ImproperlyConfigured, 'FRONTEND_URL'):
-                prod(**bad)
         env = dict(PROD)
         del env['FRONTEND_URL']
-        with self.assertRaisesMessage(ImproperlyConfigured, 'FRONTEND_URL'):
-            resolve_security_settings(env, debug=False)
+        self.assertEqual(resolve_security_settings(env, debug=False)['FRONTEND_URL'], 'http://localhost:3000')
 
 
 class DevelopmentSettingsTests(SimpleTestCase):
