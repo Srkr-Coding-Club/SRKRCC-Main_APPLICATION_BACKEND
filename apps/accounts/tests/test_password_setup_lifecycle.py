@@ -172,6 +172,25 @@ class PasswordSetupLifecycleTests(TestCase):
         )
         self.assertEqual(res_blocked.status_code, 429)
 
+    def test_failed_setup_email_is_logged_as_failure_not_sent(self):
+        user = User.objects.create(
+            username="unsent_user",
+            email="unsent_user@srkr.ac.in",
+            password_status=PasswordStatus.NEEDS_SETUP,
+        )
+        user.set_unusable_password()
+        user.save()
+
+        with patch(
+            "apps.core.services.email_service.EmailNotificationService.send_email", return_value=False,
+        ):
+            with self.assertLogs("apps.accounts.services.password_setup_service", level="INFO") as logs:
+                PasswordSetupService.request_setup_link("unsent_user@srkr.ac.in")
+
+        output = "\n".join(logs.output)
+        self.assertIn("PASSWORD_SETUP_EMAIL_FAILED", output)
+        self.assertNotIn("PASSWORD_SETUP_EMAIL_SENT", output)
+
     def test_token_creation_and_hash_storage(self):
         """
         Verifies that only SHA-256 hashes are stored in the database, never raw tokens.
