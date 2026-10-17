@@ -259,10 +259,10 @@ class RegistrationValidationTests(TestCase):
                 self.assertEqual(resp.status_code, 400, f'{label} should be rejected')
                 self.assertIn('password', resp.data)
 
-    def test_password_built_from_the_users_own_email_is_rejected(self):
+    def test_password_containing_the_users_own_name_is_accepted(self):
+        # The similarity-to-identity rule was removed; only the complexity rules apply.
         resp = self._post(email='ravikumar@srkrec.ac.in', password='Ravikumar1!')
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('password', resp.data)
+        self.assertEqual(resp.status_code, 201, resp.data)
 
     # --- Role -------------------------------------------------------------
 

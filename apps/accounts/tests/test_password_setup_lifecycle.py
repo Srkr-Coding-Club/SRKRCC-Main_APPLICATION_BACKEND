@@ -172,6 +172,82 @@ class PasswordSetupLifecycleTests(TestCase):
         )
         self.assertEqual(res_blocked.status_code, 429)
 
+    def _active_user(self, username="active_user"):
+        return User.objects.create_user(
+            username=username,
+            email=f"{username}@srkr.ac.in",
+            password="OldPassw0rd!x",
+            password_status=PasswordStatus.ACTIVE,
+        )
+
+    def _emailed_code(self):
+        from django.core import mail
+
+        self.assertEqual(len(mail.outbox), 1)
+        lines = mail.outbox[0].body.splitlines()
+        marker = next(i for i, line in enumerate(lines) if "enter this reset code" in line)
+        return lines[marker + 1].strip()
+
+    def test_active_user_forgot_password_full_flow(self):
+        """Forgot password: emailed code -> verify -> reset; code is single-use and old sessions die."""
+        from django.core import mail
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+
+        user = self._active_user()
+        old_refresh = RefreshToken.for_user(user)
+
+        res = self.client.post("/api/auth/setup-password/request/", {"email": user.email}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("Reset Your Password", mail.outbox[0].subject)
+        code = self._emailed_code()
+        self.assertIn(f"token={code}", mail.outbox[0].body)
+
+        verify = self.client.get(f"/api/auth/setup-password/verify/?token={code}")
+        self.assertEqual(verify.status_code, 200)
+        self.assertTrue(verify.json()["is_reset"])
+
+        confirm = self.client.post(
+            "/api/auth/setup-password/confirm/", {"token": code, "password": "BrandNewPass9!"}, format="json",
+        )
+        self.assertEqual(confirm.status_code, 200, confirm.content)
+        user.refresh_from_db()
+        self.assertTrue(user.check_password("BrandNewPass9!"))
+        self.assertFalse(user.check_password("OldPassw0rd!x"))
+
+        outstanding = OutstandingToken.objects.get(jti=old_refresh["jti"])
+        self.assertTrue(BlacklistedToken.objects.filter(token=outstanding).exists())
+
+        reuse = self.client.post(
+            "/api/auth/setup-password/confirm/", {"token": code, "password": "AnotherPass9!"}, format="json",
+        )
+        self.assertEqual(reuse.status_code, 400)
+
+    def test_forgot_password_code_expires(self):
+        user = self._active_user("expiring_user")
+        self.client.post("/api/auth/setup-password/request/", {"email": user.email}, format="json")
+        code = self._emailed_code()
+
+        PasswordSetupToken.objects.filter(user=user).update(expires_at=timezone.now() - timedelta(minutes=1))
+
+        res = self.client.post(
+            "/api/auth/setup-password/confirm/", {"token": code, "password": "BrandNewPass9!"}, format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        user.refresh_from_db()
+        self.assertTrue(user.check_password("OldPassw0rd!x"))
+
+    def test_deactivated_account_gets_no_reset_email(self):
+        from django.core import mail
+
+        user = self._active_user("deactivated_user")
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+
+        res = self.client.post("/api/auth/setup-password/request/", {"email": user.email}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+
     def test_failed_setup_email_is_logged_as_failure_not_sent(self):
         user = User.objects.create(
             username="unsent_user",

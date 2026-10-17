@@ -1,8 +1,13 @@
-.PHONY: setup dev run migrations migrate superuser seed-users admin-user shell check clean
+.PHONY: setup install dev run migrations migrate superuser seed-users admin-user shell check clean
 
 # Virtual environment python binary
 VENV = .venv
 UV = uv
+
+# Install or update dependencies from requirements.txt (creates the venv first if it is missing)
+install:
+	@test -d $(VENV) || $(UV) venv $(VENV) --link-mode copy
+	$(UV) pip install --link-mode copy -r requirements.txt
 
 setup:
 	@echo "Creating virtual environment with uv..."
