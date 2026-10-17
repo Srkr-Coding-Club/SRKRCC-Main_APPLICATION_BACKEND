@@ -34,7 +34,7 @@ services:
       - key: CSRF_TRUSTED_ORIGINS
         sync: false   # same origin(s) as above
       - key: FRONTEND_URL
-        sync: false   # public frontend URL used in email links; the backend will not start without it
+        sync: false   # public frontend URL used in email links; unset means links point at localhost (core.W005 warns)
       - key: DJANGO_SUPERUSER_EMAIL
         value: "admin@srkr.ac.in"
       - key: DJANGO_SUPERUSER_PASSWORD
