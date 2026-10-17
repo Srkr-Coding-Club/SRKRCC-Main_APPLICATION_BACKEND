@@ -13,7 +13,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000 \
     AWS_LWA_READINESS_CHECK_PATH=/api/ping/ \
     AWS_LWA_READINESS_CHECK_PORT=8000 \
-    WEB_CONCURRENCY=1
+    WEB_CONCURRENCY=1 \
+    HOME=/tmp \
+    TMPDIR=/tmp
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -48,4 +50,7 @@ EXPOSE 8000
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "120"]
+# Timeout 45s is below Lambda's 60s so a hung worker dies before the
+# invoke is cut. --worker-tmp-dir /tmp avoids Gunicorn writing HOME
+# (/home/sbx_user1051 is read-only on Lambda).
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "45", "--worker-tmp-dir", "/tmp"]
