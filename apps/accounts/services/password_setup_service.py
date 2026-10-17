@@ -143,12 +143,15 @@ class PasswordSetupService:
                 f"SRKR Coding Club Team"
             )
 
-            EmailNotificationService.send_email(
+            delivered = EmailNotificationService.send_email(
                 recipient_email=user.email,
                 subject=subject,
                 plain_content=body,
             )
-            logger.info("PASSWORD_SETUP_EMAIL_SENT: user_id=%s", str(user.id))
+            if delivered:
+                logger.info("PASSWORD_SETUP_EMAIL_SENT: user_id=%s", str(user.id))
+            else:
+                logger.error("PASSWORD_SETUP_EMAIL_FAILED: user_id=%s error=provider rejected the message", str(user.id))
         except Exception as ex:
             logger.error("PASSWORD_SETUP_EMAIL_FAILED: user_id=%s error=%s", str(user.id), str(ex))
 

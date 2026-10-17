@@ -111,6 +111,19 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
         self.assertEqual(detail.data["confirmation_email"]["status"], "SENT")
         self.assertEqual(detail.data["confirmation_email"]["recipient_email"], self.member.email)
 
+    def test_respondent_without_account_gets_fully_rendered_email(self):
+        body = {
+            "form": self.form.id,
+            "answers": [{"field": self.email_field.id, "value": "guest@example.com"}],
+            "idempotency_key": "confirm-test-guest",
+        }
+        resp = self.client.post("/api/forms/submissions/", body, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+        self.assertTrue(_wait_until(lambda: len(mail.outbox) == 1), "confirmation email was never sent")
+        self.assertIn("guest@example.com", mail.outbox[0].to)
+        self.assertIn("Hi guest,", mail.outbox[0].body)
+
     def test_admin_can_resend_confirmation_email(self):
         resp = self._submit()
         response_id = resp.data["id"]

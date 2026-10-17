@@ -1,11 +1,20 @@
+# AWS Lambda Web Adapter (multi-arch). Documented image:
+# public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0
+# Local Compose does not invoke the extension; Lambda's runtime does
+# and proxies HTTP to PORT.
+FROM public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 AS adapter
+
 FROM python:3.12-slim
 
-# Set environment variables
+COPY --from=adapter /lambda-adapter /opt/extensions/lambda-adapter
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=8000
+    PORT=8000 \
+    AWS_LWA_READINESS_CHECK_PATH=/api/ping/ \
+    AWS_LWA_READINESS_CHECK_PORT=8000 \
+    WEB_CONCURRENCY=1
 
-# Install system dependencies for psycopg2 and build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
@@ -14,22 +23,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
 COPY . .
 
-# Run as an unprivileged user; it only needs to write collected static files and uploaded media.
-RUN chmod +x entrypoint.sh build.sh || true &&     useradd --system --create-home --uid 10001 app &&     mkdir -p /app/media /app/staticfiles &&     chown -R app:app /app
-USER app
+RUN chmod +x entrypoint.sh
+
+# WhiteNoise assets in the image. Lambda skips entrypoint startup tasks.
+# Render still collectstatics in build.sh. Compose still collectstatics on boot.
+# Placeholder SECRET_KEY is build-only; DEBUG=False rejects the insecure default.
+RUN SECRET_KEY=collectstatic-build-placeholder-not-used-at-runtime \
+    DEBUG=False \
+    EMAIL_PROVIDER=console \
+    DATABASE_URL=sqlite:////tmp/build.db \
+    python manage.py collectstatic --noinput
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3     CMD curl -fsS http://localhost:8000/api/ping/ || exit 1
-
 ENTRYPOINT ["/app/entrypoint.sh"]
 
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "120"]

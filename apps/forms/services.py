@@ -128,7 +128,10 @@ class FormAutomationService:
         # action (the other caller of this method) needs the real outcome back
         # immediately rather than a job that's still PENDING when the response
         # is returned.
-        EmailNotificationService.process_email_job(job)
+        # The context is passed through because a respondent without an account has
+        # no user to rebuild it from, which would leave {{first_name}} and the
+        # portal links blank.
+        EmailNotificationService.process_email_job(job, recipient_contexts={recipient_email: context})
         return job
 
     @classmethod
