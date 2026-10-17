@@ -37,6 +37,42 @@ def database_conn_max_age() -> int:
     return 0 if _is_serverless() else 600
 
 
+# Bounded waits for Lambda only. Neon can take a few seconds to wake; these
+# values fail the request instead of blocking until Gunicorn's worker timeout.
+# connect_timeout is seconds (libpq). statement_timeout is milliseconds.
+POSTGRES_CONNECT_TIMEOUT_SECONDS = 10
+POSTGRES_STATEMENT_TIMEOUT_MS = 10000
+
+
+def apply_database_options(config: dict) -> dict:
+    """Return a dj-database-url dict with Lambda-safe Postgres timeouts.
+
+    Django's request-finished hook calls close_old_connections ->
+    close_if_unusable_or_obsolete. When errors_occurred is set, that path
+    runs PostgreSQL is_usable() -> SELECT 1 with no default query timeout,
+    which hung Gunicorn workers on a stale Neon socket. CONN_HEALTH_CHECKS
+    stays False so reuse-path health checks are not added. CONN_MAX_AGE is
+    unchanged by this function.
+    """
+    config = dict(config)
+    config['CONN_HEALTH_CHECKS'] = False
+    if not _is_serverless():
+        return config
+
+    engine = config.get('ENGINE') or ''
+    if 'postgresql' not in engine and 'postgres' not in engine:
+        return config
+
+    options = dict(config.get('OPTIONS') or {})
+    options.setdefault('connect_timeout', POSTGRES_CONNECT_TIMEOUT_SECONDS)
+    existing = (options.get('options') or '').strip()
+    if 'statement_timeout' not in existing:
+        extra = f'-c statement_timeout={POSTGRES_STATEMENT_TIMEOUT_MS}'
+        options['options'] = f'{existing} {extra}'.strip()
+    config['OPTIONS'] = options
+    return config
+
+
 def resolve_media_root() -> Path:
     # /tmp is writable on Lambda. This does not move existing files to S3;
     # backups and DMC exports still use local paths.
@@ -205,9 +241,12 @@ ASGI_APPLICATION = 'config.asgi.application'
 # Database Configuration: Uses local PostgreSQL by default.
 # DATABASE_URL still comes only from the environment (or the local default).
 DATABASES = {
-    'default': dj_database_url.config(
-        default=os.getenv('DATABASE_URL', 'postgres://postgres:postgres@localhost:5432/srkrcc_db'),
-        conn_max_age=database_conn_max_age(),
+    'default': apply_database_options(
+        dj_database_url.config(
+            default=os.getenv('DATABASE_URL', 'postgres://postgres:postgres@localhost:5432/srkrcc_db'),
+            conn_max_age=database_conn_max_age(),
+            conn_health_checks=False,
+        )
     )
 }
 
