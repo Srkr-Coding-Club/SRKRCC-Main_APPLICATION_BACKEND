@@ -33,8 +33,12 @@ RUN chmod +x entrypoint.sh
 
 # WhiteNoise assets in the image. Lambda skips entrypoint startup tasks.
 # Render still collectstatics in build.sh. Compose still collectstatics on boot.
-# Placeholder SECRET_KEY is build-only; DEBUG=False rejects the insecure default.
+# Placeholder values are build-only: with DEBUG=False, settings.py refuses the insecure
+# SECRET_KEY default and requires ALLOWED_HOSTS and a non-local FRONTEND_URL. Real values
+# come from the runtime environment.
 RUN SECRET_KEY=collectstatic-build-placeholder-not-used-at-runtime \
+    ALLOWED_HOSTS=build.invalid \
+    FRONTEND_URL=https://build.invalid \
     DEBUG=False \
     EMAIL_PROVIDER=console \
     DATABASE_URL=sqlite:////tmp/build.db \
