@@ -1,4 +1,4 @@
-from django.db.models import Count, Prefetch, Q
+from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch, Q, Value
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response as DRFResponse
-from rest_framework.throttling import ScopedRateThrottle
+from apps.core.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.audit.utils import log_audit_event
@@ -15,19 +15,21 @@ from apps.core.cache import PublicReadCacheControlMixin
 
 from .models import (
     EntryStatus, Hackathon, HackathonAnnouncement, HackathonStatus, InviteStatus,
-    ProblemStatement, Round, RoundEntry, Submission, Team, TeamInvite, TeamMember, TeamStatus,
+    ProblemStatement, Round, RoundEntry, Submission, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamStatus,
 )
 from .serializers import (
     AdminHackathonAnnouncementSerializer, AdminRoundEntrySerializer, AdminTeamSerializer,
     HackathonAnnouncementSerializer, HackathonSerializer, ProblemStatementSerializer,
-    RoundSerializer, SubmissionSerializer, TeamInviteSerializer, TeamSerializer,
+    AdminStageSerializer, PublicStageSerializer, RoundSerializer, SubmissionSerializer, TeamInviteSerializer, TeamSerializer,
 )
 from .services import (
-    AnnouncementService, HackathonError, ProblemStatementService, RoundService, TeamService, is_leader, is_member,
+    AnnouncementService, HackathonError, ProblemStatementService, RoundService, StageService, TeamService, is_leader, is_member,
     membership_of, missing_profile_fields, round_entry_for_details_form,
 )
 
 ACTIVE = (TeamStatus.FORMING, TeamStatus.REGISTERED)
+LOOKUP_MIN_QUERY_LENGTH = 3
+LOOKUP_MAX_RESULTS = 5
 
 
 def _visible_hackathons(user):
@@ -35,7 +37,7 @@ def _visible_hackathons(user):
     if _is_admin_or_club_lead(user):
         return qs
     now = timezone.now()
-    return qs.filter(Q(visible_from__isnull=True) | Q(visible_from__lte=now)).filter(
+    return qs.exclude(status=HackathonStatus.DRAFT).filter(Q(visible_from__isnull=True) | Q(visible_from__lte=now)).filter(
         Q(visible_until__isnull=True) | Q(visible_until__gt=now)
     )
 
@@ -107,6 +109,7 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
                 distinct=True,
             ),
             team_count=Count('teams', filter=Q(teams__status__in=ACTIVE), distinct=True),
+            registered_team_count=Count('teams', filter=Q(teams__status=TeamStatus.REGISTERED), distinct=True),
         ).order_by('-start_date')
 
         if _is_admin_or_club_lead(self.request.user):
@@ -115,11 +118,15 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
         # Public/anonymous viewers only see hackathons inside their visibility
         # window - see the matching comment in apps.events.views.EventViewSet.
         now = timezone.now()
-        return queryset.filter(
+        return queryset.exclude(status=HackathonStatus.DRAFT).filter(
             Q(visible_from__isnull=True) | Q(visible_from__lte=now)
         ).filter(
             Q(visible_until__isnull=True) | Q(visible_until__gt=now)
         )
+
+    def perform_create(self, serializer):
+        # New hackathons start private: nothing is public or open for teams until an admin publishes it.
+        serializer.save(status=HackathonStatus.DRAFT)
 
     def perform_update(self, serializer):
         before = {f: getattr(serializer.instance, f) for f in serializer.validated_data}
@@ -128,6 +135,8 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
             f: [str(before[f]), str(getattr(instance, f))]
             for f in serializer.validated_data if before[f] != getattr(instance, f)
         }
+        if 'min_team_size' in changed:
+            changed['teams_status_rechecked'] = TeamService.recompute_statuses(instance)
         if changed:
             log_audit_event(
                 actor=self.request.user, action="Updated Hackathon",
@@ -159,14 +168,37 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
         )
         return DRFResponse(self.get_serializer(self.get_object()).data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'], url_path='publish')
+    def publish(self, request, slug=None):
+        """POST /api/hackathons/{slug}/publish/ - takes a DRAFT live once its checklist passes."""
+        hackathon = self.get_object()
+        if hackathon.status != HackathonStatus.DRAFT:
+            raise HackathonError('Only a draft hackathon can be published.', 'NOT_A_DRAFT', status=409)
+        missing = []
+        if not hackathon.description.strip():
+            missing.append('Write the event description and rules.')
+        if not hackathon.allow_open_innovation and not hackathon.problem_statements.filter(is_active=True).exists():
+            missing.append('Add at least one problem statement, or allow open innovation.')
+        if hackathon.end_date <= timezone.now():
+            missing.append('The end date is already in the past.')
+        if missing:
+            raise HackathonError(
+                'Finish these before publishing: ' + ' '.join(missing), 'PUBLISH_CHECKLIST', items=missing,
+            )
+        return self._set(request, "Published Hackathon", status=HackathonStatus.LIVE)
+
     @action(detail=True, methods=['post'], url_path='close')
     def close(self, request, slug=None):
-        """POST /api/hackathons/{slug}/close/ - marks the hackathon CLOSED (stops registration)."""
+        """POST /api/hackathons/{slug}/close/ - marks a LIVE hackathon CLOSED (stops registration)."""
+        if self.get_object().status != HackathonStatus.LIVE:
+            raise HackathonError('Only a live hackathon can be closed.', 'NOT_LIVE', status=409)
         return self._set(request, "Closed Hackathon", status=HackathonStatus.CLOSED)
 
     @action(detail=True, methods=['post'], url_path='reopen')
     def reopen(self, request, slug=None):
         """POST /api/hackathons/{slug}/reopen/ - reverts a CLOSED hackathon back to LIVE."""
+        if self.get_object().status == HackathonStatus.DRAFT:
+            raise HackathonError('This hackathon is still a draft. Publish it instead.', 'IS_DRAFT', status=409)
         return self._set(request, "Reopened Hackathon", status=HackathonStatus.LIVE)
 
     @action(detail=True, methods=['post'], url_path='hide')
@@ -188,7 +220,8 @@ def _ps_queryset(hackathon):
     return hackathon.problem_statements.annotate(
         active_team_count=Count('teams', filter=Q(teams__status__in=ACTIVE), distinct=True),
         total_team_count=Count('teams', distinct=True),
-    )
+        # Explicit: Meta.ordering is dropped on aggregated querysets, which left the list unordered.
+    ).order_by('order', 'id')
 
 
 class ProblemStatementListView(APIView):
@@ -232,6 +265,19 @@ class ProblemStatementUploadView(APIView):
             raise HackathonError('The file is too large (max 1 MB).', 'CSV_TOO_LARGE', field='file')
         result = ProblemStatementService.import_csv(hackathon, request.user, upload.read())
         return DRFResponse(result, status=status.HTTP_201_CREATED if result['created'] else status.HTTP_200_OK)
+
+
+class ProblemStatementReorderView(APIView):
+    """POST (admin) /api/hackathons/{slug}/problem-statements/reorder/ - body {ids: [every statement id, in the new order]}."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        ids = request.data.get('ids')
+        if not isinstance(ids, list):
+            raise HackathonError('ids must be a list.', 'INVALID', field='ids')
+        ProblemStatementService.reorder(hackathon, request.user, [_int(i, 'ids') for i in ids])
+        return DRFResponse(ProblemStatementSerializer(_ps_queryset(hackathon), many=True).data)
 
 
 class ProblemStatementDetailView(APIView):
@@ -298,6 +344,83 @@ def _round_payload(round_obj, entry, *, viewer_is_leader, user):
     return data
 
 
+class HackathonStagesView(APIView):
+    """GET /api/hackathons/{slug}/stages/ - the visible entries of the public timeline (no auth)."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        return DRFResponse(PublicStageSerializer(hackathon.stages.filter(is_visible=True), many=True).data)
+
+
+class StageListView(APIView):
+    """GET / POST (admin) /api/hackathons/{slug}/timeline/ - every timeline entry, hidden ones included."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def get(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        return DRFResponse(AdminStageSerializer(hackathon.stages.select_related('source_round'), many=True).data)
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        serializer = AdminStageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        stage = StageService.create(hackathon, request.user, **serializer.validated_data)
+        return DRFResponse(AdminStageSerializer(stage).data, status=status.HTTP_201_CREATED)
+
+
+class StageDetailView(APIView):
+    """PATCH / DELETE (admin) /api/hackathons/{slug}/timeline/{id}/"""
+    permission_classes = [IsAdminOrClubLead]
+
+    def _get(self, request, slug, pk):
+        hackathon = _get_hackathon(request, slug)
+        return hackathon, get_object_or_404(hackathon.stages.select_related('source_round'), pk=pk)
+
+    def patch(self, request, slug, pk):
+        _, stage = self._get(request, slug, pk)
+        serializer = AdminStageSerializer(stage, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        log_audit_event(actor=request.user, action='Updated Hackathon Stage', target_model='HackathonStage',
+                        target_id=stage.pk, details={'fields': list(serializer.validated_data)})
+        return DRFResponse(AdminStageSerializer(stage).data)
+
+    def delete(self, request, slug, pk):
+        _, stage = self._get(request, slug, pk)
+        title = stage.title
+        stage.delete()
+        log_audit_event(actor=request.user, action='Deleted Hackathon Stage', target_model='HackathonStage',
+                        target_id=pk, details={'title': title})
+        return DRFResponse({'deleted': True, 'id': pk})
+
+
+class StageReorderView(APIView):
+    """POST (admin) /api/hackathons/{slug}/timeline/reorder/ - {ids: [every stage id, in the new order]}."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        ids = request.data.get('ids')
+        if not isinstance(ids, list):
+            raise HackathonError('ids must be a list.', 'INVALID', field='ids')
+        StageService.reorder(hackathon, request.user, [_int(i, 'ids') for i in ids])
+        return DRFResponse(AdminStageSerializer(hackathon.stages.select_related('source_round'), many=True).data)
+
+
+class StageImportRoundsView(APIView):
+    """POST (admin) /api/hackathons/{slug}/timeline/import-rounds/ - add a stage for every round not yet in the timeline."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        created = StageService.import_rounds(hackathon, request.user)
+        return DRFResponse({
+            'created': created,
+            'stages': AdminStageSerializer(hackathon.stages.select_related('source_round'), many=True).data,
+        })
+
+
 class MyTeamView(APIView):
     """GET /api/hackathons/{slug}/my-team/ - everything the participant dashboard needs."""
     permission_classes = [permissions.IsAuthenticated]
@@ -318,9 +441,7 @@ class MyTeamView(APIView):
             leader = team.leader_id == user.id
             for r in hackathon.rounds.select_related('details_form').all():
                 rounds.append(_round_payload(r, entries.get(r.id), viewer_is_leader=leader, user=user))
-        else:
-            for r in hackathon.rounds.all():
-                rounds.append(_round_payload(r, None, viewer_is_leader=False, user=user))
+        # Someone with no team has no business seeing round names and descriptions.
 
         return DRFResponse({
             'hackathon': HackathonSerializer(hackathon).data,
@@ -345,7 +466,8 @@ class HackathonTeamsView(APIView):
             raise PermissionDenied('Only admins can list all teams.')
         hackathon = _get_hackathon(request, slug)
         qs = _team_queryset().filter(hackathon=hackathon).prefetch_related(
-            Prefetch('memberships', queryset=TeamMember.objects.select_related('user')),
+            Prefetch('memberships', queryset=TeamMember.objects.select_related('user', 'user__college')),
+            Prefetch('email_invites', queryset=TeamEmailInvite.objects.all()),
             Prefetch('invites', queryset=TeamInvite.objects.select_related('invited_user', 'invited_by', 'hackathon', 'team')),
             Prefetch('round_entries', queryset=RoundEntry.objects.select_related('round')),
         )
@@ -394,6 +516,9 @@ class UserLookupView(APIView):
     - ?team_id=...: optional target team ID to check invite eligibility against.
     Returns only name/email/club ID plus whether the team can invite them;
     never phone, roll number or other private profile data. Throttled.
+
+    Only admins and the leader of the target team may search: this is a member
+    directory, so it is not offered to every signed-in account.
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [ScopedRateThrottle]
@@ -416,16 +541,15 @@ class UserLookupView(APIView):
             if membership is not None:
                 target_team = membership.team
 
+        is_admin = _is_admin_or_club_lead(request.user)
+        if not is_admin and not (target_team is not None and target_team.leader_id == request.user.id):
+            raise PermissionDenied('Only a team leader can search for teammates.')
+
         def _evaluate(u):
             if target_team is not None:
-                if target_team.leader_id != request.user.id and not _is_admin_or_club_lead(request.user):
-                    can_invite, reason = False, 'Only the team leader can invite.'
-                else:
-                    can_invite, reason = TeamService.invite_eligibility(target_team, u)
+                can_invite, reason = TeamService.invite_eligibility(target_team, u)
             else:
-                if not _is_admin_or_club_lead(request.user):
-                    can_invite, reason = False, 'Create a team first.'
-                elif TeamMember.objects.filter(hackathon=hackathon, user=u).exists():
+                if TeamMember.objects.filter(hackathon=hackathon, user=u).exists():
                     can_invite, reason = False, 'Already in another team for this hackathon.'
                 else:
                     can_invite, reason = True, ''
@@ -459,13 +583,20 @@ class UserLookupView(APIView):
             return DRFResponse(res)
 
         # Autocomplete search via ?q=
+        if q and len(q) < LOOKUP_MIN_QUERY_LENGTH:
+            return DRFResponse({
+                'found': False,
+                'can_invite': False,
+                'reason': f'Type at least {LOOKUP_MIN_QUERY_LENGTH} characters.',
+                'results': [],
+            })
         if q:
             users = User.objects.filter(
                 Q(email__icontains=q) |
                 Q(first_name__icontains=q) |
                 Q(last_name__icontains=q) |
                 Q(club_id__icontains=q)
-            ).distinct()[:8]
+            ).distinct()[:LOOKUP_MAX_RESULTS]
 
             results = [_evaluate(u) for u in users]
             top = dict(results[0]) if results else {
@@ -576,6 +707,25 @@ class TeamDetailView(APIView):
         return DRFResponse({'deleted': True, 'id': team_id})
 
 
+class TeamEmailInviteView(APIView):
+    """POST /api/hackathons/teams/{id}/invite-by-email/ {email} - leader. Throttled: it sends mail to arbitrary addresses."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'hackathon_email_invite'
+
+    def post(self, request, pk):
+        team = get_object_or_404(_team_queryset(), pk=pk)
+        if not (is_member(team, request.user) or _is_admin_or_club_lead(request.user)):
+            from django.http import Http404
+            raise Http404
+        invite = TeamService.invite_by_email(team, request.user, request.data.get('email', ''))
+        return DRFResponse(
+            {'invite': {'id': invite.id, 'email': invite.email, 'created_at': invite.created_at},
+             'team': TeamSerializer(_team_queryset().get(pk=team.pk)).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class TeamActionView(APIView):
     """
     POST /api/hackathons/teams/{id}/{action}/ where action is one of:
@@ -609,6 +759,9 @@ class TeamActionView(APIView):
         if team_action == 'cancel-invite':
             invite = get_object_or_404(team.invites, pk=_int(data.get('invite_id'), 'invite_id'))
             TeamService.cancel_invite(invite, user)
+        elif team_action == 'cancel-email-invite':
+            invite = get_object_or_404(team.email_invites, pk=_int(data.get('invite_id'), 'invite_id'))
+            TeamService.cancel_email_invite(invite, user)
         elif team_action == 'remove-member':
             TeamService.remove_member(team, user, _int(data.get('user_id'), 'user_id'))
         elif team_action == 'transfer-leadership':
@@ -673,10 +826,7 @@ class RoundDetailView(APIView):
         hackathon, round_obj = self._get(request, slug, pk)
         if hackathon.rounds.filter(order__gt=round_obj.order).exists():
             raise HackathonError('Delete later rounds first, since they depend on this round\'s shortlist.', 'ROUND_HAS_LATER')
-        name = round_obj.name
-        round_obj.delete()
-        log_audit_event(actor=request.user, action="Deleted Hackathon Round", target_model="HackathonRound",
-                        target_id=pk, details={"hackathon": slug, "round": name})
+        RoundService.delete_round(round_obj, request.user)
         return DRFResponse({'deleted': True, 'id': pk})
 
 
@@ -687,7 +837,14 @@ class RoundEntriesView(APIView):
     def get(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
         round_obj = get_object_or_404(hackathon.rounds, pk=pk)
-        qs = round_obj.entries.select_related('team__leader', 'team__problem_statement', 'decided_by')
+        next_round = hackathon.rounds.filter(order__gt=round_obj.order).order_by('order').first()
+        promoted = (
+            Exists(RoundEntry.objects.filter(round_id=next_round.id, team_id=OuterRef('team_id')))
+            if next_round else Value(False, output_field=BooleanField())
+        )
+        qs = round_obj.entries.select_related('team__leader', 'team__problem_statement', 'decided_by').annotate(
+            member_total=Count('team__memberships', distinct=True), promoted_total=promoted,
+        )
         if request.query_params.get('status'):
             qs = qs.filter(status=request.query_params['status'])
         if request.query_params.get('search'):
@@ -719,11 +876,14 @@ class RoundActionView(APIView):
             result['updated'] = RoundService.decide(
                 round_obj, request.user, team_ids, data.get('status', ''),
                 feedback=data.get('feedback'), admin_notes=data.get('admin_notes'),
+                confirm_published=bool(data.get('confirm_published')),
             )
         elif round_action == 'publish':
             RoundService.publish_results(
                 round_obj, request.user, announce=bool(data.get('announce')), message=data.get('message', ''),
                 email=bool(data.get('email')),
+                announce_rejected=bool(data.get('announce_rejected')),
+                rejected_message=data.get('rejected_message', ''),
             )
         elif round_action == 'unpublish':
             RoundService.unpublish_results(round_obj, request.user)
@@ -766,6 +926,9 @@ class AnnouncementListView(APIView):
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
+        # No scheduler runs here, so scheduled emails go out the first time the
+        # hackathon's announcements are read after their publish time.
+        AnnouncementService.send_due_emails(hackathon)
         if request.query_params.get('all') == 'true' and _is_admin_or_club_lead(request.user):
             qs = hackathon.announcements.select_related('round', 'created_by').prefetch_related('target_teams')
             return DRFResponse(AdminHackathonAnnouncementSerializer(qs, many=True).data)
@@ -840,6 +1003,15 @@ class AnnouncementNotifyView(APIView):
 # Stats (admin)
 # ---------------------------------------------------------------------------
 
+class FormingTeamsReminderView(APIView):
+    """POST (admin) /api/hackathons/{slug}/remind-forming/ - nudge leaders of teams below the minimum size."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        return DRFResponse({'reminded': TeamService.remind_forming_teams(hackathon, request.user)})
+
+
 class HackathonStatsView(APIView):
     """GET (admin) /api/hackathons/{slug}/stats/"""
     permission_classes = [IsAdminOrClubLead]
@@ -868,6 +1040,15 @@ class HackathonStatsView(APIView):
             'problem_statements': per_ps,
             'open_innovation_teams': hackathon.teams.filter(is_open_innovation=True, status__in=ACTIVE).count(),
             'rounds': rounds,
+            'forming_teams': [
+                {
+                    'id': team.id, 'name': team.name, 'leader_email': team.leader.email if team.leader else None,
+                    'members': team.member_total, 'needed': max(hackathon.min_team_size - team.member_total, 1),
+                }
+                for team in TeamService.forming_teams(hackathon)[:50]
+            ],
+            'min_team_size': hackathon.min_team_size,
+            'registration_closes_at': hackathon.registration_closes_at,
             'is_registration_open': hackathon.is_registration_open,
         })
 

@@ -1,8 +1,11 @@
+import logging
 import re
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone
 from django.conf import settings
 from apps.core.models import EmailTemplate, EmailJob, EmailDelivery, DeliveryStatus, EmailJobStatus
+
+logger = logging.getLogger(__name__)
 
 PARAM_PATTERN = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 
@@ -117,7 +120,7 @@ class EmailNotificationService:
             msg.send(fail_silently=False)
             return True
         except Exception as e:
-            print(f"[Email Notification Error] Failed sending to {recipient_email}: {e}")
+            logger.exception("Failed sending notification email to %s", recipient_email)
             return False
 
     @classmethod
@@ -143,7 +146,7 @@ class EmailNotificationService:
             msg.send(fail_silently=False)
             return True
         except Exception as e:
-            print(f"[Email Notification Error] Failed sending direct email to {recipient_email}: {e}")
+            logger.exception("Failed sending direct email to %s", recipient_email)
             return False
 
     @classmethod

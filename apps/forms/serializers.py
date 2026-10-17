@@ -60,6 +60,7 @@ PROFILE_FIELD_GETTERS = {
     'phone_number': lambda u: u.phone_number,
     'branch': lambda u: u.branch,
     'roll_number': lambda u: u.roll_number,
+    'college': lambda u: u.college.name if u.college_id else (u.other_college_name or None),
     'year': lambda u: u.year,
     'club_id': lambda u: u.club_id,
 }

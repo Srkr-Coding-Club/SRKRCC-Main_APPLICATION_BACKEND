@@ -4,6 +4,9 @@ set -e
 echo "--> Applying database migrations..."
 python manage.py migrate --noinput
 
+echo "--> Ensuring cache table (shared rate-limit counters)..."
+python manage.py createcachetable
+
 echo "--> Collecting static files..."
 python manage.py collectstatic --noinput
 

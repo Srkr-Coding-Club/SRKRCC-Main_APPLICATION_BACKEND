@@ -90,10 +90,10 @@ class HackathonsApiTests(TestCase):
 
     # --- Lifecycle: close / reopen ------------------------------------------
 
-    def test_new_hackathon_defaults_to_live(self):
+    def test_new_hackathon_starts_as_a_private_draft(self):
         self.client.force_authenticate(self.admin)
         resp = self.client.post('/api/hackathons/', self._payload(), format='json')
-        self.assertEqual(resp.data['status'], 'LIVE')
+        self.assertEqual(resp.data['status'], 'DRAFT')
 
     def test_admin_can_close_and_reopen_hackathon(self):
         hackathon = Hackathon.objects.create(

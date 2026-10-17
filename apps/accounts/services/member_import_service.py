@@ -1,3 +1,4 @@
+import logging
 import csv
 import io
 try:
@@ -13,6 +14,8 @@ from apps.accounts.services.user_account_service import UserAccountService, Club
 from apps.accounts.services.club_id_service import ClubIDService, InvalidClubIdError
 from apps.core.models import EmailTemplate
 from apps.core.services.email_service import EmailNotificationService, MemberEmailContext
+
+logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_ALLOWED_ROWS = 10000
@@ -355,7 +358,7 @@ class MemberImportService:
                 )
                 EmailNotificationService.process_email_job(email_job)
             except Exception as e:
-                print(f"[Email Batch Trigger Error]: {e}")
+                logger.exception("Welcome email batch could not be triggered")
 
         return {
             "success": True,

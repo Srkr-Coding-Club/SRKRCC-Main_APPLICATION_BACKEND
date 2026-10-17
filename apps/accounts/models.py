@@ -73,6 +73,19 @@ class User(AbstractUser, TimeStampedModel):
     # on; blank='' is not, so callers that don't have a value must pass None
     # (apps/accounts/services/user_account_service.py already does this).
     roll_number = models.CharField(max_length=50, blank=True, null=True, unique=True, db_index=True)
+    college = models.ForeignKey(
+        'colleges.College',
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='students',
+    )
+    other_college_name = models.CharField(
+        max_length=150,
+        blank=True,
+        default='',
+        help_text="Typed by the member when their college is not in the catalogue; empty whenever `college` is set.",
+    )
     branch = models.CharField(max_length=100, blank=True, null=True)
     year = models.IntegerField(blank=True, null=True)
     phone_number = models.CharField(max_length=20, blank=True, null=True)

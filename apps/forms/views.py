@@ -1,3 +1,4 @@
+import logging
 from collections import Counter, defaultdict
 
 from rest_framework import viewsets, permissions, status
@@ -36,6 +37,8 @@ from apps.core.idempotency import (
 from apps.core.dmc.adapters.forms import FormIndividualAdapter
 from apps.core.dmc.contracts import QueryRequest
 from apps.core.dmc.export_service import serialize_records
+
+logger = logging.getLogger(__name__)
 
 
 RESPONSE_EXPORT_FORMATS = ('csv', 'xlsx', 'json')
@@ -1040,7 +1043,7 @@ class ResponseViewSet(viewsets.ModelViewSet):
         # Public form submission is anonymous-writable; scope-limit it beyond the
         # global anon rate so a form can't be flooded.
         if self.action == 'create':
-            from rest_framework.throttling import ScopedRateThrottle
+            from apps.core.throttling import ScopedRateThrottle
             self.throttle_scope = 'form_submit'
             return [ScopedRateThrottle()]
         return super().get_throttles()
