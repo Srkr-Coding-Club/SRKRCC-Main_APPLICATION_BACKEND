@@ -10,7 +10,6 @@ User = get_user_model()
 from apps.colleges.models import College, get_default_college
 from apps.colleges.serializers import CollegeSerializer
 from apps.accounts.validators import (
-    ALLOWED_EMAIL_DOMAINS,
     OTHER_COLLEGE_NAME_MAX_LENGTH,
     OTHER_COLLEGE_NAME_MIN_LENGTH,
     OTHER_COLLEGE_NAME_REGEX,
@@ -285,9 +284,11 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
     registered events/forms, streak count, and earned badges.
     """
     streak = serializers.SerializerMethodField()
-    points = serializers.SerializerMethodField()
+    problems_solved = serializers.SerializerMethodField()
     events_count = serializers.SerializerMethodField()
-    projects_count = serializers.SerializerMethodField()
+    events_registered_count = serializers.SerializerMethodField()
+    events_attended_count = serializers.SerializerMethodField()
+    hackathon_teams_count = serializers.SerializerMethodField()
     registered_events = serializers.SerializerMethodField()
     badges = serializers.SerializerMethodField()
     referred_by_display = serializers.SerializerMethodField()
@@ -310,7 +311,8 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'first_name', 'last_name', 
             'role', 'club_id', 'membership_status', 'roll_number', 'college', 'college_id', 'other_college_name', 'branch', 'year', 'phone_number',
             'github_profile', 'linkedin_profile', 'registered_at', 'referred_by_raw', 'referred_by_display', 'created_at',
-            'streak', 'points', 'events_count', 'projects_count',
+            'streak', 'problems_solved', 'events_count', 'events_registered_count',
+            'events_attended_count', 'hackathon_teams_count',
             'registered_events', 'badges'
         ]
         # `email` is the account's identity (USERNAME_FIELD, login identifier,
@@ -413,32 +415,35 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
         except Exception:
             return 0
 
-    def get_points(self, obj):
-        points = 0
-        try:
-            # 50 points per correct problem solved
-            points += obj.codequest_submissions.filter(is_correct=True).count() * 50
-        except Exception:
-            pass
-        try:
-            from apps.forms.models import Response
-            # 25 points per form/event registration
-            points += Response.objects.filter(user=obj, is_test_submission=False).count() * 25
-        except Exception:
-            pass
-        return max(points, 50)  # Baseline onboarding points
+    def get_problems_solved(self, obj):
+        """Distinct CodeQuest problems solved (several correct submissions of one problem count once)."""
+        from apps.codequest.models import Submission
+        return Submission.objects.filter(user=obj, is_correct=True).values('problem_id').distinct().count()
+
+    def get_events_registered_count(self, obj):
+        """Distinct events the member registered for. `events_count` counts every form response instead."""
+        from apps.events.models import Event
+        return Event.objects.filter(
+            registration_form__responses__user=obj,
+            registration_form__responses__is_test_submission=False,
+        ).distinct().count()
+
+    def get_events_attended_count(self, obj):
+        """Distinct events the member was checked in to by a QR attendance scan."""
+        from apps.attendance.models import AttendanceRecord
+        return AttendanceRecord.objects.filter(
+            badge__response__user=obj, badge__response__is_test_submission=False,
+        ).values('badge__response__form_id').distinct().count()
+
+    def get_hackathon_teams_count(self, obj):
+        """Hackathon teams the member belongs to: the same teams the profile's hackathon panel lists."""
+        from apps.hackathons.models import Team
+        return Team.objects.filter(memberships__user=obj).distinct().count()
 
     def get_events_count(self, obj):
         try:
             from apps.forms.models import Response
             return Response.objects.filter(user=obj, is_test_submission=False).count()
-        except Exception:
-            return 0
-
-    def get_projects_count(self, obj):
-        try:
-            from apps.hackathons.models import Team
-            return Team.objects.filter(models.Q(leader=obj) | models.Q(members=obj)).distinct().count()
         except Exception:
             return 0
 
@@ -591,10 +596,6 @@ class RegisterSerializer(serializers.ModelSerializer):
         email = normalize_email(value)
         if not EMAIL_REGEX.match(email):
             raise serializers.ValidationError("Enter a valid email address, for example you@example.com.")
-        if not self._is_admin_caller() and email.rsplit('@', 1)[-1] not in ALLOWED_EMAIL_DOMAINS:
-            raise serializers.ValidationError(
-                "Registration is open to @gmail.com or @srkrec.ac.in email addresses only."
-            )
         if User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError(
                 "An account with this email already exists. Sign in instead, or use "

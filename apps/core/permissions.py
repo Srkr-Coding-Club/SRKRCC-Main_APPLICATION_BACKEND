@@ -20,6 +20,18 @@ class IsAdminOrClubLead(permissions.BasePermission):
         return _is_admin_or_club_lead(request.user)
 
 
+def _is_admin(user) -> bool:
+    if not (user and user.is_authenticated):
+        return False
+    return bool(user.is_staff or user.is_superuser or getattr(user, 'role', None) == 'ADMIN')
+
+
+class IsAdmin(permissions.BasePermission):
+    """Admins only (superuser, staff or the ADMIN role). Club leads are deliberately excluded."""
+    def has_permission(self, request, view):
+        return _is_admin(request.user)
+
+
 class IsClubMember(permissions.BasePermission):
     """
     Allows access to all authenticated club members.

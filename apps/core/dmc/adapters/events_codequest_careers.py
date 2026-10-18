@@ -10,8 +10,13 @@ from typing import Any, Generator
 from django.db.models import Q
 
 from apps.core.dmc.adapters.base import BaseDatasetAdapter
-from apps.core.dmc.contracts import CanonicalValue, ColumnDefinition, FilterDefinition, FilterOption, QueryRequest, QueryResult
-from apps.events.models import Event
+from apps.core.dmc.contracts import CanonicalValue, ColumnDefinition, FilterClause, FilterDefinition, FilterOption, QueryRequest, QueryResult
+from django.utils import timezone
+
+from apps.core.dmc.filter_engine import (
+    Spec, apply_queryset, choices, distinct_values, person_specs, specs_by_key, to_definitions,
+)
+from apps.events.models import Event, EventStatus
 from apps.forms.models import Response
 from apps.codequest.models import Submission as CQSubmission, Difficulty as CQDifficulty
 from apps.career.models import JobListing, JobType
@@ -33,11 +38,50 @@ EVENT_COLS: list[ColumnDefinition] = [
 ]
 
 
+LIVE_LABELS = {"LIVE": "Open (Live)"}
+
+EVENT_STATUS_COLUMN = ColumnDefinition(
+    key="event_status", label="Event Status", type="badge", category="common", sortable=False, filterable=True,
+    visible_by_default=True, renderer="badge", source="events.Event.status",
+    description="Live (open for registration) or Closed.",
+)
+
+
+def _on_event(qs, q):
+    """Apply a condition on the Event behind each registration."""
+    form_ids = Event.objects.exclude(registration_form=None).filter(q).values("registration_form_id")
+    return qs.filter(form_id__in=form_ids)
+
+
+def _event_timing(op, value):
+    now = timezone.now()
+    return Q(start_time__gt=now) if value == "upcoming" else Q(start_time__lte=now)
+
+
+def _event_options():
+    return [FilterOption(t, str(pk)) for pk, t in Event.objects.exclude(registration_form=None).order_by("title").values_list("pk", "title")]
+
+
+EVENT_SPECS = specs_by_key(
+    Spec("event_title", "Event", "select", ("pk",), value_type="int", options=_event_options, wrap=_on_event),
+    Spec("event_status", "Event Status", "select", ("status",), options=lambda: choices(EventStatus, LIVE_LABELS), wrap=_on_event),
+    Spec("event_category", "Event Category", "select", ("category",), options=lambda: distinct_values(Event.objects.all(), "category"), wrap=_on_event),
+    Spec("event_timing", "Upcoming / Past", "select", options=[FilterOption("Upcoming", "upcoming"), FilterOption("Past", "past")],
+         operators=("eq",), custom=_event_timing, wrap=_on_event),
+    Spec("venue", "Venue", "text", ("venue",), wrap=_on_event),
+    Spec("event_date", "Event Date", "date", ("start_time",), wrap=_on_event),
+    *person_specs("user__"),
+    Spec("submitted_at", "Registered At", "date", ("submitted_at",)),
+)
+
+
 class EventRegistrationsAdapter(BaseDatasetAdapter):
     """1 row = 1 event registration response."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(EVENT_COLS), []
+        columns = list(EVENT_COLS)
+        columns.insert(2, EVENT_STATUS_COLUMN)
+        return columns, to_definitions(EVENT_SPECS)
 
     def _base_qs(self):
         event_form_ids = Event.objects.exclude(registration_form=None).values_list("registration_form_id", flat=True)
@@ -46,50 +90,11 @@ class EventRegistrationsAdapter(BaseDatasetAdapter):
             .select_related("user", "form")
         )
 
+    def filter_specs(self):
+        return EVENT_SPECS
+
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "event_title":
-                if op == "contains": form_ids = Event.objects.filter(title__icontains=str(val)).values_list("registration_form_id", flat=True)
-                elif op == "starts_with": form_ids = Event.objects.filter(title__istartswith=str(val)).values_list("registration_form_id", flat=True)
-                elif op == "eq": form_ids = Event.objects.filter(title__iexact=str(val)).values_list("registration_form_id", flat=True)
-                elif op == "neq": form_ids = Event.objects.exclude(title__iexact=str(val)).values_list("registration_form_id", flat=True)
-                else: form_ids = Event.objects.filter(title__icontains=str(val)).values_list("registration_form_id", flat=True)
-                qs = qs.filter(form_id__in=form_ids)
-            elif field == "venue":
-                if op == "contains": form_ids = Event.objects.filter(venue__icontains=str(val)).values_list("registration_form_id", flat=True)
-                elif op == "starts_with": form_ids = Event.objects.filter(venue__istartswith=str(val)).values_list("registration_form_id", flat=True)
-                elif op == "eq": form_ids = Event.objects.filter(venue__iexact=str(val)).values_list("registration_form_id", flat=True)
-                elif op == "neq": form_ids = Event.objects.exclude(venue__iexact=str(val)).values_list("registration_form_id", flat=True)
-                elif op == "empty": form_ids = Event.objects.filter(Q(venue__isnull=True) | Q(venue="")).values_list("registration_form_id", flat=True)
-                elif op == "not_empty": form_ids = Event.objects.exclude(Q(venue__isnull=True) | Q(venue="")).values_list("registration_form_id", flat=True)
-                else: form_ids = Event.objects.filter(venue__icontains=str(val)).values_list("registration_form_id", flat=True)
-                qs = qs.filter(form_id__in=form_ids)
-            elif field == "event_date":
-                if op == "gte": form_ids = Event.objects.filter(start_time__gte=val).values_list("registration_form_id", flat=True)
-                elif op == "lte": form_ids = Event.objects.filter(start_time__lte=val).values_list("registration_form_id", flat=True)
-                elif op == "eq": form_ids = Event.objects.filter(start_time__date=val).values_list("registration_form_id", flat=True)
-                else: form_ids = Event.objects.filter(start_time__gte=val).values_list("registration_form_id", flat=True)
-                qs = qs.filter(form_id__in=form_ids)
-            elif field == "name":
-                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
-                elif op == "starts_with": qs = qs.filter(Q(user__first_name__istartswith=str(val)) | Q(user__last_name__istartswith=str(val)))
-                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
-            elif field == "email":
-                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
-                elif op == "starts_with": qs = qs.filter(user__email__istartswith=str(val))
-                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
-            elif field == "roll_number":
-                if op == "contains": qs = qs.filter(user__roll_number__icontains=str(val))
-                elif op == "starts_with": qs = qs.filter(user__roll_number__istartswith=str(val))
-                elif op == "eq": qs = qs.filter(user__roll_number__iexact=str(val))
-            elif field == "submitted_at":
-                if op == "gte": qs = qs.filter(submitted_at__gte=val)
-                elif op == "lte": qs = qs.filter(submitted_at__lte=val)
-                elif op == "eq": qs = qs.filter(submitted_at__date=val)
-        return qs
+        return apply_queryset(qs, filters, EVENT_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = self._base_qs()
@@ -156,6 +161,7 @@ class EventRegistrationsAdapter(BaseDatasetAdapter):
         return {
             "id":           self._val(str(r.pk),                                                           "number",   "forms.Response.id"),
             "event_title":  self._val(event.title if event else None,                                      "text",     "events.Event.title"),
+            "event_status": self._val(event.get_status_display() if event else None,                       "badge",    "events.Event.status"),
             "name":         self._val(name,                                                                "text",     "accounts.User.first_name+last_name"),
             "email":        self._val(u.email if u else None,                                              "email",    "accounts.User.email"),
             "roll_number":  self._val(u.roll_number if u else None,                                        "text",     "accounts.User.roll_number"),
@@ -182,40 +188,26 @@ CQ_COLS: list[ColumnDefinition] = [
 ]
 
 
-CQ_FILTERS: list[FilterDefinition] = [
-    FilterDefinition(key="is_correct", label="Passed", type="boolean", operators=["eq"]),
-    FilterDefinition(key="difficulty", label="Difficulty", type="select", operators=["eq"],
-                      options=[FilterOption(label, value) for value, label in CQDifficulty.choices]),
-]
+CQ_SPECS = specs_by_key(
+    *person_specs("user__")[:2],
+    Spec("problem_title", "Problem", "text", ("problem__title",)),
+    Spec("difficulty", "Difficulty", "select", ("problem__difficulty",), options=lambda: choices(CQDifficulty)),
+    Spec("language", "Language", "select", ("language",), options=lambda: distinct_values(CQSubmission.objects.all(), "language")),
+    Spec("is_correct", "Passed", "boolean", ("is_correct",)),
+    Spec("created_at", "Submitted At", "date", ("created_at",)),
+)
 
 
 class CodequestSubmissionsAdapter(BaseDatasetAdapter):
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(CQ_COLS), list(CQ_FILTERS)
+        return list(CQ_COLS), to_definitions(CQ_SPECS)
+
+    def filter_specs(self):
+        return CQ_SPECS
 
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "is_correct":
-                qs = qs.filter(is_correct=(str(val).lower() in ("true", "1", "yes")))
-            elif field == "difficulty":
-                qs = qs.filter(problem__difficulty=f.value)
-            elif field == "language":
-                if op == "eq": qs = qs.filter(language__iexact=str(val))
-                elif op == "contains": qs = qs.filter(language__icontains=str(val))
-            elif field == "problem_title":
-                if op == "contains": qs = qs.filter(problem__title__icontains=str(val))
-                elif op == "eq": qs = qs.filter(problem__title__iexact=str(val))
-            elif field == "name":
-                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
-                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
-            elif field == "email":
-                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
-                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
-        return qs
+        return apply_queryset(qs, filters, CQ_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = CQSubmission.objects.select_related("user", "problem")
@@ -292,43 +284,76 @@ CAREER_JOB_COLS: list[ColumnDefinition] = [
 ]
 
 
-CAREER_FILTERS: list[FilterDefinition] = [
-    FilterDefinition(key="job_type", label="Type", type="select", operators=["eq"],
-                      options=[FilterOption(label, value) for value, label in JobType.choices]),
-]
+JOB_STATUS_COLUMN = ColumnDefinition(
+    key="job_status", label="Job Status", type="badge", category="career", sortable=False, filterable=True,
+    visible_by_default=True, renderer="badge", source="career.JobListing.deadline",
+    description="Open until the application deadline, then Expired.",
+)
+JOB_STATUS_OPTIONS = [FilterOption("Open", "open"), FilterOption("Expired", "expired")]
+
+
+def _job_status(op, value):
+    now = timezone.now()
+    return Q(deadline__gte=now) if value == "open" else Q(deadline__lt=now)
+
+
+def _job_status_label(job) -> str | None:
+    if job is None or job.deadline is None:
+        return None
+    return "Open" if job.deadline >= timezone.now() else "Expired"
+
+
+def _on_job(qs, q):
+    """Apply a condition on the JobListing behind each application."""
+    form_ids = JobListing.objects.exclude(application_form=None).filter(q).values("application_form_id")
+    return qs.filter(form_id__in=form_ids)
+
+
+def _job_options():
+    return [FilterOption(t, str(pk)) for pk, t in JobListing.objects.order_by("title").values_list("pk", "title")]
+
+
+def _job_specs(wrap=None) -> list[Spec]:
+    return [
+        Spec("job_title", "Position", "text", ("title",), wrap=wrap),
+        Spec("company", "Company", "text", ("company_name",), wrap=wrap),
+        Spec("job_type", "Type", "select", ("job_type",), options=lambda: choices(JobType), wrap=wrap),
+        Spec("job_status", "Job Status", "select", options=JOB_STATUS_OPTIONS, operators=("eq",), custom=_job_status, wrap=wrap),
+    ]
+
+
+CAREER_APP_SPECS = specs_by_key(
+    Spec("job", "Job", "select", ("pk",), value_type="int", options=_job_options, wrap=_on_job),
+    *_job_specs(_on_job),
+    *person_specs("user__"),
+    Spec("submitted_at", "Applied At", "date", ("submitted_at",)),
+)
+
+CAREER_JOB_SPECS = specs_by_key(
+    *_job_specs(),
+    Spec("location", "Location", "text", ("location",)),
+    Spec("deadline", "Deadline", "date", ("deadline",)),
+    Spec("created_at", "Posted At", "date", ("created_at",)),
+)
 
 
 class CareerApplicationsAdapter(BaseDatasetAdapter):
     """1 row = 1 career application (Response linked to a JobListing's form)."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(CAREER_APP_COLS), list(CAREER_FILTERS)
+        columns = list(CAREER_APP_COLS)
+        columns.insert(3, JOB_STATUS_COLUMN)
+        return columns, to_definitions(CAREER_APP_SPECS)
 
     def _base_qs(self):
         job_form_ids = JobListing.objects.exclude(application_form=None).values_list("application_form_id", flat=True)
         return Response.objects.filter(form_id__in=job_form_ids, is_test_submission=False).select_related("user", "form")
 
+    def filter_specs(self):
+        return CAREER_APP_SPECS
+
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "job_type":
-                job_form_ids = JobListing.objects.filter(job_type=val, application_form__isnull=False).values_list("application_form_id", flat=True)
-                qs = qs.filter(form_id__in=job_form_ids)
-            elif field == "job_title":
-                job_form_ids = JobListing.objects.filter(title__icontains=str(val), application_form__isnull=False).values_list("application_form_id", flat=True)
-                qs = qs.filter(form_id__in=job_form_ids)
-            elif field == "company":
-                job_form_ids = JobListing.objects.filter(company_name__icontains=str(val), application_form__isnull=False).values_list("application_form_id", flat=True)
-                qs = qs.filter(form_id__in=job_form_ids)
-            elif field == "name":
-                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
-                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
-            elif field == "email":
-                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
-                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
-        return qs
+        return apply_queryset(qs, filters, CAREER_APP_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = self._base_qs()
@@ -374,6 +399,7 @@ class CareerApplicationsAdapter(BaseDatasetAdapter):
             "job_title":    self._val(job.title if job else None,                            "text",     "career.JobListing.title"),
             "company":      self._val(job.company_name if job else None,                     "text",     "career.JobListing.company_name"),
             "job_type":     self._val(job.job_type if job else None,                         "badge",    "career.JobListing.job_type"),
+            "job_status":   self._val(_job_status_label(job),                                "badge",    "career.JobListing.deadline"),
             "name":         self._val(name,                                                  "text",     "accounts.User.first_name+last_name"),
             "email":        self._val(u.email if u else None,                                "email",    "accounts.User.email"),
             "roll_number":  self._val(u.roll_number if u else None,                          "text",     "accounts.User.roll_number"),
@@ -385,29 +411,15 @@ class CareerJobsAdapter(BaseDatasetAdapter):
     """1 row = 1 JobListing."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(CAREER_JOB_COLS), list(CAREER_FILTERS)
+        columns = list(CAREER_JOB_COLS)
+        columns.insert(3, JOB_STATUS_COLUMN)
+        return columns, to_definitions(CAREER_JOB_SPECS)
+
+    def filter_specs(self):
+        return CAREER_JOB_SPECS
 
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "job_type":
-                qs = qs.filter(job_type=val)
-            elif field == "job_title":
-                if op == "contains": qs = qs.filter(title__icontains=str(val))
-                elif op == "eq": qs = qs.filter(title__iexact=str(val))
-            elif field == "company":
-                if op == "contains": qs = qs.filter(company_name__icontains=str(val))
-                elif op == "eq": qs = qs.filter(company_name__iexact=str(val))
-            elif field == "location":
-                if op == "contains": qs = qs.filter(location__icontains=str(val))
-                elif op == "eq": qs = qs.filter(location__iexact=str(val))
-            elif field == "deadline":
-                if op == "gte": qs = qs.filter(deadline__gte=val)
-                elif op == "lte": qs = qs.filter(deadline__lte=val)
-                elif op == "eq": qs = qs.filter(deadline__date=val)
-        return qs
+        return apply_queryset(qs, filters, CAREER_JOB_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = JobListing.objects.all()
@@ -447,6 +459,7 @@ class CareerJobsAdapter(BaseDatasetAdapter):
             "job_title":  self._val(j.title,                                                "text",     "career.JobListing.title"),
             "company":    self._val(j.company_name,                                         "text",     "career.JobListing.company_name"),
             "job_type":   self._val(j.job_type,                                             "badge",    "career.JobListing.job_type"),
+            "job_status": self._val(_job_status_label(j),                                    "badge",    "career.JobListing.deadline"),
             "location":   self._val(j.location,                                             "text",     "career.JobListing.location"),
             "deadline":   self._val(j.deadline.isoformat() if j.deadline else None,         "datetime", "career.JobListing.deadline"),
             "created_at": self._val(j.created_at.isoformat() if j.created_at else None,    "datetime", "career.JobListing.created_at"),

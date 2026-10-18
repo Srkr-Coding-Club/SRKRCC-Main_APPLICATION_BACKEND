@@ -24,6 +24,7 @@ from rest_framework.exceptions import APIException, PermissionDenied
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import _is_admin_or_club_lead
 
+from . import team_emails
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, InviteStatus,
     EmailInviteStatus, HackathonStage, ProblemStatement, Round, RoundEntry, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamRole,
@@ -198,15 +199,30 @@ def _lock_team(team: Team) -> Team:
     return Team.objects.select_for_update().select_related('hackathon').get(pk=team.pk)
 
 
-def _recompute_status(team: Team):
-    """FORMING ↔ REGISTERED tracks whether the team currently meets min_team_size."""
+def _recompute_status(team: Team) -> bool:
+    """
+    FORMING ↔ REGISTERED tracks whether the team currently meets min_team_size.
+    Returns True when the team just became registered (everyone is emailed once).
+    """
     if team.status not in ACTIVE_TEAM_STATUSES:
-        return
+        return False
     count = team.memberships.count()
     new_status = TeamStatus.REGISTERED if count >= team.hackathon.min_team_size else TeamStatus.FORMING
-    if new_status != team.status:
-        team.status = new_status
-        team.save(update_fields=['status', 'updated_at'])
+    if new_status == team.status:
+        return False
+    team.status = new_status
+    team.save(update_fields=['status', 'updated_at'])
+    if new_status == TeamStatus.REGISTERED:
+        team_emails.notify_team('team_registered', team)
+        return True
+    return False
+
+
+def _notify_member_joined(team: Team, user, newly_registered: bool) -> None:
+    """Tell the team someone joined, unless the 'team registered' email already covers it."""
+    if newly_registered and team_emails.event_settings(team.hackathon, 'team_registered')[0]:
+        return
+    team_emails.notify_team('member_joined', team, user)
 
 
 def _run_in_background(fn):
@@ -390,6 +406,8 @@ class TeamService:
         ).update(status=InviteStatus.CANCELLED, responded_at=timezone.now())
 
         _recompute_status(team)
+        if team.status == TeamStatus.FORMING:
+            team_emails.notify_team('team_created', team)
         audit_actor = actor or leader
         _audit(audit_actor, 'Created Hackathon Team', team, problem=problem_label(team), leader=leader.email)
         return team
@@ -619,8 +637,9 @@ class TeamService:
             hackathon=hackathon, invited_user=user, status=InviteStatus.PENDING,
         ).exclude(pk=invite.pk).update(status=InviteStatus.CANCELLED, responded_at=now)
 
-        _recompute_status(team)
+        newly_registered = _recompute_status(team)
         _audit(user, 'Joined Hackathon Team', team)
+        _notify_member_joined(team, user, newly_registered)
         if team.leader_id and team.leader_id != user.id:
             _notify_after_commit(
                 [team.leader], f'{user.first_name or user.email} joined {team.name}',
@@ -667,6 +686,8 @@ class TeamService:
         membership.delete()
         _recompute_status(team)
         _audit(actor, 'Removed Hackathon Team Member', team, removed=email)
+        team_emails.notify_team('member_left', team, removed_user)
+        team_emails.notify_team('member_removed', team, removed_user)
         _notify_after_commit(
             [removed_user], f'You were removed from {team.name}',
             f"You are no longer on team '{team.name}' for {team.hackathon.title}. You can join or create another team while registration is open.",
@@ -700,6 +721,7 @@ class TeamService:
         membership.delete()
         _recompute_status(team)
         _audit(user, 'Left Hackathon Team', team)
+        team_emails.notify_team('member_left', team, user)
         return team
 
     @staticmethod
@@ -787,8 +809,9 @@ class TeamService:
         TeamInvite.objects.filter(
             hackathon=team.hackathon, invited_user=user, status=InviteStatus.PENDING,
         ).update(status=InviteStatus.CANCELLED, responded_at=timezone.now())
-        _recompute_status(team)
+        newly_registered = _recompute_status(team)
         _audit(actor, 'Admin Added Hackathon Team Member', team, added=user.email)
+        _notify_member_joined(team, user, newly_registered)
         _notify_after_commit(
             [user], f'You were added to {team.name}',
             f"An organizer added you to team '{team.name}' for {team.hackathon.title}.",
@@ -819,6 +842,7 @@ class TeamService:
                 [m.user for m in team.memberships.select_related('user')],
                 f"{team.name}: status updated", f"Your team '{team.name}' {wording}", team.hackathon, actor,
             )
+            team_emails.notify_team('status_changed', team)
         return team
 
 

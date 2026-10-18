@@ -487,7 +487,7 @@ API-only (not DB columns — annotated in `EventViewSet.get_queryset()` / serial
 - `id` (`BigAutoField`, PK)
 - `title` (`CharField(200)`)
 - `slug` (`SlugField(200)`, Unique)
-- `is_flagship` (`BooleanField`, default: False; IconCoders edition)
+- `is_flagship` (`BooleanField`, default: False; legacy column kept in the database. It is no longer set, shown or returned by the API or UI, pending the IconCoders decision)
 - `theme` (`CharField(255)`)
 - `description` (`TextField`)
 - `prize_pool` (`CharField(100)`, default: `'₹50,000'`)

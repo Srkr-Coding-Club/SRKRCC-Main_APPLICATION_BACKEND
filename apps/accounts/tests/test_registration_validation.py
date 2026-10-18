@@ -99,6 +99,12 @@ class RegistrationValidationTests(TestCase):
         self.assertEqual(resp.status_code, 201, resp.data)
         self.assertEqual(User.objects.get(email='newmember@srkrec.ac.in').username, 'newmember')
 
+    def test_any_email_domain_can_register(self):
+        for email in ('student@outlook.com', 'someone@yahoo.co.in', 'person@example.org'):
+            resp = self._post(email=email, roll_number=None, phone_number='')
+            self.assertEqual(resp.status_code, 201, resp.data)
+            self.assertTrue(User.objects.filter(email=email).exists())
+
     def test_same_local_part_on_a_different_domain_does_not_collide(self):
         """The bug behind the bogus 'username already exists' signup error."""
         User.objects.create_user(username='newmember', email='newmember@gmail.com', password=VALID_PASSWORD)

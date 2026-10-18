@@ -75,10 +75,13 @@ class Hackathon(TimeStampedModel):
         default=list, blank=True,
         help_text="apps.forms.models.ProfileField keys every member must have filled in on their profile, e.g. ['phone_number', 'branch'].",
     )
+    team_email_config = models.JSONField(
+        default=dict, blank=True,
+        help_text="Per-email overrides for team lifecycle emails: {event: {enabled, subject, body}}. See apps/hackathons/team_emails.py.",
+    )
 
     def __str__(self):
-        flag_str = " (IconCoders Flagship)" if self.is_flagship else ""
-        return f"{self.title}{flag_str}"
+        return self.title
 
     @property
     def is_registration_open(self) -> bool:

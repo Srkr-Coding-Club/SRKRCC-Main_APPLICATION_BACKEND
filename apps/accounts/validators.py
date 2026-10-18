@@ -40,11 +40,6 @@ EMAIL_REGEX = re.compile(
 )
 EMAIL_MAX_LENGTH = 254
 
-# Self-registration is restricted to these domains only. Admin-created
-# accounts (external judges, mentors) are exempt - see
-# RegisterSerializer.validate_email.
-ALLOWED_EMAIL_DOMAINS = {"gmail.com", "srkrec.ac.in"}
-
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 72  # bcrypt/argon practical ceiling; also blocks DoS-by-long-password
 
