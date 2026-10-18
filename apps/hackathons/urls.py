@@ -27,6 +27,8 @@ urlpatterns = [
     path('<slug:slug>/teams/', views.HackathonTeamsView.as_view(), name='hackathon-teams'),
     path('<slug:slug>/user-lookup/', views.UserLookupView.as_view(), name='hackathon-user-lookup'),
     path('<slug:slug>/stats/', views.HackathonStatsView.as_view(), name='hackathon-stats'),
+    path('<slug:slug>/team-emails/', views.TeamEmailSettingsView.as_view(), name='hackathon-team-emails'),
+    path('<slug:slug>/team-emails/test/', views.TeamEmailTestView.as_view(), name='hackathon-team-emails-test'),
     path('<slug:slug>/remind-forming/', views.FormingTeamsReminderView.as_view(), name='hackathon-remind-forming'),
 
     path('<slug:slug>/problem-statements/', views.ProblemStatementListView.as_view(), name='hackathon-ps-list'),
