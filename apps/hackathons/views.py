@@ -10,7 +10,7 @@ from apps.core.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.audit.utils import log_audit_event
-from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, _is_admin_or_club_lead
+from apps.core.permissions import IsAdmin, IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, _is_admin_or_club_lead
 from apps.core.cache import PublicReadCacheControlMixin
 
 from . import team_emails
@@ -38,7 +38,7 @@ def _visible_hackathons(user):
     if _is_admin_or_club_lead(user):
         return qs
     now = timezone.now()
-    return qs.exclude(status=HackathonStatus.DRAFT).filter(Q(visible_from__isnull=True) | Q(visible_from__lte=now)).filter(
+    return qs.exclude(status=HackathonStatus.DRAFT).filter(hidden_at__isnull=True).filter(Q(visible_from__isnull=True) | Q(visible_from__lte=now)).filter(
         Q(visible_until__isnull=True) | Q(visible_until__gt=now)
     )
 
@@ -100,6 +100,12 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = HackathonSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'
+    ADMIN_ONLY_ACTIONS = ('destroy', 'delete_impact')
+
+    def get_permissions(self):
+        if self.action in self.ADMIN_ONLY_ACTIONS:
+            return [IsAdmin()]
+        return super().get_permissions()
 
     def get_queryset(self):
         """Annotate hackathons with real registration count and team count."""
@@ -119,7 +125,7 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
         # Public/anonymous viewers only see hackathons inside their visibility
         # window - see the matching comment in apps.events.views.EventViewSet.
         now = timezone.now()
-        return queryset.exclude(status=HackathonStatus.DRAFT).filter(
+        return queryset.exclude(status=HackathonStatus.DRAFT).filter(hidden_at__isnull=True).filter(
             Q(visible_from__isnull=True) | Q(visible_from__lte=now)
         ).filter(
             Q(visible_until__isnull=True) | Q(visible_until__gt=now)
@@ -144,11 +150,36 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
                 target_model="Hackathon", target_id=instance.slug, details={"changes": changed},
             )
 
+    @staticmethod
+    def _delete_impact(hackathon):
+        """What a hard delete removes. The linked registration form and its responses are kept."""
+        return {
+            'teams': hackathon.teams.count(),
+            'members': hackathon.memberships.count(),
+            'problem_statements': hackathon.problem_statements.count(),
+            'rounds': hackathon.rounds.count(),
+            'round_entries': RoundEntry.objects.filter(round__hackathon=hackathon).count(),
+            'announcements': hackathon.announcements.count(),
+            'stages': hackathon.stages.count(),
+            'submissions': Submission.objects.filter(team__hackathon=hackathon).count(),
+        }
+
+    @action(detail=True, methods=['get'], url_path='delete-impact')
+    def delete_impact(self, request, slug=None):
+        """GET /api/hackathons/{slug}/delete-impact/ - counts of what deleting this hackathon would remove (admin only)."""
+        return DRFResponse(self._delete_impact(self.get_object()))
+
     def perform_destroy(self, instance):
+        if self.request.query_params.get('confirm_slug') != instance.slug:
+            raise HackathonError(
+                'Type the hackathon slug to confirm deletion.', 'CONFIRM_SLUG_MISMATCH',
+            )
+        impact = self._delete_impact(instance)
         details = {
             "title": instance.title,
             "registration_form": instance.registration_form_id,
-            "teams_deleted": instance.teams.count(),
+            "teams_deleted": impact['teams'],
+            "deleted": impact,
         }
         slug = instance.slug
         instance.delete()
@@ -205,12 +236,12 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='hide')
     def hide(self, request, slug=None):
         """POST /api/hackathons/{slug}/hide/ - removes the hackathon from the public list entirely."""
-        return self._set(request, "Hid Hackathon From Public", visible_until=timezone.now())
+        return self._set(request, "Hid Hackathon From Public", hidden_at=timezone.now())
 
     @action(detail=True, methods=['post'], url_path='show')
     def show(self, request, slug=None):
-        """POST /api/hackathons/{slug}/show/ - undoes `hide`, clearing visible_until."""
-        return self._set(request, "Made Hackathon Publicly Visible Again", visible_until=None)
+        """POST /api/hackathons/{slug}/show/ - undoes `hide`. The visible_from/visible_until window is left as configured."""
+        return self._set(request, "Made Hackathon Publicly Visible Again", hidden_at=None)
 
 
 # ---------------------------------------------------------------------------

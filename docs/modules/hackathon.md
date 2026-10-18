@@ -100,7 +100,9 @@ Admin (`IsAdminOrClubLead`):
 |---|---|---|
 | PATCH | `/{slug}/` | Registration settings (validated: `max_team_size >= min_team_size >= 1`, closes after opens, known profile-field keys) |
 | POST | `/{slug}/publish/` | DRAFT to LIVE. 400 `PUBLISH_CHECKLIST` (with `items`) unless it has a description, a problem option (an active statement or open innovation) and a future end date |
-| POST | `/{slug}/close/`, `/{slug}/reopen/`, `/{slug}/hide/`, `/{slug}/show/` | Hackathon status / public visibility (`close` only from LIVE; `reopen` not from DRAFT) |
+| POST | `/{slug}/close/`, `/{slug}/reopen/`, `/{slug}/hide/`, `/{slug}/show/` | Hackathon status / public visibility (`close` only from LIVE; `reopen` not from DRAFT). `hide` sets `hidden_at`, `show` clears it; the `visible_from`/`visible_until` window is never touched. |
+| GET | `/{slug}/delete-impact/` | **Admin only.** Counts of teams, members, problem statements, rounds, round entries, announcements, stages and submissions a delete would remove |
+| DELETE | `/{slug}/?confirm_slug={slug}` | **Admin only** (club leads get 403). Hard delete with DB cascade; the linked registration form and its responses are kept. 400 `CONFIRM_SLUG_MISMATCH` unless `confirm_slug` equals the slug. Audited as `Deleted Hackathon` with the impact counts |
 | GET | `/{slug}/stats/` | Teams by status, participants, pending invites, per-statement uptake, per-round funnel |
 | POST, PATCH, DELETE | `/{slug}/problem-statements/[{id}/]` | Manage statements. `POST {title, description, domain, tags?, max_teams?}` — the `code` is generated and any `code` sent is ignored. `DELETE ?force=true` force-unassigns any assigned teams before deletion |
 | POST | `/{slug}/problem-statements/reorder/` | `{ids: [...]}`: every statement id of the hackathon, once, in the new order; sets `order` 1..n in one transaction (400 `REORDER_MISMATCH` otherwise) |
@@ -133,7 +135,7 @@ Errors from business rules are `400` with `{detail, code, field?}` — e.g. `REG
 
 ## Visibility Rules
 1. **Module flag** — the `hackathons` feature flag hides the whole module. See [Feature Flags](../features/feature-flags.md).
-2. **Per-hackathon window** — non-admins only see hackathons inside `visible_from`/`visible_until` (`HackathonViewSet.get_queryset`); every `/{slug}/…` participant endpoint uses the same filter. Admins see everything. `close` stops registration but keeps the hackathon listed; `hide` removes it from public view.
+2. **Per-hackathon window** — non-admins only see hackathons inside `visible_from`/`visible_until` (`HackathonViewSet.get_queryset`); every `/{slug}/…` participant endpoint uses the same filter. Admins see everything. `close` stops registration but keeps the hackathon listed; `hide` (the `hidden_at` timestamp, independent of the window) removes it from public view. The serializer exposes `is_hidden` (hidden by either cause) and `is_manually_hidden` (hidden by an admin).
 
 ## Not Implemented
 - Judge scoring / rubrics (`JUDGE` role exists but no scoring UI or model is wired to rounds). Shortlisting is a manual admin decision.

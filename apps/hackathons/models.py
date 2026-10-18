@@ -45,6 +45,10 @@ class Hackathon(TimeStampedModel):
     end_date = models.DateTimeField()
     visible_from = models.DateTimeField(blank=True, null=True)
     visible_until = models.DateTimeField(blank=True, null=True)
+    hidden_at = models.DateTimeField(
+        blank=True, null=True,
+        help_text="Set when an admin manually hides the hackathon from the public site. Independent of the visible_from/visible_until window.",
+    )
 
     # Legacy: a generic Form used as the registration link before team
     # formation existed. Not used by the team-registration flow.

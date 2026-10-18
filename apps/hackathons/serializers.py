@@ -17,6 +17,7 @@ class HackathonSerializer(serializers.ModelSerializer):
     # Teams that actually meet the minimum size; team_count also includes ones still forming.
     registered_team_count = serializers.IntegerField(read_only=True, default=0)
     is_hidden = serializers.SerializerMethodField()
+    is_manually_hidden = serializers.SerializerMethodField()
     is_registration_open = serializers.BooleanField(read_only=True)
 
     class Meta:
@@ -24,7 +25,7 @@ class HackathonSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'slug', 'theme', 'description',
             'prize_pool', 'banner_image', 'status', 'start_date', 'end_date',
-            'visible_from', 'visible_until', 'is_hidden', 'registration_form',
+            'visible_from', 'visible_until', 'is_hidden', 'is_manually_hidden', 'registration_form',
             'form_slug', 'form_title', 'registration_count', 'team_count', 'registered_team_count',
             'mode', 'venue', 'organizer_name', 'logo_image', 'tags', 'prizes', 'problem_domains',
             'registration_opens_at', 'registration_closes_at', 'min_team_size', 'max_team_size',
@@ -35,12 +36,17 @@ class HackathonSerializer(serializers.ModelSerializer):
 
     def get_is_hidden(self, obj) -> bool:
         """See EventSerializer.get_is_hidden - identical window logic."""
+        if obj.hidden_at:
+            return True
         now = timezone.now()
         if obj.visible_from and obj.visible_from > now:
             return True
         if obj.visible_until and obj.visible_until <= now:
             return True
         return False
+
+    def get_is_manually_hidden(self, obj) -> bool:
+        return obj.hidden_at is not None
 
     MAX_TAGS = 10
     MAX_PRIZES = 12
