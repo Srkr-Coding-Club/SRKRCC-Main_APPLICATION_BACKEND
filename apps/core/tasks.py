@@ -16,10 +16,14 @@ enough to need real retries or multi-process workers.
 
 import logging
 import threading
+import time
 
 from django.db import connections
 
 logger = logging.getLogger(__name__)
+
+_live_threads: list[threading.Thread] = []
+_live_threads_lock = threading.Lock()
 
 
 def run_in_background(fn) -> None:
@@ -45,7 +49,30 @@ def run_in_background(fn) -> None:
             # and a leaked-open connection can block test-database teardown.
             connections.close_all()
 
-    threading.Thread(target=_runner, daemon=True).start()
+    thread = threading.Thread(target=_runner, daemon=True)
+    with _live_threads_lock:
+        _live_threads.append(thread)
+        # Drop finished workers so the list cannot grow without bound.
+        _live_threads[:] = [item for item in _live_threads if item.is_alive() or item is thread]
+    thread.start()
+
+
+def wait_for_background_tasks(timeout: float = 5.0) -> None:
+    """Block until workers started by run_in_background have finished.
+
+    TransactionTestCase flushes the database after each test. A still-running
+    worker can deadlock that flush or leave an EmailTemplate row that the next
+    setUp then recreates under the same unique name.
+    """
+    deadline = time.monotonic() + timeout
+    with _live_threads_lock:
+        threads = list(_live_threads)
+        _live_threads.clear()
+    for thread in threads:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(timeout=remaining)
 
 
 def process_email_job(job_id):

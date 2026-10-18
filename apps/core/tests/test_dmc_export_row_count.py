@@ -7,6 +7,7 @@ from django.test import TransactionTestCase
 from rest_framework.test import APIClient
 
 from apps.core.dmc.models import ExportJob
+from apps.core.tasks import wait_for_background_tasks
 from apps.forms.models import Form, FormField, FieldType, FormStatus, Response
 
 User = get_user_model()
@@ -35,6 +36,9 @@ class DMCFormsExportRowCountTests(TransactionTestCase):
             Response.objects.create(form=self.form, user=None, is_manual_entry=True, created_by_admin=self.admin)
         self.client = APIClient()
         self.client.force_authenticate(self.admin)
+
+    def tearDown(self):
+        wait_for_background_tasks()
 
     def _export_payload(self):
         return {
