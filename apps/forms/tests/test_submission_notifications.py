@@ -3,6 +3,8 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from rest_framework.test import APITransactionTestCase
 
+from apps.core.tasks import wait_for_background_tasks
+
 from apps.forms.models import FieldType, FormStatus, Response as ResponseModel
 from apps.notifications.models import Notification, NotificationCategory, NotificationType
 from .factories import make_form, add_field
@@ -44,6 +46,7 @@ class FormNotificationAutomationTests(APITransactionTestCase):
         self.form.save(update_fields=["club_id_field_mapping"])
 
     def tearDown(self):
+        wait_for_background_tasks()
         cache.clear()
 
     def _submit_as_member(self, idempotency_key="notif-test-1"):
