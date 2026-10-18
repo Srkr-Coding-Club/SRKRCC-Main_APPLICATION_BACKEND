@@ -32,12 +32,11 @@ class HackathonsApiTests(TestCase):
     def _payload(self, **overrides):
         start, end = _dates()
         payload = dict(
-            title='IconCoders 2026 Flagship',
-            slug='iconcoders-2026-flagship',
+            title='Hackoverflow 2026',
+            slug='hackoverflow-2026',
             theme='Advanced DSA',
             description='## Rules\n- Solo only\n- 36 hours',
             prize_pool='₹1,00,000',
-            is_flagship=True,
             start_date=start.isoformat(),
             end_date=end.isoformat(),
             registration_form=self.form.id,

@@ -16,8 +16,13 @@ from typing import Any, Generator
 from django.db.models import Q
 
 from apps.core.dmc.adapters.base import BaseDatasetAdapter
-from apps.core.dmc.contracts import CanonicalValue, ColumnDefinition, FilterDefinition, FilterOption, QueryRequest, QueryResult
-from apps.hackathons.models import Hackathon, RoundEntry, Team, Submission
+from apps.core.dmc.contracts import CanonicalValue, ColumnDefinition, FilterClause, FilterDefinition, FilterOption, QueryRequest, QueryResult
+from apps.core.dmc.filter_engine import (
+    Spec, apply_queryset, apply_rows, choices, person_specs, specs_by_key, to_definitions,
+)
+from apps.hackathons.models import (
+    EntryStatus, Hackathon, HackathonStatus, RoundEntry, Submission, Team, TeamStatus,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -29,13 +34,43 @@ def _hackathon_col(key, label, type="text", cat="hackathon", renderer="text", so
                              filterable=filterable, visible_by_default=visible, renderer=renderer, source=source)
 
 
-def _hackathon_title_filter() -> FilterDefinition:
-    """Dynamic select filter listing every hackathon that has at least one team."""
-    options = [
-        FilterOption(title, str(hid))
-        for hid, title in Hackathon.objects.filter(teams__isnull=False).distinct().order_by("title").values_list("id", "title")
+HACKATHON_STATUS_LABELS = {"LIVE": "Open (Live)"}
+
+
+def _hackathon_options() -> list[FilterOption]:
+    return [FilterOption(title, str(pk)) for pk, title in Hackathon.objects.order_by("title").values_list("pk", "title")]
+
+
+def _hackathon_status_options() -> list[FilterOption]:
+    return choices(HackathonStatus, HACKATHON_STATUS_LABELS)
+
+
+def _hackathon_specs(prefix: str) -> list[Spec]:
+    """Filter by hackathon and whether it is open or closed; ``prefix`` is the ORM path to the Hackathon."""
+    return [
+        Spec("hackathon_title", "Hackathon", "select", (f"{prefix}id",), value_type="int", options=_hackathon_options),
+        Spec("hackathon_status", "Hackathon Status", "select", (f"{prefix}status",), options=_hackathon_status_options),
     ]
-    return FilterDefinition(key="hackathon_title", label="Hackathon", type="select", operators=["eq"], options=options)
+
+
+HACKATHON_STATUS_COLUMN = ColumnDefinition(
+    key="hackathon_status", label="Hackathon Status", type="badge", category="hackathon", sortable=False,
+    filterable=True, visible_by_default=True, renderer="badge", source="hackathons.Hackathon.status",
+    description="Draft, Live (open) or Closed.",
+)
+
+
+def _with_status_column(columns: list[ColumnDefinition]) -> list[ColumnDefinition]:
+    """Insert the hackathon status right after the Hackathon column."""
+    columns = list(columns)
+    position = next(i for i, c in enumerate(columns) if c.key == "hackathon_title") + 1
+    columns.insert(position, HACKATHON_STATUS_COLUMN)
+    return columns
+
+
+def _status_label(status: str) -> str:
+    return HACKATHON_STATUS_LABELS.get(status, HackathonStatus(status).label)
+
 
 def _problem_id(team: Team) -> str | None:
     if team.problem_statement_id:
@@ -102,38 +137,33 @@ ALLOWED_SORT_SUBMISSIONS = {"id", "score", "created_at"}
 # HackathonParticipantsAdapter
 # ---------------------------------------------------------------------------
 
+PARTICIPANT_SPECS = specs_by_key(
+    Spec("hackathon_title", "Hackathon", "select", value_type="int", options=_hackathon_options, row_key="hackathon_id"),
+    Spec("hackathon_status", "Hackathon Status", "select", options=_hackathon_status_options),
+    Spec("team_name", "Team", "text"),
+    Spec("team_status", "Team Status", "select", options=lambda: choices(TeamStatus)),
+    Spec("team_role", "Team Role", "select", options=[FilterOption("Leader", "Leader"), FilterOption("Member", "Member")]),
+    Spec("name", "Full Name", "text", tokenize=True),
+    Spec("email", "Email", "text"),
+    Spec("roll_number", "Roll Number", "text"),
+    Spec("created_at", "Registered At", "date"),
+)
+
+
 class HackathonParticipantsAdapter(BaseDatasetAdapter):
     """1 row = 1 participant (leader or member) in a hackathon team."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(PARTICIPANT_COLS), [_hackathon_title_filter()]
+        return _with_status_column(PARTICIPANT_COLS), to_definitions(PARTICIPANT_SPECS)
+
+    def filter_specs(self):
+        return PARTICIPANT_SPECS
 
     def _apply_row_filters(self, rows: list[dict], filters: list[FilterClause]) -> list[dict]:
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = str(f.value).lower().strip()
-            if field == "hackathon_title" and str(f.value).isdigit():
-                continue
-            if op == "eq":
-                rows = [r for r in rows if str(r.get(field, "") or "").lower() == val]
-            elif op == "neq":
-                rows = [r for r in rows if str(r.get(field, "") or "").lower() != val]
-            elif op == "contains":
-                rows = [r for r in rows if val in str(r.get(field, "") or "").lower()]
-            elif op == "starts_with":
-                rows = [r for r in rows if str(r.get(field, "") or "").lower().startswith(val)]
-            elif op == "empty":
-                rows = [r for r in rows if not r.get(field)]
-            elif op == "not_empty":
-                rows = [r for r in rows if r.get(field)]
-        return rows
+        return apply_rows(rows, filters, PARTICIPANT_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         teams = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user")
-        for f in query_req.filters:
-            if f.field == "hackathon_title" and str(f.value).isdigit():
-                teams = teams.filter(hackathon_id=int(f.value))
         rows = []
         for team in teams:
             rows.extend(self._expand_team(team))
@@ -158,9 +188,6 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
 
     def stream_records(self, query_req: QueryRequest, user: Any, selected_ids: list[str] | None = None) -> Generator[dict[str, CanonicalValue], None, None]:
         teams = Team.objects.select_related("hackathon", "leader").prefetch_related("memberships__user")
-        for f in query_req.filters:
-            if f.field == "hackathon_title" and str(f.value).isdigit():
-                teams = teams.filter(hackathon_id=int(f.value))
         rows = []
         for team in teams.iterator(chunk_size=100):
             rows.extend(self._expand_team(team))
@@ -173,7 +200,7 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
         rows = []
         for ms in team.memberships.all():
             m = ms.user
-            rows.append({"id": f"t{team.id}_u{m.id}", "name": f"{m.first_name} {m.last_name}".strip(), "email": m.email, "hackathon_title": team.hackathon.title, "team_name": team.name, "team_role": "Leader" if ms.role == "LEADER" else "Member", "roll_number": getattr(m, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
+            rows.append({"id": f"t{team.id}_u{m.id}", "name": f"{m.first_name} {m.last_name}".strip(), "email": m.email, "hackathon_id": team.hackathon_id, "hackathon_title": team.hackathon.title, "hackathon_status": team.hackathon.status, "team_status": team.status, "team_name": team.name, "team_role": "Leader" if ms.role == "LEADER" else "Member", "roll_number": getattr(m, "roll_number", None), "created_at": team.created_at.isoformat() if team.created_at else None})
         return rows
 
     def _to_record(self, row: dict) -> dict[str, CanonicalValue]:
@@ -182,6 +209,7 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
             "name":            self._val(row["name"],             "text",     "accounts.User.first_name+last_name"),
             "email":           self._val(row["email"],            "email",    "accounts.User.email"),
             "hackathon_title": self._val(row["hackathon_title"],  "text",     "hackathons.Hackathon.title"),
+            "hackathon_status": self._val(_status_label(row["hackathon_status"]), "badge", "hackathons.Hackathon.status"),
             "team_name":       self._val(row["team_name"],        "text",     "hackathons.Team.name"),
             "team_role":       self._val(row["team_role"],        "badge",    "derived"),
             "roll_number":     self._val(row["roll_number"],      "text",     "accounts.User.roll_number"),
@@ -193,48 +221,37 @@ class HackathonParticipantsAdapter(BaseDatasetAdapter):
 # HackathonTeamsAdapter
 # ---------------------------------------------------------------------------
 
+def _has_submission(op, value):
+    return Q(submission__isnull=not value)
+
+
+TEAM_SPECS = specs_by_key(
+    *_hackathon_specs("hackathon__"),
+    Spec("team_name", "Team Name", "text", ("name",)),
+    Spec("team_status", "Team Status", "select", ("status",), options=lambda: choices(TeamStatus)),
+    Spec("leader_name", "Leader", "text", ("leader__first_name", "leader__last_name"), tokenize=True),
+    Spec("leader_email", "Leader Email", "text", ("leader__email",)),
+    Spec("problem_id", "Problem ID", "text", ("problem_statement__code",)),
+    Spec("problem_title", "Problem Title", "text", ("problem_statement__title", "custom_problem_title")),
+    Spec("problem_domain", "Problem Domain", "text", ("problem_statement__domain", "custom_problem_domain")),
+    Spec("open_innovation", "Open Innovation", "boolean", ("is_open_innovation",)),
+    Spec("has_submission", "Project Submitted", "boolean", custom=_has_submission),
+    Spec("submission_score", "Score", "number", ("submission__score",)),
+    Spec("created_at", "Created At", "date", ("created_at",)),
+)
+
+
 class HackathonTeamsAdapter(BaseDatasetAdapter):
     """1 row = 1 Hackathon team."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(TEAMS_COLS), [_hackathon_title_filter()]
+        return _with_status_column(TEAMS_COLS), to_definitions(TEAM_SPECS)
+
+    def filter_specs(self):
+        return TEAM_SPECS
 
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "hackathon_title":
-                if str(val).isdigit():
-                    qs = qs.filter(hackathon_id=int(val))
-                elif op == "contains":
-                    qs = qs.filter(hackathon__title__icontains=str(val))
-                else:
-                    qs = qs.filter(hackathon__title__iexact=str(val))
-            elif field == "team_name":
-                if op == "contains": qs = qs.filter(name__icontains=str(val))
-                elif op == "eq": qs = qs.filter(name__iexact=str(val))
-            elif field == "leader_name":
-                if op == "contains": qs = qs.filter(Q(leader__first_name__icontains=str(val)) | Q(leader__last_name__icontains=str(val)))
-                elif op == "eq": qs = qs.filter(Q(leader__first_name__iexact=str(val)) | Q(leader__last_name__iexact=str(val)))
-            elif field == "leader_email":
-                if op == "contains": qs = qs.filter(leader__email__icontains=str(val))
-                elif op == "eq": qs = qs.filter(leader__email__iexact=str(val))
-            elif field == "open_innovation":
-                if op == "eq":
-                    qs = qs.filter(is_open_innovation=(str(val).lower() in ("true", "1", "yes")))
-            elif field in ("submission_score", "score"):
-                if op in ("eq", "gte", "lte", "gt", "lt"):
-                    try:
-                        num = float(val)
-                        if op == "eq": qs = qs.filter(submission__score=num)
-                        elif op == "gte": qs = qs.filter(submission__score__gte=num)
-                        elif op == "lte": qs = qs.filter(submission__score__lte=num)
-                        elif op == "gt": qs = qs.filter(submission__score__gt=num)
-                        elif op == "lt": qs = qs.filter(submission__score__lt=num)
-                    except (ValueError, TypeError):
-                        pass
-        return qs
+        return apply_queryset(qs, filters, TEAM_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = Team.objects.select_related("hackathon", "leader", "problem_statement").prefetch_related("memberships", "submission")
@@ -279,6 +296,7 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
             "id":               self._val(str(t.pk),                                     "number",   "hackathons.Team.id"),
             "team_name":        self._val(t.name,                                         "text",     "hackathons.Team.name"),
             "hackathon_title":  self._val(t.hackathon.title,                              "text",     "hackathons.Hackathon.title"),
+            "hackathon_status": self._val(_status_label(t.hackathon.status),              "badge",    "hackathons.Hackathon.status"),
             "leader_name":      self._val(f"{leader.first_name} {leader.last_name}".strip() if leader else None, "text", "hackathons.Team.leader"),
             "leader_email":     self._val(leader.email if leader else None,               "email",    "hackathons.Team.leader.email"),
             "member_count":     self._val(t.memberships.count(),                              "number",   "hackathons.Team.members.count"),
@@ -296,40 +314,27 @@ class HackathonTeamsAdapter(BaseDatasetAdapter):
 # HackathonSubmissionsAdapter
 # ---------------------------------------------------------------------------
 
+SUBMISSION_SPECS = specs_by_key(
+    *_hackathon_specs("team__hackathon__"),
+    Spec("team_status", "Team Status", "select", ("team__status",), options=lambda: choices(TeamStatus)),
+    Spec("project_title", "Project", "text", ("project_title",)),
+    Spec("team_name", "Team", "text", ("team__name",)),
+    Spec("score", "Score", "number", ("score",)),
+    Spec("created_at", "Submitted At", "date", ("created_at",)),
+)
+
+
 class HackathonSubmissionsAdapter(BaseDatasetAdapter):
     """1 row = 1 Project submission."""
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(SUBMISSIONS_COLS), [_hackathon_title_filter()]
+        return _with_status_column(SUBMISSIONS_COLS), to_definitions(SUBMISSION_SPECS)
+
+    def filter_specs(self):
+        return SUBMISSION_SPECS
 
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "hackathon_title":
-                if str(val).isdigit():
-                    qs = qs.filter(team__hackathon_id=int(val))
-                elif op == "contains":
-                    qs = qs.filter(team__hackathon__title__icontains=str(val))
-                else:
-                    qs = qs.filter(team__hackathon__title__iexact=str(val))
-            elif field == "project_title":
-                if op == "contains": qs = qs.filter(project_title__icontains=str(val))
-                elif op == "eq": qs = qs.filter(project_title__iexact=str(val))
-            elif field == "team_name":
-                if op == "contains": qs = qs.filter(team__name__icontains=str(val))
-                elif op == "eq": qs = qs.filter(team__name__iexact=str(val))
-            elif field == "score":
-                if op in ("eq", "gte", "lte", "gt", "lt"):
-                    try:
-                        num = float(val)
-                        if op == "eq": qs = qs.filter(score=num)
-                        elif op == "gte": qs = qs.filter(score__gte=num)
-                        elif op == "lte": qs = qs.filter(score__lte=num)
-                    except (ValueError, TypeError):
-                        pass
-        return qs
+        return apply_queryset(qs, filters, SUBMISSION_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = Submission.objects.select_related("team__hackathon", "team__leader")
@@ -373,6 +378,7 @@ class HackathonSubmissionsAdapter(BaseDatasetAdapter):
             "project_title":   self._val(s.project_title,       "text",     "hackathons.Submission.project_title"),
             "team_name":       self._val(s.team.name,           "text",     "hackathons.Team.name"),
             "hackathon_title": self._val(s.team.hackathon.title,"text",     "hackathons.Hackathon.title"),
+            "hackathon_status": self._val(_status_label(s.team.hackathon.status), "badge", "hackathons.Hackathon.status"),
             "repo_url":        self._val(s.repo_url,            "url",      "hackathons.Submission.repo_url"),
             "demo_url":        self._val(s.demo_url,            "url",      "hackathons.Submission.demo_url"),
             "score":           self._val(s.score,               "number",   "hackathons.Submission.score"),
@@ -406,12 +412,22 @@ _ROUND_ENTRY_SORT_MAP = {
 }
 
 
-def _round_entry_hackathon_filter() -> FilterDefinition:
-    options = [
-        FilterOption(title, str(hid))
-        for hid, title in Hackathon.objects.filter(rounds__isnull=False).distinct().order_by("title").values_list("id", "title")
-    ]
-    return FilterDefinition(key="hackathon_title", label="Hackathon", type="select", operators=["eq"], options=options)
+def _details_submitted(op, value):
+    return Q(details_response__isnull=not value)
+
+
+ROUND_ENTRY_SPECS = specs_by_key(
+    *_hackathon_specs("round__hackathon__"),
+    Spec("round_order", "Round #", "number", ("round__order",)),
+    Spec("round_name", "Round", "text", ("round__name",)),
+    Spec("status", "Result", "select", ("status",), options=lambda: choices(EntryStatus)),
+    Spec("team_name", "Team", "text", ("team__name",)),
+    Spec("team_status", "Team Status", "select", ("team__status",), options=lambda: choices(TeamStatus)),
+    Spec("leader_email", "Leader Email", "text", ("team__leader__email",)),
+    Spec("results_published", "Published", "boolean", ("round__results_published",)),
+    Spec("details_submitted", "Details Submitted", "boolean", custom=_details_submitted),
+    Spec("decided_at", "Decided At", "date", ("decided_at",)),
+)
 
 
 class HackathonRoundEntriesAdapter(BaseDatasetAdapter):
@@ -420,41 +436,11 @@ class HackathonRoundEntriesAdapter(BaseDatasetAdapter):
     def _base_qs(self):
         return RoundEntry.objects.select_related("round__hackathon", "team__leader", "team__problem_statement")
 
+    def filter_specs(self):
+        return ROUND_ENTRY_SPECS
+
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "hackathon_title":
-                if str(val).isdigit():
-                    qs = qs.filter(round__hackathon_id=int(val))
-                elif op == "contains":
-                    qs = qs.filter(round__hackathon__title__icontains=str(val))
-                else:
-                    qs = qs.filter(round__hackathon__title__iexact=str(val))
-            elif field == "team_name":
-                if op == "contains": qs = qs.filter(team__name__icontains=str(val))
-                elif op == "starts_with": qs = qs.filter(team__name__istartswith=str(val))
-                elif op == "eq": qs = qs.filter(team__name__iexact=str(val))
-            elif field == "round_name":
-                if op == "contains": qs = qs.filter(round__name__icontains=str(val))
-                elif op == "eq": qs = qs.filter(round__name__iexact=str(val))
-            elif field == "leader_email":
-                if op == "contains": qs = qs.filter(team__leader__email__icontains=str(val))
-                elif op == "eq": qs = qs.filter(team__leader__email__iexact=str(val))
-            elif field == "status":
-                if op == "eq": qs = qs.filter(status__iexact=str(val))
-                elif op == "neq": qs = qs.exclude(status__iexact=str(val))
-            elif field == "results_published":
-                if op == "eq": qs = qs.filter(round__results_published=(str(val).lower() in ("true", "1", "yes")))
-            elif field == "details_submitted":
-                if op == "eq":
-                    is_true = str(val).lower() in ("true", "1", "yes")
-                    qs = qs.filter(details_response__isnull=not is_true)
-            elif field == "decided_at":
-                if op == "gte": qs = qs.filter(decided_at__gte=val)
-                elif op == "lte": qs = qs.filter(decided_at__lte=val)
-        return qs
+        return apply_queryset(qs, filters, ROUND_ENTRY_SPECS)
 
     def _filtered(self, query_req: QueryRequest):
         qs = self._base_qs()
@@ -465,7 +451,7 @@ class HackathonRoundEntriesAdapter(BaseDatasetAdapter):
         return qs
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(ROUND_ENTRY_COLS), [_round_entry_hackathon_filter()]
+        return _with_status_column(ROUND_ENTRY_COLS), to_definitions(ROUND_ENTRY_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         sort_field = query_req.sort.field if query_req.sort.field in ALLOWED_SORT_ROUND_ENTRIES else "round_order"
@@ -496,6 +482,7 @@ class HackathonRoundEntriesAdapter(BaseDatasetAdapter):
         return {
             "id":                self._val(str(e.pk),                                          "number",   "hackathons.RoundEntry.id"),
             "hackathon_title":   self._val(e.round.hackathon.title,                            "text",     "hackathons.Hackathon.title"),
+            "hackathon_status":  self._val(_status_label(e.round.hackathon.status),            "badge",    "hackathons.Hackathon.status"),
             "round_order":       self._val(e.round.order,                                      "number",   "hackathons.Round.order"),
             "round_name":        self._val(e.round.name,                                       "text",     "hackathons.Round.name"),
             "team_name":         self._val(team.name,                                          "text",     "hackathons.Team.name"),

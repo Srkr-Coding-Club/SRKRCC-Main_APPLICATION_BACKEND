@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from pathlib import Path
 import dj_database_url
@@ -8,7 +9,8 @@ from django.core.exceptions import ImproperlyConfigured
 from config.email_config import resolve_email_settings
 from config.ssm_secrets import INSECURE_DEFAULT_SECRET_KEY, load_serverless_secrets
 from config.logging_config import build_logging, init_sentry
-from config.security_config import resolve_security_settings
+from config.security_config import resolve_health_check_paths, resolve_hsts_settings, resolve_security_settings
+from config.throttle_config import resolve_throttle_rates
 
 load_dotenv()
 # Local and Render already have SECRET_KEY and DATABASE_URL. Lambda does not;
@@ -125,21 +127,24 @@ _security = resolve_security_settings(os.environ, DEBUG)
 ALLOWED_HOSTS = _security['ALLOWED_HOSTS']
 CSRF_TRUSTED_ORIGINS = _security['CSRF_TRUSTED_ORIGINS']
 
+# Paths a hosting platform polls to check the app is alive. They are answered whatever Host header
+# the platform sends (HealthCheckHostMiddleware) and are never redirected to HTTPS.
+HEALTH_CHECK_PATHS = resolve_health_check_paths(os.environ)
+
 if not DEBUG:
-    # Render, Railway, and Heroku terminate SSL at their edge load balancer.
+    # Platforms usually terminate SSL at their edge load balancer.
     # Enabling SECURE_SSL_REDIRECT internally causes health checks (which connect over HTTP)
     # to fail with 301 redirects, breaking port detection.
     SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False').lower() in ('true', '1', 't')
     SECURE_REDIRECT_EXEMPT = [
-        r'^$',
-        r'^api/ping/?$',
-        r'^api/health/?$',
+        rf'^{re.escape(path.lstrip("/").rstrip("/"))}/?$' for path in HEALTH_CHECK_PATHS
     ]
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000'))
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
+    _hsts = resolve_hsts_settings(os.environ)
+    SECURE_HSTS_SECONDS = _hsts['SECURE_HSTS_SECONDS']
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = _hsts['SECURE_HSTS_INCLUDE_SUBDOMAINS']
+    SECURE_HSTS_PRELOAD = _hsts['SECURE_HSTS_PRELOAD']
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 INSTALLED_APPS = [
@@ -174,6 +179,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'apps.core.middleware.HealthCheckHostMiddleware',  # first: it must fix the Host before anything reads it
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -312,25 +318,8 @@ REST_FRAMEWORK = {
         'apps.core.throttling.AnonRateThrottle',
         'apps.core.throttling.UserRateThrottle',
     ],
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/minute',
-        'user': '1000/minute',
-        # Credential stuffing / mass sign-up. Relaxed under the test runner, which shares one client IP.
-        'login': '100000/minute' if TESTING else '10/minute',
-        'register': '100000/hour' if TESTING else '10/hour',
-        # Public form submission - anonymous-writable, so scope-limit it below
-        # the global anon rate to blunt flooding of a single form.
-        'form_submit': '20/minute',
-        # Hackathon teammate lookup by exact email - authenticated, but
-        # limited so it can't be used to enumerate which emails have accounts.
-        'hackathon_lookup': '30/minute',
-        # Team leaders emailing people who have no account yet: it sends mail to arbitrary
-        # addresses, so it is kept low.
-        'hackathon_email_invite': '20/hour',
-        # Public college dropdown on the signup page: one request per debounced
-        # keystroke burst, so it needs headroom above a form submit but stays bounded.
-        'college_search': '120/minute',
-    },
+    # Each rate can be changed with a THROTTLE_<SCOPE> environment variable (see config/throttle_config.py).
+    'DEFAULT_THROTTLE_RATES': resolve_throttle_rates(os.environ, testing=TESTING),
 }
 
 # CORS Policy

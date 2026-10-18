@@ -18,9 +18,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Generator, Any
 
+from apps.core.dmc.filter_engine import Spec, validate
 from apps.core.dmc.contracts import (
     CanonicalValue,
     ColumnDefinition,
+    FilterClause,
     FilterDefinition,
     QueryRequest,
     QueryResult,
@@ -33,6 +35,14 @@ class BaseDatasetAdapter(ABC):
 
     Instantiated per-request (or per-view call) to keep state clean.
     """
+
+    def filter_specs(self) -> dict[str, Spec]:
+        """The filters this dataset supports (see filter_engine). Drives schema, validation and execution."""
+        return {}
+
+    def validate_filters(self, clauses: list[FilterClause]) -> None:
+        """Raise FilterError for any clause this dataset cannot apply. Called by the views before querying."""
+        validate(clauses, self.filter_specs())
 
     @abstractmethod
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:

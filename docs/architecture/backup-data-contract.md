@@ -37,7 +37,7 @@ $$\text{Confidence (\%)} = \left( \frac{\text{Unique Recognized Canonical Fields
 
 ### C. Domain `HACKATHONS` (Hackathons & Sprints)
 - **Total Expected Canonical Fields**: 7
-  - `title`, `theme`, `prize_pool`, `start_date`, `end_date`, `team_size`, `is_flagship`
+  - `title`, `theme`, `prize_pool`, `start_date`, `end_date`, `team_size`
 - **Required Fields**: `title`
 - **Deduplication Strategy**: Match by `external_id` if present; otherwise match unique compound key `title` + `start_date`.
 

@@ -15,9 +15,12 @@ from django.contrib.auth import get_user_model
 from django.db.models import Q
 
 from apps.core.dmc.adapters.base import BaseDatasetAdapter
+from apps.accounts.models import MembershipStatus, UserRole
+from apps.core.dmc.filter_engine import Spec, apply_queryset, choices, specs_by_key, to_definitions
 from apps.core.dmc.contracts import (
     CanonicalValue,
     ColumnDefinition,
+    FilterClause,
     FilterDefinition,
     FilterOption,
     QueryRequest,
@@ -49,45 +52,27 @@ COLUMNS: list[ColumnDefinition] = [
 
 ALLOWED_SORT_FIELDS = {"id", "club_id", "email", "first_name", "last_name", "role", "membership_status", "branch", "year", "roll_number", "registered_at", "created_at"}
 
-FILTERS: list[FilterDefinition] = [
-    FilterDefinition(
-        key="membership_status", label="Membership Status", type="select", operators=["eq", "neq"],
-        options=[
-            FilterOption("Active", "ACTIVE"),
-            FilterOption("Inactive", "INACTIVE"),
-            FilterOption("Alumni", "ALUMNI"),
-            FilterOption("Suspended", "SUSPENDED"),
-        ],
-    ),
-    FilterDefinition(
-        key="role", label="Role", type="select", operators=["eq", "neq"],
-        options=[
-            FilterOption("Affiliate", "AFFILIATE"),
-            FilterOption("Non-Affiliate", "NON_AFFILIATE"),
-            FilterOption("Volunteer", "VOLUNTEER"),
-            FilterOption("Judge", "JUDGE"),
-            FilterOption("Club Lead", "CLUB_LEAD"),
-            FilterOption("Admin", "ADMIN"),
-        ],
-    ),
-    FilterDefinition(
-        key="branch", label="Branch", type="select", operators=["eq", "neq"],
-        options=[
-            FilterOption("CSE", "CSE"), FilterOption("IT", "IT"), FilterOption("AIDS", "AIDS"),
-            FilterOption("AIML", "AIML"), FilterOption("ECE", "ECE"), FilterOption("EEE", "EEE"),
-            FilterOption("MECH", "MECH"), FilterOption("CIVIL", "CIVIL"), FilterOption("CSBS", "CSBS"),
-        ],
-    ),
-    FilterDefinition(
-        key="created_from", label="Source Origin", type="select", operators=["eq", "neq"],
-        options=[
-            FilterOption("Legacy Backup Import", "LEGACY_IMPORT"),
-            FilterOption("Self Registration", "SELF_REGISTRATION"),
-            FilterOption("Admin Created", "ADMIN"),
-            FilterOption("Form Submission", "FORM"),
-        ],
-    ),
-]
+BRANCH_OPTIONS = [FilterOption(b, b) for b in ("CSE", "IT", "AIDS", "AIML", "ECE", "EEE", "MECH", "CIVIL", "CSBS")]
+
+SPECS = specs_by_key(
+    Spec("name", "Full Name", "text", ("first_name", "last_name"), tokenize=True),
+    Spec("email", "Email", "text", ("email",)),
+    Spec("club_id", "Club ID", "text", ("club_id",)),
+    Spec("phone_number", "Phone", "text", ("phone_number",)),
+    Spec("roll_number", "Roll Number", "text", ("roll_number",)),
+    Spec("membership_status", "Membership Status", "select", ("membership_status",), options=lambda: choices(MembershipStatus)),
+    Spec("role", "Role", "select", ("role",), options=lambda: choices(UserRole)),
+    Spec("branch", "Branch", "select", ("branch",), options=BRANCH_OPTIONS),
+    Spec("year", "Year", "number", ("year",)),
+    Spec("created_from", "Source Origin", "select", ("created_from",), options=[
+        FilterOption("Legacy Backup Import", "LEGACY_IMPORT"),
+        FilterOption("Self Registration", "SELF_REGISTRATION"),
+        FilterOption("Admin Created", "ADMIN"),
+        FilterOption("Form Submission", "FORM"),
+    ]),
+    Spec("registered_at", "Registration Date", "date", ("registered_at",)),
+    Spec("created_at", "System Joined", "date", ("created_at",)),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -97,62 +82,13 @@ FILTERS: list[FilterDefinition] = [
 class UsersAdapter(BaseDatasetAdapter):
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return COLUMNS, FILTERS
+        return COLUMNS, to_definitions(SPECS)
+
+    def filter_specs(self):
+        return SPECS
 
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field in ("role", "membership_status", "branch", "created_from"):
-                if op == "eq":
-                    qs = qs.filter(**{field: val})
-                elif op == "neq":
-                    qs = qs.exclude(**{field: val})
-            elif field == "year":
-                if op in ("eq", "neq", "gte", "lte", "gt", "lt"):
-                    try:
-                        num_val = int(val)
-                        if op == "eq": qs = qs.filter(year=num_val)
-                        elif op == "neq": qs = qs.exclude(year=num_val)
-                        elif op == "gte": qs = qs.filter(year__gte=num_val)
-                        elif op == "lte": qs = qs.filter(year__lte=num_val)
-                        elif op == "gt": qs = qs.filter(year__gt=num_val)
-                        elif op == "lt": qs = qs.filter(year__lt=num_val)
-                    except (ValueError, TypeError):
-                        pass
-            elif field == "name":
-                if op == "contains":
-                    qs = qs.filter(Q(first_name__icontains=str(val)) | Q(last_name__icontains=str(val)))
-                elif op == "starts_with":
-                    qs = qs.filter(Q(first_name__istartswith=str(val)) | Q(last_name__istartswith=str(val)))
-                elif op == "eq":
-                    qs = qs.filter(Q(first_name__iexact=str(val)) | Q(last_name__iexact=str(val)))
-                elif op == "empty":
-                    qs = qs.filter(Q(first_name__isnull=True, last_name__isnull=True) | Q(first_name="", last_name=""))
-                elif op == "not_empty":
-                    qs = qs.exclude(Q(first_name__isnull=True, last_name__isnull=True) | Q(first_name="", last_name=""))
-            elif field in ("email", "club_id", "phone_number", "roll_number"):
-                if op == "eq":
-                    qs = qs.filter(**{f"{field}__iexact": str(val)})
-                elif op == "neq":
-                    qs = qs.exclude(**{f"{field}__iexact": str(val)})
-                elif op == "contains":
-                    qs = qs.filter(**{f"{field}__icontains": str(val)})
-                elif op == "starts_with":
-                    qs = qs.filter(**{f"{field}__istartswith": str(val)})
-                elif op == "empty":
-                    qs = qs.filter(Q(**{f"{field}__isnull": True}) | Q(**{field: ""}))
-                elif op == "not_empty":
-                    qs = qs.exclude(Q(**{f"{field}__isnull": True}) | Q(**{field: ""}))
-            elif field in ("registered_at", "created_at"):
-                if op == "gte":
-                    qs = qs.filter(**{f"{field}__gte": val})
-                elif op == "lte":
-                    qs = qs.filter(**{f"{field}__lte": val})
-                elif op == "eq":
-                    qs = qs.filter(**{f"{field}__date": val})
-        return qs
+        return apply_queryset(qs, filters, SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = User.objects.all().select_related('referred_by_user')

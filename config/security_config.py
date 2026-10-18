@@ -8,6 +8,7 @@ Returned keys, assigned one by one in settings.py: ALLOWED_HOSTS,
 CSRF_TRUSTED_ORIGINS, CORS_ALLOW_ALL_ORIGINS, CORS_ALLOWED_ORIGINS,
 CORS_ALLOWED_ORIGIN_REGEXES, CORS_ALLOW_CREDENTIALS, FRONTEND_URL.
 """
+import warnings
 from collections.abc import Mapping
 from urllib.parse import urlparse
 
@@ -48,6 +49,51 @@ def _origins(value: str) -> list[str]:
 
 def _unique(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
+
+
+DEFAULT_HSTS_SECONDS = 31536000
+
+
+def _flag(value: str | None, default: bool) -> bool:
+    text = (value or '').strip().lower()
+    return default if not text else text in TRUE_VALUES
+
+
+def resolve_hsts_settings(env: Mapping[str, str]) -> dict:
+    """HTTP Strict Transport Security, applied when DEBUG is off.
+
+    ``SECURE_HSTS_SECONDS`` is how long browsers must keep refusing plain HTTP (0 turns the header
+    off). Browsers cannot be told to forget it early, so use a short value such as 3600 until the
+    deployment is settled, then raise it. ``SECURE_HSTS_INCLUDE_SUBDOMAINS`` and
+    ``SECURE_HSTS_PRELOAD`` default to on.
+    """
+    raw = (env.get('SECURE_HSTS_SECONDS') or '').strip()
+    try:
+        seconds = int(raw) if raw else DEFAULT_HSTS_SECONDS
+    except ValueError:
+        warnings.warn(
+            f'SECURE_HSTS_SECONDS={raw!r} is not a whole number; keeping {DEFAULT_HSTS_SECONDS}.',
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        seconds = DEFAULT_HSTS_SECONDS
+    return {
+        'SECURE_HSTS_SECONDS': max(seconds, 0),
+        'SECURE_HSTS_INCLUDE_SUBDOMAINS': _flag(env.get('SECURE_HSTS_INCLUDE_SUBDOMAINS'), True),
+        'SECURE_HSTS_PRELOAD': _flag(env.get('SECURE_HSTS_PRELOAD'), True),
+    }
+
+
+def resolve_health_check_paths(env: Mapping[str, str]) -> tuple[str, ...]:
+    """Paths the hosting platform polls to see whether the app is alive.
+
+    ``HEALTH_CHECK_PATHS`` is comma separated. These paths are answered whatever ``Host`` header
+    the platform sends (health checks often use the server's private IP) and are never redirected
+    to HTTPS. Every other path keeps the strict ``ALLOWED_HOSTS`` check.
+    """
+    raw = env.get('HEALTH_CHECK_PATHS') or '/,/api/ping,/api/ping/'
+    paths = [item.strip() for item in raw.split(',') if item.strip()]
+    return tuple(path if path.startswith('/') else f'/{path}' for path in paths)
 
 
 def _platform_hosts(env: Mapping[str, str]) -> list[str]:

@@ -19,7 +19,7 @@ except ImportError:
 class HackathonBackupImporter(BaseBackupImporter):
     domain_key = 'HACKATHONS'
     display_name = 'Hackathons & Sprints'
-    description = '48hr build sprints, flagship hackathons, prize pools, and tracks.'
+    description = '48hr build sprints, hackathons, prize pools, and tracks.'
 
     required_fields = ['title']
 
@@ -29,7 +29,6 @@ class HackathonBackupImporter(BaseBackupImporter):
         'prize_pool': ['prize pool', 'prize', 'prizes', 'cash prize', 'rewards'],
         'start_date': ['start date', 'start_date', 'start', 'from', 'date'],
         'end_date': ['end date', 'end_date', 'end', 'to', 'deadline'],
-        'is_flagship': ['is flagship', 'flagship', 'iconcoders', 'flag'],
         'description': ['description', 'summary', 'about', 'overview'],
     }
 
@@ -234,8 +233,6 @@ class HackathonBackupImporter(BaseBackupImporter):
                     theme = p.get("theme", "Open Innovation").strip() or "Open Innovation"
                     prize_pool = p.get("prize_pool", "₹50,000").strip() or "₹50,000"
                     desc = p.get("description", "").strip() or f"{title} sprint organized by SRKR Coding Club."
-                    flag_val = str(p.get("is_flagship", "false")).lower()
-                    is_flagship = flag_val in {"true", "1", "yes", "flagship"}
 
                     hackathon = Hackathon.objects.filter(title__iexact=title, start_date__date=start_dt.date()).first()
                     created = False
@@ -254,7 +251,6 @@ class HackathonBackupImporter(BaseBackupImporter):
                             theme=theme,
                             prize_pool=prize_pool,
                             description=desc,
-                            is_flagship=is_flagship,
                             start_date=start_dt,
                             end_date=end_dt,
                         )
@@ -263,7 +259,6 @@ class HackathonBackupImporter(BaseBackupImporter):
                         hackathon.theme = theme
                         hackathon.prize_pool = prize_pool
                         hackathon.description = desc
-                        hackathon.is_flagship = is_flagship
                         hackathon.end_date = end_dt
                         hackathon.save()
 

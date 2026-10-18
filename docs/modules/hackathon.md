@@ -160,6 +160,33 @@ Public hackathon payloads carry `registered_team_count` (teams that meet the min
 - Admin team members carry `college` (catalogue name or the typed one); participants never see it.
 - The round entries list and round counts run a fixed number of queries (annotated member count and promotion flag; one aggregate for counts), pinned by tests.
 
+## Team emails
+
+Besides in-app notifications and invite emails, participants get emails as their team changes
+(`apps/hackathons/team_emails.py`, hooked into `TeamService`):
+
+| Email | When | To |
+|---|---|---|
+| `team_created` | Team created below the minimum size | Leader |
+| `team_registered` | Team reaches the minimum size | Every member |
+| `member_joined` | Invite accepted / admin adds a member | Every member |
+| `member_left` | Member leaves or is removed | Remaining members |
+| `member_removed` | Leader removes a member | The removed member |
+| `status_changed` | Admin changes team status | Every member |
+
+When a join is also the one that completes registration, only `team_registered` is sent.
+
+**Customising:** `Hackathon.team_email_config` holds `{event: {enabled, subject, body}}`; blank
+subject/body use the built-in wording. Texts use `{{placeholders}}` from the fixed list in
+`PLACEHOLDERS` (team, hackathon, members, status, dashboard link...). Unknown placeholders are
+rejected on save, values are HTML-escaped when rendered, and blank lines become paragraphs.
+Admin API: `GET/PUT /api/hackathons/{slug}/team-emails/` and `POST .../team-emails/test/` (sends a
+sample to the requesting admin). Frontend: the **Team Emails** tab on the admin hackathon page.
+
+**Delivery:** one email per recipient, queued with `transaction.on_commit` and sent on a background
+thread (`run_in_background`), so a slow mail server never blocks or rolls back a team change.
+Failures are logged, not retried, and not stored as `EmailJob` rows.
+
 ## Public hackathon page content
 
 Everything on the public page is admin-editable (Settings tab, "Public Page Presentation"):

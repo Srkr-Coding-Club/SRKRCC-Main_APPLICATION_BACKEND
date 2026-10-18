@@ -13,6 +13,7 @@ from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, _is_admin_or_club_lead
 from apps.core.cache import PublicReadCacheControlMixin
 
+from . import team_emails
 from .models import (
     EntryStatus, Hackathon, HackathonAnnouncement, HackathonStatus, InviteStatus,
     ProblemStatement, Round, RoundEntry, Submission, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamStatus,
@@ -1002,6 +1003,62 @@ class AnnouncementNotifyView(APIView):
 # ---------------------------------------------------------------------------
 # Stats (admin)
 # ---------------------------------------------------------------------------
+
+class TeamEmailSettingsView(APIView):
+    """
+    GET/PUT (admin) /api/hackathons/{slug}/team-emails/ - the team lifecycle emails and their wording.
+
+    PUT {emails: {<key>: {enabled, subject, body}}} replaces the overrides; a blank
+    subject/body means "use the built-in wording".
+    """
+    permission_classes = [IsAdminOrClubLead]
+
+    @staticmethod
+    def _payload(hackathon):
+        return {
+            'emails': team_emails.describe_settings(hackathon),
+            'placeholders': [{'key': k, 'description': d} for k, d in team_emails.PLACEHOLDERS.items()],
+        }
+
+    def get(self, request, slug):
+        return DRFResponse(self._payload(_get_hackathon(request, slug)))
+
+    def put(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        try:
+            hackathon.team_email_config = team_emails.normalize_config(request.data.get('emails'))
+        except team_emails.TeamEmailConfigError as exc:
+            raise HackathonError(str(exc), 'INVALID_EMAIL_SETTINGS', field='emails')
+        hackathon.save(update_fields=['team_email_config', 'updated_at'])
+        log_audit_event(actor=request.user, action="Updated Hackathon Team Emails", target_model="Hackathon",
+                        target_id=str(hackathon.pk), details={"hackathon": hackathon.slug})
+        return DRFResponse(self._payload(hackathon))
+
+
+class TeamEmailTestView(APIView):
+    """POST (admin) /api/hackathons/{slug}/team-emails/test/ {email, subject?, body?} - send a sample to yourself."""
+    permission_classes = [IsAdminOrClubLead]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        key = request.data.get('email')
+        if key not in team_emails.EVENTS:
+            raise HackathonError('Choose which email to test.', 'INVALID_EMAIL_TYPE', field='email')
+        try:
+            clean = team_emails.normalize_config({key: {
+                'subject': request.data.get('subject'), 'body': request.data.get('body'),
+            }})[key]
+        except team_emails.TeamEmailConfigError as exc:
+            raise HackathonError(str(exc), 'INVALID_EMAIL_SETTINGS', field='body')
+        _, default_subject, default_body = team_emails.event_settings(hackathon, key)
+        sent = team_emails.send_test(
+            hackathon, key, request.user,
+            clean['subject'] or default_subject, clean['body'] or default_body,
+        )
+        if not sent:
+            raise HackathonError('The test email could not be sent. Check the email configuration.', 'EMAIL_SEND_FAILED')
+        return DRFResponse({'sent_to': request.user.email})
+
 
 class FormingTeamsReminderView(APIView):
     """POST (admin) /api/hackathons/{slug}/remind-forming/ - nudge leaders of teams below the minimum size."""
