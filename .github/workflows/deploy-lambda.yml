@@ -26,6 +26,12 @@ env:
   LAMBDA_HEALTH_URL: https://bpta2b57zq225e7w7gsmr4mjom0lxqpx.lambda-url.ap-south-1.on.aws/api/ping/
   SSM_SECRET_KEY_NAME: /srkrcc/dev/backend/secret_key
   SSM_DATABASE_URL_NAME: /srkrcc/dev/backend/database_url
+  # Same host list Django expects with DEBUG=False. Must match (or be a
+  # subset of) the Lambda function's ALLOWED_HOSTS. Migrates do not serve
+  # HTTP; they only need settings to load. Set the repository variable to
+  # the Function URL pattern used by Terraform, e.g.
+  # .lambda-url.ap-south-1.on.aws
+  ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
 
 jobs:
   deploy:
@@ -39,6 +45,13 @@ jobs:
         run: |
           if [ -z "$AWS_DEPLOY_ROLE_ARN" ]; then
             echo "::error::Set the repository variable AWS_DEPLOY_ROLE_ARN to the IAM role GitHub Actions may assume."
+            exit 1
+          fi
+
+      - name: Require ALLOWED_HOSTS for Django management commands
+        run: |
+          if [ -z "$ALLOWED_HOSTS" ]; then
+            echo "::error::Set the repository variable ALLOWED_HOSTS to the hostnames this backend serves (comma separated), e.g. .lambda-url.ap-south-1.on.aws. Matches config/security_config.py with DEBUG=False."
             exit 1
           fi
 
@@ -106,6 +119,7 @@ jobs:
             -e AWS_DEFAULT_REGION="$AWS_REGION" \
             -e SERVERLESS=1 \
             -e DEBUG=False \
+            -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
@@ -130,6 +144,7 @@ jobs:
             -e AWS_DEFAULT_REGION="$AWS_REGION" \
             -e SERVERLESS=1 \
             -e DEBUG=False \
+            -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
@@ -155,6 +170,7 @@ jobs:
             -e AWS_DEFAULT_REGION="$AWS_REGION" \
             -e SERVERLESS=1 \
             -e DEBUG=False \
+            -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
@@ -173,6 +189,7 @@ jobs:
             -e AWS_DEFAULT_REGION="$AWS_REGION" \
             -e SERVERLESS=1 \
             -e DEBUG=False \
+            -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
