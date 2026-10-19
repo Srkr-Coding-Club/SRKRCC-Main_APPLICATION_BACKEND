@@ -49,8 +49,8 @@ The database comes provisioned with the following test and administrative creden
 | **Django Admin & Frontend** | `admin@srkr.ac.in` | `Admin@123` | `ADMIN` | **Superuser & Staff** — Full backend & frontend control |
 | **Django Admin & Frontend** | `clublead@srkr.ac.in` | `ClubLead@123` | `CLUB_LEAD` | **Staff** — Full frontend admin control room & data health |
 | **Frontend Portal** | `judge@srkr.ac.in` | `Judge@123` | `JUDGE` | Hackathon project evaluation & grading |
-| **Frontend Portal** | `rahul.sharma@srkr.ac.in` | `Member@123` | `MEMBER` | Pre-seeded with 14-day CodeQuest streak & form submissions |
-| **Frontend Portal** | `member@srkr.ac.in` | `Member@123` | `MEMBER` | Event registration, CodeQuest, member profile |
+| **Frontend Portal** | `rahul.sharma@srkr.ac.in` | `Member@123` | `NON_AFFILIATE` | Pre-seeded with 14-day CodeQuest streak & form submissions |
+| **Frontend Portal** | `member@srkr.ac.in` | `Member@123` | `NON_AFFILIATE` | Event registration, CodeQuest, member profile |
 
 ---
 

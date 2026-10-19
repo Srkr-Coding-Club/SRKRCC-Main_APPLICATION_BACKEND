@@ -55,7 +55,7 @@ DEFAULT_USERS = [
         'password': 'Member@123',
         'first_name': 'Student',
         'last_name': 'Member',
-        'role': UserRole.MEMBER,
+        'role': UserRole.NON_AFFILIATE,
         'is_staff': False,
         'is_superuser': False,
         'branch': 'CSE',
@@ -73,7 +73,7 @@ def seed_users():
         email = user_data['email']
         password = user_data['password']
         
-        user, created = User.objects.get_or_select = User.objects.get_or_create(
+        user, created = User.objects.get_or_create(
             email=email,
             defaults={
                 'username': user_data['username'],

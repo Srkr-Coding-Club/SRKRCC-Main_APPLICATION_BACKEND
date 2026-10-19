@@ -97,7 +97,7 @@ jobs:
           set -euo pipefail
           # Migrations must remain compatible with the Lambda image still in
           # service. This step does not roll the database back on failure.
-          # Output stays inside the container so URLs and secrets are not logged.
+          # Failure output is redacted so a database URL cannot land in the log.
           if ! docker run --rm --entrypoint python \
             -e AWS_ACCESS_KEY_ID \
             -e AWS_SECRET_ACCESS_KEY \
@@ -107,11 +107,13 @@ jobs:
             -e SERVERLESS=1 \
             -e DEBUG=False \
             -e EMAIL_PROVIDER=console \
+            -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
             -e SSM_DATABASE_URL_NAME \
             "$IMMUTABLE_IMAGE" \
-            manage.py migrate --noinput >/dev/null 2>&1; then
-            echo "::error::Database migration failed. Command output was discarded."
+            manage.py migrate --noinput >"$RUNNER_TEMP/migrate.txt" 2>&1; then
+            echo "::error::Database migration failed."
+            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/migrate.txt" || true
             exit 1
           fi
 
@@ -129,11 +131,56 @@ jobs:
             -e SERVERLESS=1 \
             -e DEBUG=False \
             -e EMAIL_PROVIDER=console \
+            -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
             -e SSM_DATABASE_URL_NAME \
             "$IMMUTABLE_IMAGE" \
-            manage.py migrate --check >/dev/null 2>&1; then
-            echo "::error::Database verification failed. The database was unreachable or migrations are still unapplied. Command output was discarded."
+            manage.py migrate --check >"$RUNNER_TEMP/migrate-check.txt" 2>&1; then
+            echo "::error::Database verification failed. The database was unreachable or migrations are still unapplied."
+            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/migrate-check.txt" || true
+            exit 1
+          fi
+
+      - name: Seed feature flags and the admin account
+        run: |
+          set -euo pipefail
+          # Same commands as entrypoint.sh when RUN_STARTUP_TASKS=1.
+          # setup_admin does not reset an existing password.
+          # Direct host: the pooler drops the session lock migrate just used.
+          if ! docker run --rm --entrypoint python \
+            -e AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY \
+            -e AWS_SESSION_TOKEN \
+            -e AWS_REGION \
+            -e AWS_DEFAULT_REGION="$AWS_REGION" \
+            -e SERVERLESS=1 \
+            -e DEBUG=False \
+            -e EMAIL_PROVIDER=console \
+            -e DATABASE_USE_DIRECT=1 \
+            -e SSM_SECRET_KEY_NAME \
+            -e SSM_DATABASE_URL_NAME \
+            "$IMMUTABLE_IMAGE" \
+            manage.py seed_flags >"$RUNNER_TEMP/seed-flags.txt" 2>&1; then
+            echo "::error::Feature-flag seed failed."
+            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/seed-flags.txt" || true
+            exit 1
+          fi
+          if ! docker run --rm --entrypoint python \
+            -e AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY \
+            -e AWS_SESSION_TOKEN \
+            -e AWS_REGION \
+            -e AWS_DEFAULT_REGION="$AWS_REGION" \
+            -e SERVERLESS=1 \
+            -e DEBUG=False \
+            -e EMAIL_PROVIDER=console \
+            -e DATABASE_USE_DIRECT=1 \
+            -e SSM_SECRET_KEY_NAME \
+            -e SSM_DATABASE_URL_NAME \
+            "$IMMUTABLE_IMAGE" \
+            manage.py setup_admin >"$RUNNER_TEMP/setup-admin.txt" 2>&1; then
+            echo "::error::Admin account setup failed."
+            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/setup-admin.txt" || true
             exit 1
           fi
 

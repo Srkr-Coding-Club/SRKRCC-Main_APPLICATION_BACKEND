@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -e
 
+# Lambda's runtime sets HOME to /home/sbx_user1051, which is read-only.
+# Gunicorn then fails to open its control socket. /tmp is writable.
+if [ ! -w "${HOME:-/}" ]; then
+  export HOME=/tmp
+fi
+
 # Render does not use this script (see render.yaml + build.sh).
 # Local Compose sets RUN_STARTUP_TASKS=1 so migrate/collectstatic/seed still
 # run on container boot. Lambda must leave this unset: cold starts must not
