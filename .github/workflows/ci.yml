@@ -12,7 +12,9 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pin 24.04: ubuntu-latest began moving to Ubuntu 26 on 2026-10-19 and
+    # the image job was exiting in a few seconds before Docker could build.
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:15
@@ -55,15 +57,18 @@ jobs:
         run: python manage.py test --verbosity=1
 
   image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build the Lambda image without pushing
         run: |
           set -euo pipefail
-          # Public base-image pulls occasionally flake on GitHub runners.
-          # One retry keeps the same Dockerfile and does not skip the build.
+          # --provenance=false needs Buildx. Public base-image pulls can flake;
+          # one retry keeps the same Dockerfile and does not skip the build.
           if ! docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .; then
             echo "First image build failed; retrying once."
             docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .
