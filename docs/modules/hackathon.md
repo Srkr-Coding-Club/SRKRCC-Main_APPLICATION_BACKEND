@@ -31,7 +31,7 @@ flowchart TD
 
 | Model | Purpose | Key rules |
 |---|---|---|
-| `Hackathon` | The event. Registration settings: `registration_opens_at`, `registration_closes_at`, `min_team_size`, `max_team_size`, `team_edits_locked`, `allow_open_innovation` (default on), `required_profile_fields` (list of `forms.ProfileField` keys every member must have on their profile). | `status` is `DRAFT` (created via the API; admin-only, nothing open), `LIVE` or `CLOSED`. `is_registration_open` = `status == LIVE` and now inside the (optional) window. The slug is immutable after creation and a few slugs are reserved (`my-teams`, `my-invites`, `teams`, `invites`, `submissions`). Date rules: end after start, `visible_until` after `visible_from`, registration closes before the event ends; `max_team_size` cannot drop below an existing team. Changing `min_team_size` re-evaluates every active team's FORMING/REGISTERED status. |
+| `Hackathon` | The event. Registration settings: `registration_opens_at`, `registration_closes_at`, `min_team_size`, `max_team_size`, `team_edits_locked`, `allow_open_innovation` (default on), `required_profile_fields` (list of `forms.ProfileField` keys every member must have on their profile). | `status` is `DRAFT` (created via the API; admin-only, nothing open), `LIVE` or `CLOSED`. `is_registration_open` = `status == LIVE` and now inside the (optional) window. `banner_crop` is `{x, y, zoom}` (focal point 0-100 %, zoom 1-3; `{}` = centred, no zoom) and only changes how the banner URL is framed on the public page; any other shape is a 400. The slug is immutable after creation and a few slugs are reserved (`my-teams`, `my-invites`, `teams`, `invites`, `submissions`). Date rules: end after start, `visible_until` after `visible_from`, registration closes before the event ends; `max_team_size` cannot drop below an existing team. Changing `min_team_size` re-evaluates every active team's FORMING/REGISTERED status. |
 | `ProblemStatement` | Admin-defined problem: `title`, Markdown `description`, `domain`, `tags`, `max_teams` (blank = unlimited), `is_active`, `order`, plus a `code` the **application generates** (`PS-001`, `PS-002`, …; unique per hackathon, never typed or edited by an admin). | Title, description and domain are required. Statements are public (inactive ones are hidden from non-admins). A statement that teams have picked cannot be deleted (deactivate it instead). |
 | `Team` | `name` (unique per hackathon, case-insensitive), `leader`, `problem_statement` (SET_NULL), `is_open_innovation` with `custom_problem_title` / `custom_problem_description` / `custom_problem_domain`, `status`: `FORMING` / `REGISTERED` / `DISQUALIFIED` / `WITHDRAWN`. | A team has **either** a statement **or** an open-innovation problem, never both. Open-innovation teams are known as `OI-<team id>` (`Team.open_innovation_code`). Also, `FORMING` ↔ `REGISTERED` is recomputed from member count vs `min_team_size` on every membership change. |
 | `TeamMember` | Through-table for `Team.members`: `team`, `hackathon` (denormalized), `user`, `role` (`LEADER`/`MEMBER`), `joined_at`. | DB `UniqueConstraint(hackathon, user)` — one team per user per hackathon. |
@@ -211,3 +211,60 @@ The "Stages and Timelines" section has its own model, `HackathonStage`, independ
 - **Domains are configured per hackathon** (`Hackathon.problem_domains`, up to 30 names; edited with `PATCH /{slug}/` or the Domains panel in the admin Problem Statements tab). When the list is not empty a statement's `domain` must match one of them (case-insensitive; stored with the configured spelling). A domain used by any statement cannot be removed from the list, and the first list must cover every domain already in use. CSV imports add their new domains to the list automatically. The list is also the order of the public filter pills. Migration `0016` seeds the list from existing statements.
 - **Tags** are free labels per statement: up to 10, 30 characters each, de-duplicated case-insensitively.
 - Everything else is editable per statement: title, Markdown description, domain, tags, max teams (blank = unlimited) and `is_active` (hide from participants; teams already on it keep it).
+
+
+## Event operations (admin-controlled modules)
+
+Everything below is switched and configured by organizers per hackathon (create panel or **Registration controls**); nothing is hard-coded. Modules live in `Hackathon.features` (`submissions`, `judging`, `check_in`, `certificates`, `team_finder`, `showcase`; absent = off). Settings are validated by `apps/hackathons/config_validation.py`; business rules are in one service module per concern, and `views_ops.py` only parses, authorises and shapes responses.
+
+| Concern | Module | Rules |
+|---|---|---|
+| Eligibility, capacity, rules, questions | `registration.py` + `TeamService` | `eligibility {colleges, branches, years}` is matched against the profile (case-insensitive; empty = open). `max_teams` / `max_participants` cap placed teams/people; with `waitlist_enabled` a new team queues (`Team.is_waitlisted`) and `WaitlistService.promote` places the oldest queued team when a spot opens (withdrawal, removal, delete, admin status change, a raised cap). Without a waitlist the API answers `HACKATHON_FULL`. `rules` + `require_rules_acceptance` and `registration_questions` are enforced on team creation and invite acceptance (`RULES_NOT_ACCEPTED`, `ANSWER_REQUIRED`, `ANSWER_INVALID`); the answers and `rules_accepted_at` live on `TeamMember`. `problem_statements_reveal_at` hides statements from non-admins until then. Waitlisted teams are excluded from rounds. Admins bypass these checks. |
+| Submissions | `submissions.py` | One per team (`Submission`). Only the leader of a REGISTERED, non-waitlisted team may write, inside `submission_opens_at`..`submission_deadline`. `GET/PUT /{slug}/my-submission/`; organizers: `GET /{slug}/submissions/`, `POST /{slug}/submissions/remind/`. `manage.py send_hackathon_reminders` (run hourly from cron) reminds teams without a submission once, in the 24 h before the deadline. |
+| Judging | `judging.py`, `access.py` | `JudgingCriterion` rubric (max score + weight); `HackathonStaff` gives a person JUDGE or VOLUNTEER for one hackathon only. A judge's `SubmissionReview` total is weighted out of 100; `Submission.score` is the average and is recalculated when the rubric changes. Judges cannot score their own team, participants cannot be made judges, and scores are locked once results are published (`RESULTS_PUBLISHED`). |
+| Results | `judging.ResultsService` | `HackathonWinner` rows; `POST /{slug}/results/publish|unpublish/` sets `results_published_at`. Public `GET /{slug}/results/` shows winners (and every score only if `show_leaderboard`); `GET /{slug}/showcase/` lists public submissions once results are out and the `showcase` module is on. |
+| Check-in | `checkin.py` | Each participant has a signed QR token (`/my-check-in/`); organizers and VOLUNTEER staff scan it or check people in by id (`POST /{slug}/check-in/`, idempotent). Only members of REGISTERED, non-waitlisted teams qualify. |
+| Certificates | `certificates.py` | Wording and eligibility (`REGISTERED`, `SUBMITTED`, `CHECKED_IN`) are `certificate_config`; releasing it notifies participants. Winners get an award certificate. Every certificate carries a signed code checked by the public `GET /certificates/verify/{code}/`. |
+| Team finder | `finder.py` | `TeamSeeker` listings and teams with `looking_for_members`. Emails are never exposed: leaders invite a listed person through the existing invite flow; seekers can ask a recruiting leader to add them. |
+| Insight, export, clone | `analytics.py`, `cloning.py` | `GET /{slug}/analytics/` (funnel, branch/year/college, per-day joins), `GET /{slug}/participants/` (rows incl. answers). `POST /{slug}/clone/` copies setup, stages, rounds (no teams), rubric and people to a new DRAFT with every date shifted. |
+
+Public page content (`mentors`, `judges`, `sponsors`, `contacts`, `community_links`, `venue_map_url`) is admin-written JSON validated by `config_validation.py`.
+
+
+## Per-hackathon roles and permissions
+
+Site-wide `ADMIN` / `CLUB_LEAD` users hold every permission in every hackathon (only `ADMIN` can delete one; creating and cloning stay site-wide). Anyone else acts through a `HackathonStaff` row for **one** hackathon: a role (`ORGANIZER`, `JUDGE`, `VOLUNTEER`) with a stored `permissions` list that starts from the role's preset and can be edited per person. `apps/hackathons/access.py` is the single source: the `PERMISSIONS` catalog, `ROLE_PRESETS`, `my_permissions()` and the `scoped('<key>')` DRF permission used on every `/{slug}/...` endpoint. A row with an empty list falls back to its preset.
+
+| Permission | Allows |
+|---|---|
+| `settings` | Edit the hackathon, publish/close/reopen, hide/show, modules, capacity, rules, public page |
+| `content` | Problem statements, public timeline, announcements, team emails |
+| `teams` | Every team and participant, team edits and status changes, participants export, remind forming teams |
+| `rounds` | Rounds and shortlisting |
+| `ideas` | Review ideas (approve / request changes / reject), remind teams |
+| `submissions` | Project submissions list, window, reminders |
+| `judging` | Rubric, leaderboard, every judge's scores |
+| `judge` | Score projects (never one's own team) |
+| `results` | Winners, publish results, certificates |
+| `check_in` | Scan and check participants in |
+| `insights` | Overview, funnel, breakdowns |
+| `staff` | Add people and change permissions (only up to what the actor holds, never one's own, never someone who outranks them) |
+
+Staff also see their hackathon while it is a draft or hidden. `GET /{slug}/my-permissions/` returns the caller's roles, permissions, the catalog and the presets; `GET/POST /{slug}/staff/`, `PATCH/DELETE /{slug}/staff/{id}/` manage people. Every change is audited.
+
+## Two-phase submissions: idea, then project
+
+`features.ideas` switches **phase 1 (plan)** on; `features.submissions` is **phase 2 (implement)**. Each has its own window (`idea_opens_at`/`idea_deadline`, `submission_opens_at`/`submission_deadline`; the idea deadline must not be after the project deadline). `IdeaSubmission` (one per team: title, problem, solution, plan, tech stack, optional slides link) is written by the team leader of a registered team inside the window. With `idea_review_required` an organizer holding `ideas` approves it, asks for changes (the team edits and resubmits) or rejects it, with a note the team is notified of; approved and rejected ideas are locked. Without review, ideas are approved on submission. `project_requires_approved_idea` makes the project phase available only to teams with an accepted idea (`IDEA_REQUIRED` otherwise; `my-submission` reports the `gate`). Endpoints: `GET/PUT /{slug}/my-idea/`, `GET /{slug}/ideas/`, `POST /{slug}/ideas/{id}/review/`, `POST /{slug}/ideas/remind/`. Cloning copies the phase settings with shifted dates.
+
+
+## Rounds: kinds, targets and rule-based shortlisting
+
+- **Kind and target.** A round has a `kind` (General, Screening, Idea review, Project review, Pitch, Final) and an optional `shortlist_limit` (how many teams should go through). Shortlisting more than the target answers 409 `SHORTLIST_LIMIT` (with `limit` and `would_be`) until the caller repeats the request with `confirm_over_limit`.
+- **Dates win.** `effective_status` is computed from `starts_at` / `ends_at` (upcoming, active, completed); the stored `status` is only used for rounds without dates. Participants see the effective status.
+- **Pick teams by rule** (`POST /{slug}/rounds/{id}/auto-shortlist/ {rule, value?, reject_rest?, apply?}`, `rounds` permission). Rules live in `round_rules.py`: `PROJECT_SCORE_TOP|MIN`, `IDEA_SCORE_TOP|MIN`, `IDEA_APPROVED`, `HAS_PROJECT`, `CHECKED_IN`. With `apply` false it only previews (ties at a "top N" cut-off are all kept); with `apply` true it records the decisions through the normal `decide` path, so the published-results and target confirmations still apply. `reject_rest` marks only still-pending teams as not shortlisted.
+- **Order.** `POST /{slug}/rounds/reorder/ {ids}` renumbers rounds, but only while no team has been decided in any round (`ROUNDS_IN_USE`), because later rounds depend on earlier shortlists.
+- **Evidence for decisions.** Round entries now carry the team's idea status and score, whether it submitted a project and its score, and how many members checked in.
+
+## Idea scoring
+
+`JudgingCriterion.target` is `PROJECT` (default) or `IDEA`: the two rubrics are independent (`GET/PUT/POST /{slug}/criteria/?target=`). Judges score ideas on `GET /{slug}/judging/ideas/` and `POST /{slug}/judging/ideas/{id}/` (same rules as projects: own team excluded, locked once results are published); `IdeaSubmission.score` / `review_count` hold the average. `GET /{slug}/leaderboard/?target=IDEA` ranks ideas (rejected ones excluded) and `GET /{slug}/ideas/{id}/reviews/` shows each judge's scores. Changing a rubric re-totals its existing reviews.

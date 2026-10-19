@@ -255,3 +255,33 @@ class HackathonVisibilityAndDeletionTests(TestCase):
         self.assertEqual(self.client.get(f'/api/hackathons/{slug}/delete-impact/').status_code, 403)
         self.assertEqual(self.client.post(f'/api/hackathons/{slug}/hide/').status_code, 200)
         self.assertTrue(Hackathon.objects.filter(pk=self.hackathon.pk).exists())
+
+
+class HackathonBannerCropTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username='crop_admin', email='crop_admin@srkr.ac.in', password='pw12345!', role='ADMIN')
+        self.hackathon = Hackathon.objects.create(
+            title='Cropped', slug='cropped-hack', theme='t', description='d',
+            start_date=_dates()[0], end_date=_dates()[1], banner_image='https://example.com/banner.jpg',
+        )
+        self.client.force_authenticate(self.admin)
+        self.url = f'/api/hackathons/{self.hackathon.slug}/'
+
+    def test_banner_crop_defaults_to_empty(self):
+        self.assertEqual(self.client.get(self.url).data['banner_crop'], {})
+
+    def test_admin_can_save_and_clear_banner_crop(self):
+        resp = self.client.patch(self.url, {'banner_crop': {'x': 30, 'y': 72.5, 'zoom': 1.5}}, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['banner_crop'], {'x': 30.0, 'y': 72.5, 'zoom': 1.5})
+        cleared = self.client.patch(self.url, {'banner_crop': {}}, format='json')
+        self.assertEqual(cleared.data['banner_crop'], {})
+
+    def test_invalid_banner_crop_is_rejected(self):
+        for bad in ({'x': 120, 'y': 50, 'zoom': 1}, {'x': 50, 'y': 50, 'zoom': 5}, {'x': 'a', 'y': 1, 'zoom': 1},
+                    {'x': 50, 'y': 50}, {'x': 50, 'y': 50, 'zoom': 1, 'rotate': 90}, [1, 2, 3]):
+            resp = self.client.patch(self.url, {'banner_crop': bad}, format='json')
+            self.assertEqual(resp.status_code, 400, bad)
+        self.hackathon.refresh_from_db()
+        self.assertEqual(self.hackathon.banner_crop, {})

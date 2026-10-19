@@ -28,6 +28,10 @@ class Hackathon(TimeStampedModel):
     description = models.TextField()
     prize_pool = models.CharField(max_length=100, default='₹50,000')
     banner_image = models.URLField(blank=True, null=True)
+    banner_crop = models.JSONField(
+        default=dict, blank=True,
+        help_text='How the banner is framed: {x, y} focal point in percent (0-100) and zoom (1-3). Empty = centred, no zoom.',
+    )
 
     # --- Public page presentation (all optional, all editable by admins) ----------
     mode = models.CharField(max_length=10, choices=HackathonMode.choices, default=HackathonMode.ONLINE)
@@ -79,6 +83,46 @@ class Hackathon(TimeStampedModel):
         default=list, blank=True,
         help_text="apps.forms.models.ProfileField keys every member must have filled in on their profile, e.g. ['phone_number', 'branch'].",
     )
+    # --- Event operations: every one of these is admin-controlled ---------------
+    features = models.JSONField(
+        default=dict, blank=True,
+        help_text='Switches for optional modules: {submissions, judging, check_in, certificates, team_finder, showcase}. Missing = off.',
+    )
+    max_teams = models.PositiveIntegerField(blank=True, null=True, help_text='Teams allowed to register. Blank = unlimited.')
+    max_participants = models.PositiveIntegerField(blank=True, null=True, help_text='Total participants allowed. Blank = unlimited.')
+    waitlist_enabled = models.BooleanField(default=False, help_text='When full, new teams queue instead of being refused.')
+    eligibility = models.JSONField(
+        default=dict, blank=True,
+        help_text='Who may take part: {colleges: [], branches: [], years: []}. An empty list means no restriction.',
+    )
+    rules = models.TextField(blank=True, help_text='Rules / code of conduct (Markdown).')
+    require_rules_acceptance = models.BooleanField(default=False)
+    registration_questions = models.JSONField(
+        default=list, blank=True,
+        help_text='Extra questions every participant answers: [{key, label, type, required, options}].',
+    )
+    problem_statements_reveal_at = models.DateTimeField(blank=True, null=True, help_text='Non-admins see problem statements only after this time.')
+    submission_opens_at = models.DateTimeField(blank=True, null=True)
+    submission_deadline = models.DateTimeField(blank=True, null=True)
+    idea_opens_at = models.DateTimeField(blank=True, null=True, help_text='Phase 1 (plan): when teams may start submitting ideas.')
+    idea_deadline = models.DateTimeField(blank=True, null=True, help_text='Phase 1 (plan): ideas cannot be submitted or edited after this.')
+    idea_review_required = models.BooleanField(default=True, help_text='Organizers must approve an idea before it counts as accepted.')
+    project_requires_approved_idea = models.BooleanField(
+        default=False, help_text='Phase 2 (implement): only teams whose idea is accepted may submit a project.',
+    )
+    submission_reminder_sent_at = models.DateTimeField(blank=True, null=True, help_text='Set by the send_hackathon_reminders command so each deadline is reminded once.')
+    results_published_at = models.DateTimeField(blank=True, null=True, help_text='Set when winners / the leaderboard are made public.')
+    show_leaderboard = models.BooleanField(default=False, help_text="Show every team's score on the public results, not only winners.")
+    certificate_config = models.JSONField(
+        default=dict, blank=True,
+        help_text='{title, body, signatory_name, signatory_title, eligibility, released}. See certificates.py.',
+    )
+    mentors = models.JSONField(default=list, blank=True, help_text='[{name, role, bio, photo_url, link}] shown on the public page.')
+    judges = models.JSONField(default=list, blank=True, help_text='[{name, role, bio, photo_url, link}] shown on the public page.')
+    sponsors = models.JSONField(default=list, blank=True, help_text='[{name, logo_url, url, tier}] shown on the public page.')
+    contacts = models.JSONField(default=list, blank=True, help_text='[{name, role, email, phone}] organizer contacts.')
+    community_links = models.JSONField(default=list, blank=True, help_text='[{label, url}] e.g. Discord / WhatsApp.')
+    venue_map_url = models.URLField(blank=True, null=True)
     team_email_config = models.JSONField(
         default=dict, blank=True,
         help_text="Per-email overrides for team lifecycle emails: {event: {enabled, subject, body}}. See apps/hackathons/team_emails.py.",
@@ -86,6 +130,9 @@ class Hackathon(TimeStampedModel):
 
     def __str__(self):
         return self.title
+
+    def feature(self, name: str) -> bool:
+        return bool((self.features or {}).get(name, False))
 
     @property
     def is_registration_open(self) -> bool:
@@ -150,6 +197,10 @@ class Team(TimeStampedModel):
     custom_problem_description = models.TextField(blank=True)
     custom_problem_domain = models.CharField(max_length=100, blank=True)
     status = models.CharField(max_length=20, choices=TeamStatus.choices, default=TeamStatus.FORMING)
+    is_waitlisted = models.BooleanField(default=False, help_text='Queued because the hackathon is at capacity.')
+    status_reason = models.CharField(max_length=300, blank=True, help_text='Shown to the team, e.g. why it was disqualified.')
+    looking_for_members = models.BooleanField(default=False)
+    looking_for = models.CharField(max_length=200, blank=True, help_text='Skills / roles the team wants, shown in the team finder.')
 
     class Meta:
         constraints = [
@@ -177,6 +228,8 @@ class TeamMember(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hackathon_memberships')
     role = models.CharField(max_length=10, choices=TeamRole.choices, default=TeamRole.MEMBER)
     joined_at = models.DateTimeField(auto_now_add=True)
+    rules_accepted_at = models.DateTimeField(blank=True, null=True)
+    answers = models.JSONField(default=dict, blank=True, help_text='Answers to Hackathon.registration_questions, keyed by question key.')
 
     class Meta:
         ordering = ['joined_at', 'id']
@@ -256,10 +309,23 @@ class RoundStatus(models.TextChoices):
     COMPLETED = 'COMPLETED', 'Completed'
 
 
+class RoundKind(models.TextChoices):
+    GENERAL = 'GENERAL', 'General'
+    SCREENING = 'SCREENING', 'Screening'
+    IDEA_REVIEW = 'IDEA_REVIEW', 'Idea review'
+    PROJECT_REVIEW = 'PROJECT_REVIEW', 'Project review'
+    PITCH = 'PITCH', 'Pitch / demo'
+    FINAL = 'FINAL', 'Final'
+
+
 class Round(TimeStampedModel):
     hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='rounds')
     order = models.PositiveIntegerField()
     name = models.CharField(max_length=150)
+    kind = models.CharField(max_length=16, choices=RoundKind.choices, default=RoundKind.GENERAL)
+    shortlist_limit = models.PositiveIntegerField(
+        blank=True, null=True, help_text='How many teams should go through. Shortlisting more asks for confirmation. Blank = no target.',
+    )
     description = models.TextField(blank=True)
     starts_at = models.DateTimeField(blank=True, null=True)
     ends_at = models.DateTimeField(blank=True, null=True)
@@ -399,11 +465,165 @@ class HackathonAnnouncement(TimeStampedModel):
 class Submission(TimeStampedModel):
     team = models.OneToOneField(Team, on_delete=models.CASCADE, related_name='submission')
     project_title = models.CharField(max_length=200)
+    tagline = models.CharField(max_length=200, blank=True)
     description = models.TextField()
     repo_url = models.URLField()
     demo_url = models.URLField(blank=True, null=True)
     video_url = models.URLField(blank=True, null=True)
-    score = models.FloatField(default=0.0)
+    slides_url = models.URLField(blank=True, null=True)
+    tech_stack = models.JSONField(default=list, blank=True)
+    is_public = models.BooleanField(default=True, help_text='May appear in the public showcase once results are out.')
+    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    score = models.FloatField(default=0.0, help_text='Average judge score out of 100; maintained by JudgingService.')
+    review_count = models.PositiveIntegerField(default=0)
 
     def __str__(self):
         return f"Submission for {self.team.name}: {self.project_title}"
+
+
+class StaffRole(models.TextChoices):
+    ORGANIZER = 'ORGANIZER', 'Organizer'
+    JUDGE = 'JUDGE', 'Judge'
+    VOLUNTEER = 'VOLUNTEER', 'Volunteer (check-in)'
+
+
+class HackathonStaff(TimeStampedModel):
+    """People with a role limited to one hackathon, whatever their global role."""
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='staff')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hackathon_staff_roles')
+    role = models.CharField(max_length=12, choices=StaffRole.choices)
+    permissions = models.JSONField(
+        default=list, blank=True,
+        help_text='What this person may do in this hackathon (keys from access.PERMISSIONS). Filled from the role preset and editable.',
+    )
+    added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['role', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['hackathon', 'user', 'role'], name='uniq_staff_role_per_hackathon'),
+        ]
+
+    def __str__(self):
+        return f"{self.user} - {self.role} @ {self.hackathon.title}"
+
+
+class CriterionTarget(models.TextChoices):
+    PROJECT = 'PROJECT', 'Project'
+    IDEA = 'IDEA', 'Idea'
+
+
+class JudgingCriterion(models.Model):
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='criteria')
+    target = models.CharField(max_length=8, choices=CriterionTarget.choices, default=CriterionTarget.PROJECT)
+    name = models.CharField(max_length=100)
+    description = models.CharField(max_length=300, blank=True)
+    max_score = models.PositiveIntegerField(default=10)
+    weight = models.PositiveIntegerField(default=1, help_text='Relative weight in the final score.')
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return f"{self.name} (/{self.max_score})"
+
+
+class SubmissionReview(TimeStampedModel):
+    """One judge's scores for one submission: {criterion_id: score}."""
+    submission = models.ForeignKey(Submission, on_delete=models.CASCADE, related_name='reviews')
+    judge = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hackathon_reviews')
+    scores = models.JSONField(default=dict)
+    comment = models.TextField(blank=True)
+    total = models.FloatField(default=0.0, help_text="This judge's weighted total out of 100.")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['submission', 'judge'], name='uniq_review_per_judge_per_submission'),
+        ]
+
+
+class HackathonWinner(TimeStampedModel):
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='winners')
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='awards')
+    title = models.CharField(max_length=120, help_text='e.g. Winner, Runner-up, Best UI')
+    rank = models.PositiveIntegerField(default=1)
+    prize = models.CharField(max_length=100, blank=True)
+    note = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        ordering = ['rank', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['hackathon', 'team', 'title'], name='uniq_award_per_team'),
+        ]
+
+
+class CheckIn(models.Model):
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='check_ins')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hackathon_check_ins')
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='check_ins')
+    checked_in_at = models.DateTimeField(default=timezone.now)
+    checked_in_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['-checked_in_at']
+        constraints = [
+            models.UniqueConstraint(fields=['hackathon', 'user'], name='uniq_check_in_per_user'),
+        ]
+
+
+class TeamSeeker(TimeStampedModel):
+    """A participant without a team who wants to be found (team finder)."""
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='seekers')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hackathon_seeker_profiles')
+    skills = models.CharField(max_length=200, blank=True)
+    note = models.CharField(max_length=300, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        constraints = [
+            models.UniqueConstraint(fields=['hackathon', 'user'], name='uniq_seeker_per_hackathon'),
+        ]
+
+
+class IdeaStatus(models.TextChoices):
+    SUBMITTED = 'SUBMITTED', 'Submitted'
+    APPROVED = 'APPROVED', 'Approved'
+    CHANGES_REQUESTED = 'CHANGES_REQUESTED', 'Changes requested'
+    REJECTED = 'REJECTED', 'Rejected'
+
+
+class IdeaSubmission(TimeStampedModel):
+    """Phase 1 (plan): a team's idea, reviewed by organizers before (optionally) unlocking the project phase."""
+    team = models.OneToOneField(Team, on_delete=models.CASCADE, related_name='idea')
+    title = models.CharField(max_length=200)
+    problem = models.TextField(help_text='The problem being solved and for whom.')
+    solution = models.TextField(help_text='The approach / what the team will build.')
+    plan = models.TextField(blank=True, help_text='Milestones, who does what, how the time will be used.')
+    tech_stack = models.JSONField(default=list, blank=True)
+    deck_url = models.URLField(blank=True, null=True)
+    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    status = models.CharField(max_length=20, choices=IdeaStatus.choices, default=IdeaStatus.SUBMITTED)
+    score = models.FloatField(default=0.0, help_text='Average judge score out of 100 against the idea rubric.')
+    review_count = models.PositiveIntegerField(default=0)
+    feedback = models.CharField(max_length=1000, blank=True, help_text="Reviewer's note shown to the team.")
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+
+    def __str__(self):
+        return f"Idea for {self.team.name}: {self.title} ({self.status})"
+
+
+class IdeaReview(TimeStampedModel):
+    """One judge's scores for one idea: {criterion_id: score} against the idea rubric."""
+    idea = models.ForeignKey(IdeaSubmission, on_delete=models.CASCADE, related_name='reviews')
+    judge = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hackathon_idea_reviews')
+    scores = models.JSONField(default=dict)
+    comment = models.TextField(blank=True)
+    total = models.FloatField(default=0.0, help_text="This judge's weighted total out of 100.")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['idea', 'judge'], name='uniq_idea_review_per_judge'),
+        ]
