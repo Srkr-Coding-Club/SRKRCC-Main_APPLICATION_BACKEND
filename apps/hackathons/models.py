@@ -9,8 +9,15 @@ from apps.announcements.models import AnnouncementType
 
 
 class HackathonStatus(models.TextChoices):
+    DRAFT = 'DRAFT', 'Draft'
     LIVE = 'LIVE', 'Live'
     CLOSED = 'CLOSED', 'Closed'
+
+
+class HackathonMode(models.TextChoices):
+    ONLINE = 'ONLINE', 'Online'
+    OFFLINE = 'OFFLINE', 'Offline'
+    HYBRID = 'HYBRID', 'Hybrid'
 
 
 class Hackathon(TimeStampedModel):
@@ -21,6 +28,17 @@ class Hackathon(TimeStampedModel):
     description = models.TextField()
     prize_pool = models.CharField(max_length=100, default='₹50,000')
     banner_image = models.URLField(blank=True, null=True)
+
+    # --- Public page presentation (all optional, all editable by admins) ----------
+    mode = models.CharField(max_length=10, choices=HackathonMode.choices, default=HackathonMode.ONLINE)
+    venue = models.CharField(max_length=200, blank=True, help_text='Where it happens, for offline/hybrid events.')
+    organizer_name = models.CharField(max_length=150, blank=True, help_text='Shown under the title. Blank = the club.')
+    logo_image = models.URLField(blank=True, null=True)
+    tags = models.JSONField(default=list, blank=True, help_text='Short category labels shown as chips, e.g. ["AI", "Web"].')
+    prizes = models.JSONField(
+        default=list, blank=True,
+        help_text='List of {title, amount, description} shown in the Prizes section. Blank = only the prize pool.',
+    )
     status = models.CharField(max_length=20, choices=HackathonStatus.choices, default=HackathonStatus.LIVE)
 
     start_date = models.DateTimeField()
@@ -45,14 +63,25 @@ class Hackathon(TimeStampedModel):
         default=True,
         help_text="Let teams bring their own problem (title, description, domain) instead of picking an admin-defined statement.",
     )
+    problem_domains = models.JSONField(
+        default=list, blank=True,
+        help_text='Domains problem statements are filed under (e.g. ["AI", "EdTech"]). Admin-configured; statements pick from this list.',
+    )
+    faq = models.JSONField(
+        default=list, blank=True,
+        help_text='Organizer-written FAQ: a list of {question, answer}. Empty = the generic default FAQ is shown.',
+    )
     required_profile_fields = models.JSONField(
         default=list, blank=True,
         help_text="apps.forms.models.ProfileField keys every member must have filled in on their profile, e.g. ['phone_number', 'branch'].",
     )
+    team_email_config = models.JSONField(
+        default=dict, blank=True,
+        help_text="Per-email overrides for team lifecycle emails: {event: {enabled, subject, body}}. See apps/hackathons/team_emails.py.",
+    )
 
     def __str__(self):
-        flag_str = " (IconCoders Flagship)" if self.is_flagship else ""
-        return f"{self.title}{flag_str}"
+        return self.title
 
     @property
     def is_registration_open(self) -> bool:
@@ -189,6 +218,34 @@ class TeamInvite(models.Model):
         return f"Invite {self.invited_user} → {self.team.name} ({self.status})"
 
 
+class EmailInviteStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Pending'
+    CLAIMED = 'CLAIMED', 'Claimed'
+    CANCELLED = 'CANCELLED', 'Cancelled'
+
+
+class TeamEmailInvite(models.Model):
+    """An invitation to an email address with no account yet; it becomes a TeamInvite when they sign up."""
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='email_invites')
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='team_email_invites')
+    email = models.EmailField()
+    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    status = models.CharField(max_length=10, choices=EmailInviteStatus.choices, default=EmailInviteStatus.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(
+                Lower('email'), 'team', condition=Q(status='PENDING'), name='uniq_pending_email_invite_per_team',
+            ),
+        ]
+
+    def __str__(self):
+        return f"Email invite {self.email} -> {self.team.name} ({self.status})"
+
+
 class RoundStatus(models.TextChoices):
     UPCOMING = 'UPCOMING', 'Upcoming'
     ACTIVE = 'ACTIVE', 'Active'
@@ -217,6 +274,59 @@ class Round(TimeStampedModel):
 
     def __str__(self):
         return f"{self.hackathon.title}, Round {self.order}: {self.name}"
+
+
+class StageTone(models.TextChoices):
+    ORANGE = 'ORANGE', 'Orange'
+    BLUE = 'BLUE', 'Blue'
+    GREEN = 'GREEN', 'Green'
+    PURPLE = 'PURPLE', 'Purple'
+    RED = 'RED', 'Red'
+    SLATE = 'SLATE', 'Grey'
+
+
+class StageMarker(models.TextChoices):
+    DATE = 'DATE', 'Date badge'
+    ICON = 'ICON', 'Icon'
+
+
+class StageIcon(models.TextChoices):
+    FLAG = 'FLAG', 'Flag'
+    CODE = 'CODE', 'Code'
+    MIC = 'MIC', 'Presentation'
+    TROPHY = 'TROPHY', 'Trophy'
+    CALENDAR = 'CALENDAR', 'Calendar'
+    USERS = 'USERS', 'Team'
+    LIGHTBULB = 'LIGHTBULB', 'Idea'
+    ROCKET = 'ROCKET', 'Launch'
+    CLIPBOARD = 'CLIPBOARD', 'Submission'
+    AWARD = 'AWARD', 'Award'
+
+
+class HackathonStage(TimeStampedModel):
+    """One entry of the public "Stages and Timelines" section. Independent of rounds, so it can
+    describe things rounds never model (registration, idea submission, results, ceremonies)."""
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='stages')
+    title = models.CharField(max_length=150)
+    description = models.TextField(blank=True, help_text='Markdown.')
+    starts_at = models.DateTimeField(blank=True, null=True)
+    ends_at = models.DateTimeField(blank=True, null=True)
+    badge = models.CharField(max_length=40, blank=True, help_text='Small label on the card, e.g. "Online" or "Mandatory".')
+    location = models.CharField(max_length=150, blank=True, help_text='Where or how, e.g. "Auditorium" or "Google Meet".')
+    tone = models.CharField(max_length=10, choices=StageTone.choices, default=StageTone.ORANGE)
+    marker = models.CharField(max_length=5, choices=StageMarker.choices, default=StageMarker.DATE)
+    icon = models.CharField(max_length=12, choices=StageIcon.choices, default=StageIcon.FLAG)
+    link_label = models.CharField(max_length=40, blank=True)
+    link_url = models.URLField(blank=True)
+    is_visible = models.BooleanField(default=True)
+    order = models.PositiveIntegerField(default=0)
+    source_round = models.ForeignKey(Round, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return f"{self.hackathon.title}: {self.title}"
 
 
 class EntryStatus(models.TextChoices):
@@ -252,6 +362,7 @@ class AnnouncementAudience(models.TextChoices):
     PARTICIPANTS = 'PARTICIPANTS', 'All registered participants'
     ROUND_ALL = 'ROUND_ALL', 'All teams in a round'
     ROUND_SHORTLISTED = 'ROUND_SHORTLISTED', 'Shortlisted teams in a round'
+    ROUND_REJECTED = 'ROUND_REJECTED', 'Teams not shortlisted in a round'
     TEAMS = 'TEAMS', 'Specific teams'
 
 
@@ -261,12 +372,17 @@ class HackathonAnnouncement(TimeStampedModel):
     message = models.TextField()
     type = models.CharField(max_length=10, choices=AnnouncementType.choices, default=AnnouncementType.INFO)
     audience = models.CharField(max_length=20, choices=AnnouncementAudience.choices, default=AnnouncementAudience.PUBLIC)
-    round = models.ForeignKey(Round, on_delete=models.CASCADE, null=True, blank=True, related_name='announcements')
+    # SET_NULL is a safety net; RoundService.delete_round converts round-scoped
+    # announcements to team-scoped ones first so they keep their audience.
+    round = models.ForeignKey(Round, on_delete=models.SET_NULL, null=True, blank=True, related_name='announcements')
     target_teams = models.ManyToManyField(Team, blank=True, related_name='targeted_announcements')
     is_active = models.BooleanField(default=True)
     publish_at = models.DateTimeField(default=timezone.now)
     expires_at = models.DateTimeField(blank=True, null=True)
     send_email = models.BooleanField(default=False)
+    emailed_at = models.DateTimeField(
+        blank=True, null=True, help_text='When the audience email was dispatched; empty = not sent yet.',
+    )
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
 
     class Meta:

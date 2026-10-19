@@ -1,13 +1,18 @@
-Django>=5.0,<6.0
-djangorestframework>=3.14.0
-django-cors-headers>=4.3.0
-djangorestframework-simplejwt>=5.3.1
-psycopg2-binary>=2.9.9
-dj-database-url>=2.1.0
-python-dotenv>=1.0.1
-pillow>=10.2.0
-openpyxl>=3.1.5
-gunicorn>=21.2.0
-whitenoise>=6.6.0
+# Direct dependencies pinned to the versions the test suite runs against.
+# To upgrade: change a pin, run the full test suite, then commit. (Transitive packages are not locked;
+# generate a full lock with `pip-compile` if you need byte-for-byte reproducible installs.)
+Django==5.2.17
+djangorestframework==3.18.0
+django-cors-headers==4.9.0
+djangorestframework-simplejwt==5.5.1
+psycopg2-binary==2.9.12
+dj-database-url==3.1.2
+python-dotenv==1.2.2
+pillow==12.3.0
+openpyxl==3.1.5
+gunicorn==23.0.0
+whitenoise==6.12.0
 django-storages>=1.14.4
 boto3>=1.35.0
+# Optional error tracking: only active when SENTRY_DSN is set.
+sentry-sdk==2.19.2

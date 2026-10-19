@@ -1,5 +1,7 @@
 import os
 import socket
+import re
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 import dj_database_url
@@ -8,6 +10,9 @@ from django.core.exceptions import ImproperlyConfigured
 
 from config.email_config import resolve_email_settings
 from config.ssm_secrets import INSECURE_DEFAULT_SECRET_KEY, load_serverless_secrets
+from config.logging_config import build_logging, init_sentry
+from config.security_config import resolve_health_check_paths, resolve_hsts_settings, resolve_security_settings
+from config.throttle_config import resolve_throttle_rates
 
 load_dotenv()
 # Local and Render already have SECRET_KEY and DATABASE_URL. Lambda does not;
@@ -175,6 +180,7 @@ def s3_storage_options() -> dict:
 # Defaults to False (secure-by-default) if the env var is entirely absent, e.g. a
 # fresh deploy with no .env configured. Local dev sets DEBUG=True explicitly in .env.
 DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 't')
+TESTING = 'test' in sys.argv
 
 if not DEBUG and SECRET_KEY == _INSECURE_DEFAULT_SECRET_KEY:
     raise ImproperlyConfigured(
@@ -182,64 +188,30 @@ if not DEBUG and SECRET_KEY == _INSECURE_DEFAULT_SECRET_KEY:
         "Set a unique SECRET_KEY environment variable before running in production."
     )
 
-raw_hosts = os.getenv('ALLOWED_HOSTS', '*').split(',')
-default_hosts = [
-    'localhost',
-    '127.0.0.1',
-    '0.0.0.0',
-    'testserver',
-    '[::1]',
-    '.onrender.com',
-]
-render_hostname = os.getenv('RENDER_EXTERNAL_HOSTNAME')
-if render_hostname:
-    default_hosts.append(render_hostname)
+# Hosts, CORS, CSRF and the frontend URL are resolved together in config/security_config.py:
+# permissive on localhost in development, explicit-only (no wildcards) with DEBUG off.
+_security = resolve_security_settings(os.environ, DEBUG)
+ALLOWED_HOSTS = _security['ALLOWED_HOSTS']
+CSRF_TRUSTED_ORIGINS = _security['CSRF_TRUSTED_ORIGINS']
 
-ALLOWED_HOSTS = list(set([h.strip() for h in raw_hosts if h.strip()] + default_hosts))
-
-from urllib.parse import urlparse
-
-def clean_origin(url_str: str) -> str:
-    """Normalizes an origin URL to scheme + netloc (stripping paths and trailing slashes)."""
-    raw = url_str.strip()
-    if not raw:
-        return ''
-    if not raw.startswith(('http://', 'https://')):
-        raw = f"https://{raw}"
-    parsed = urlparse(raw)
-    return f"{parsed.scheme}://{parsed.netloc}".rstrip('/')
-
-default_csrf_origins = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'http://localhost:3001',
-    'http://127.0.0.1:3001',
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:8000',
-    'http://127.0.0.1:8000',
-    'https://*.vercel.app',
-    'https://*.onrender.com',
-]
-raw_csrf = os.getenv('CSRF_TRUSTED_ORIGINS', '')
-custom_csrf = [clean_origin(o) for o in raw_csrf.split(',') if clean_origin(o)]
-CSRF_TRUSTED_ORIGINS = list(set([clean_origin(o) for o in default_csrf_origins] + custom_csrf))
+# Paths a hosting platform polls to check the app is alive. They are answered whatever Host header
+# the platform sends (HealthCheckHostMiddleware) and are never redirected to HTTPS.
+HEALTH_CHECK_PATHS = resolve_health_check_paths(os.environ)
 
 if not DEBUG:
-    # Render, Railway, and Heroku terminate SSL at their edge load balancer.
+    # Platforms usually terminate SSL at their edge load balancer.
     # Enabling SECURE_SSL_REDIRECT internally causes health checks (which connect over HTTP)
     # to fail with 301 redirects, breaking port detection.
     SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'False').lower() in ('true', '1', 't')
     SECURE_REDIRECT_EXEMPT = [
-        r'^$',
-        r'^api/ping/?$',
-        r'^api/health/?$',
+        rf'^{re.escape(path.lstrip("/").rstrip("/"))}/?$' for path in HEALTH_CHECK_PATHS
     ]
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000'))
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
+    _hsts = resolve_hsts_settings(os.environ)
+    SECURE_HSTS_SECONDS = _hsts['SECURE_HSTS_SECONDS']
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = _hsts['SECURE_HSTS_INCLUDE_SUBDOMAINS']
+    SECURE_HSTS_PRELOAD = _hsts['SECURE_HSTS_PRELOAD']
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 INSTALLED_APPS = [
@@ -258,6 +230,7 @@ INSTALLED_APPS = [
 
     # Custom Platform Apps
     'apps.core',
+    'apps.colleges',
     'apps.accounts',
     'apps.feature_flags',
     'apps.forms',
@@ -273,6 +246,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'apps.core.middleware.HealthCheckHostMiddleware',  # first: it must fix the Host before anything reads it
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -321,7 +295,6 @@ DATABASES = {
 AUTH_USER_MODEL = 'accounts.User'
 
 AUTH_PASSWORD_VALIDATORS = [
-    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
@@ -381,6 +354,23 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 30 * 1024 * 1024
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# --- Client IP / throttling ---------------------------------------------------------------
+# How many reverse proxies in front of Django append to X-Forwarded-For (Render alone = 1).
+TRUSTED_PROXY_COUNT = int(os.getenv('TRUSTED_PROXY_COUNT', '1'))
+# Shared with the Next.js BFF so it can pass the visitor's real IP (otherwise every visitor looks like
+# the frontend host). Unset = header ignored.
+CLIENT_IP_SHARED_SECRET = os.getenv('CLIENT_IP_SHARED_SECRET', '')
+
+# Throttle counters must be shared by all gunicorn workers and survive restarts, so production uses the
+# database cache (python manage.py createcachetable). Tests and DEBUG (local) runs use per-process LocMem.
+if TESTING or DEBUG:
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
+else:
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.db.DatabaseCache', 'LOCATION': 'django_cache_table'}}
+
+LOGGING = build_logging(DEBUG)
+init_sentry()
+
 # REST Framework Settings
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -390,44 +380,22 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ),
+    # apps.core.throttling keys on apps.core.client_ip (spoof-resistant), not DRF's own X-Forwarded-For handling.
     'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
+        'apps.core.throttling.AnonRateThrottle',
+        'apps.core.throttling.UserRateThrottle',
     ],
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/minute',
-        'user': '1000/minute',
-        # Public form submission - anonymous-writable, so scope-limit it below
-        # the global anon rate to blunt flooding of a single form.
-        'form_submit': '20/minute',
-        # Hackathon teammate lookup by exact email - authenticated, but
-        # limited so it can't be used to enumerate which emails have accounts.
-        'hackathon_lookup': '30/minute',
-    },
+    # Each rate can be changed with a THROTTLE_<SCOPE> environment variable (see config/throttle_config.py).
+    'DEFAULT_THROTTLE_RATES': resolve_throttle_rates(os.environ, testing=TESTING),
 }
 
 # CORS Policy
 from corsheaders.defaults import default_headers, default_methods
 
-# Allow all origins by default in local dev (DEBUG=True) to eliminate developer friction
-CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'True' if DEBUG else 'False').lower() in ('true', '1', 't')
-
-raw_cors = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:5173,http://127.0.0.1:5173')
-CORS_ALLOWED_ORIGINS = list(set([
-    clean_origin(origin)
-    for origin in raw_cors.split(',')
-    if clean_origin(origin)
-]))
-
-# Regex matching for dynamic preview environments (Vercel previews, Render, localhost on any port)
-CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^https?:\/\/localhost(:\d+)?$",
-    r"^https?:\/\/127\.0\.0\.1(:\d+)?$",
-    r"^https:\/\/.*\.vercel\.app$",
-    r"^https:\/\/.*\.onrender\.com$",
-]
-
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_ALL_ORIGINS = _security['CORS_ALLOW_ALL_ORIGINS']
+CORS_ALLOWED_ORIGINS = _security['CORS_ALLOWED_ORIGINS']
+CORS_ALLOWED_ORIGIN_REGEXES = _security['CORS_ALLOWED_ORIGIN_REGEXES']
+CORS_ALLOW_CREDENTIALS = _security['CORS_ALLOW_CREDENTIALS']
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'idempotency-key',
@@ -464,7 +432,7 @@ SIMPLE_JWT = {
 
 # Public URL of the frontend. Links inside emails (password setup, confirmations,
 # hackathon invites) are built from it.
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000').strip().rstrip('/')
+FRONTEND_URL = _security['FRONTEND_URL']
 
 # Email: EMAIL_PROVIDER picks console (local), resend (staging) or gmail (production).
 # See config/email_config.py.

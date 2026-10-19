@@ -28,8 +28,11 @@ Earlier versions of these docs described Redis + Celery as already running. They
 
 - **No Redis instance and no Celery worker/beat process are deployed** — `render.yaml` (the actual deployment config) defines only the single Django web service, and `requirements.txt` doesn't include either package. `REDIS_URL`/`CELERY_BROKER_URL` still exist in `.env.example` as a documented future option, not as something the running app reads.
 - **"Background jobs" today = `apps/core/tasks.py::run_in_background`**, a plain daemon `threading.Thread`. Every job it runs (bulk email sends, DMC exports over the sync-export row threshold) first writes a durable status row (`EmailJob`, `ExportJob`) *before* dispatching, so the job's last-known status survives even if the thread dies — the tradeoff is that in-flight work itself doesn't survive a process restart, and there's no automatic retry. See the docstring in that file for the full reasoning.
-- **"Caching" today = Django's default `LocMemCache`**, used only for the password-setup-link rate limiter. There is no dashboard/query result caching layer.
-- This is a deliberate, documented tradeoff for the app's current college-club scale, not an oversight — revisit if job volume or read load ever genuinely need a real queue/cache.
+- **"Caching" today = Django's default `LocMemCache` + HTTP Response Caching (`apps.core.cache.PublicReadCacheControlMixin`)**:
+  - `LocMemCache` backs the password-setup-link rate limiter and DRF throttling.
+  - `PublicReadCacheControlMixin` emits standard `Cache-Control: public, max-age=60, stale-while-revalidate=120` headers for unauthenticated public reads (`/events/`, `/announcements/`, `/feature-flags/`, `/hackathons/`, `/blogs/`, `/codequest/`), and `private, no-cache` for authenticated sessions to preserve strict RBAC boundaries.
+  - This allows browsers, edge CDNs, and Next.js ISR (`next: { revalidate: 60 }`) to cache responses with zero Redis overhead.
+- This is a deliberate, documented tradeoff for the app's current college-club scale, not an oversight — revisit if job volume or write-contention genuinely needs a real queue/cache like Redis.
 
 ## Related Docs
 - [README.md](README.md) — architecture overview

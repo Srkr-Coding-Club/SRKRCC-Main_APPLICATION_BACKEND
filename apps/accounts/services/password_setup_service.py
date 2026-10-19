@@ -87,10 +87,13 @@ class PasswordSetupService:
 
         user = User.objects.filter(email__iexact=normalized_email).first()
 
-        # If user does not exist, or user is already ACTIVE with a usable password,
-        # return generic non-enumerating success response without dispatching setup email.
-        if not user or (user.password_status == PasswordStatus.ACTIVE and user.has_usable_password()):
+        # Unknown or deactivated accounts get the same generic response, with no email.
+        if not user or not user.is_active:
             return True, "If an eligible account exists, a password setup link has been sent."
+
+        # An ACTIVE account with a usable password is a forgot-password reset; everyone
+        # else is a first-time setup. Both use the same single-use token and endpoints.
+        is_reset = user.password_status == PasswordStatus.ACTIVE and user.has_usable_password()
 
         # Generate cryptographic single-use token
         raw_token = secrets.token_urlsafe(32)
@@ -132,23 +135,42 @@ class PasswordSetupService:
             full_name = context.get("full_name") or user.first_name or "Club Member"
             club_id = context.get("club_id") or user.club_id or "Assigned on Login"
 
-            subject = "Set Up Your Password - SRKR Coding Club"
-            body = (
-                f"Hello {full_name},\n\n"
-                f"Your account in the SRKR Coding Club portal has been prepared.\n"
-                f"Your permanent Club ID is: {club_id}\n\n"
-                f"Please click the secure link below within 24 hours to set up your password:\n"
-                f"{setup_url}\n\n"
-                f"If you did not request this link, please ignore this email.\n\n"
-                f"SRKR Coding Club Team"
-            )
+            if is_reset:
+                subject = "Reset Your Password - SRKR Coding Club"
+                body = (
+                    f"Hello {full_name},\n\n"
+                    f"We received a request to reset the password of your SRKR Coding Club account.\n\n"
+                    f"Open this link within {TOKEN_EXPIRY_HOURS} hours to choose a new password:\n"
+                    f"{setup_url}\n\n"
+                    f"Or go to {frontend_base}/account/setup-password and enter this reset code:\n"
+                    f"{raw_token}\n\n"
+                    f"The code works once and expires after {TOKEN_EXPIRY_HOURS} hours. "
+                    f"If you did not request this, ignore this email; your password stays unchanged.\n\n"
+                    f"SRKR Coding Club Team"
+                )
+            else:
+                subject = "Set Up Your Password - SRKR Coding Club"
+                body = (
+                    f"Hello {full_name},\n\n"
+                    f"Your account in the SRKR Coding Club portal has been prepared.\n"
+                    f"Your permanent Club ID is: {club_id}\n\n"
+                    f"Please click the secure link below within {TOKEN_EXPIRY_HOURS} hours to set up your password:\n"
+                    f"{setup_url}\n\n"
+                    f"Or go to {frontend_base}/account/setup-password and enter this setup code:\n"
+                    f"{raw_token}\n\n"
+                    f"If you did not request this link, please ignore this email.\n\n"
+                    f"SRKR Coding Club Team"
+                )
 
-            EmailNotificationService.send_email(
+            delivered = EmailNotificationService.send_email(
                 recipient_email=user.email,
                 subject=subject,
                 plain_content=body,
             )
-            logger.info("PASSWORD_SETUP_EMAIL_SENT: user_id=%s", str(user.id))
+            if delivered:
+                logger.info("PASSWORD_SETUP_EMAIL_SENT: user_id=%s", str(user.id))
+            else:
+                logger.error("PASSWORD_SETUP_EMAIL_FAILED: user_id=%s error=provider rejected the message", str(user.id))
         except Exception as ex:
             logger.error("PASSWORD_SETUP_EMAIL_FAILED: user_id=%s error=%s", str(user.id), str(ex))
 
@@ -186,6 +208,7 @@ class PasswordSetupService:
             "valid": True,
             "first_name": token.user.first_name or "Club Member",
             "club_id": token.user.club_id or "",
+            "is_reset": token.user.password_status == PasswordStatus.ACTIVE,
         }
 
     @classmethod
@@ -233,10 +256,10 @@ class PasswordSetupService:
                 raise InvalidSetupTokenError("This setup link has expired. Please request a new one.")
 
             user = token.user
-            # Django's standard checks (common-password blocklist, similarity to the
-            # user's own name/email/username) need the resolved user, so they run here
-            # rather than with the strength-meter checks above.
-            validate_password(new_password, user=user)
+            was_reset = user.password_status == PasswordStatus.ACTIVE
+            # Django's common-password and numeric-only checks, plus the complexity rules
+            # in ComplexPasswordValidator.
+            validate_password(new_password)
             user.set_password(new_password)
             user.password_status = PasswordStatus.ACTIVE
             user.save(update_fields=['password', 'password_status', 'updated_at'])
@@ -251,6 +274,9 @@ class PasswordSetupService:
                 used_at=timezone.now()
             )
 
+        if was_reset:
+            cls._revoke_sessions(user)
+
         # Audit log (ZERO raw token / credential logging invariant)
         logger.info(
             "PASSWORD_SETUP_COMPLETED: user_id=%s token_id=%s",
@@ -258,6 +284,14 @@ class PasswordSetupService:
             str(token.id),
         )
         return user
+
+    @staticmethod
+    def _revoke_sessions(user) -> None:
+        """After a password reset, refresh tokens issued under the old password stop working."""
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+
+        for outstanding in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=outstanding)
 
     @classmethod
     def cleanup_setup_tokens(cls, retention_days: int = 30) -> int:

@@ -77,11 +77,12 @@ We recommend **Neon.tech** for the database because its free tier **never suspen
    | `DEBUG` | `False` | Production secure mode |
    | `SECRET_KEY` | *(Click Generate or paste a 50+ char random string)* | Required |
    | `DATABASE_URL` | *(Paste Neon connection string from Step 1)* | PostgreSQL DB |
-   | `ALLOWED_HOSTS` | `.onrender.com,localhost,127.0.0.1` | Allows Render domain |
-   | `CORS_ALLOW_ALL_ORIGINS` | `True` *(or specify frontend Vercel URL)* | Allows frontend calls |
-   | `CSRF_TRUSTED_ORIGINS` | `https://*.onrender.com,https://*.vercel.app` | Prevents CSRF issues |
+   | `ALLOWED_HOSTS` | *(your custom API hostname, if any)* | With `DEBUG=False` the app refuses to start unless a host is named here or in `PLATFORM_HOSTS` (hostnames your platform assigns, e.g. `.example-host.com`). On Render the legacy `RENDER` variable still adds `.onrender.com` automatically |
+   | `FRONTEND_URL` | `https://your-frontend.example` | **Strongly recommended.** Public frontend address used in email links. If unset it defaults to localhost, so password-setup, reset and invite emails would link to a local machine (`manage.py check` warns with `core.W005`) |
+   | `CORS_ALLOWED_ORIGINS` | `https://your-frontend.example` | Exact frontend origin(s). `CORS_ALLOW_ALL_ORIGINS` is refused when `DEBUG=False` |
+   | `CSRF_TRUSTED_ORIGINS` | `https://your-frontend.example` | Exact origin(s); no wildcards |
    | `DJANGO_SUPERUSER_EMAIL` | `admin@srkr.ac.in` | **Super Admin Email** |
-   | `DJANGO_SUPERUSER_PASSWORD` | `YourSecurePassword@2025` | **Super Admin Password** |
+   | `DJANGO_SUPERUSER_PASSWORD` | *(a strong random value)* | **Super Admin Password.** Required; well-known passwords are rejected and there is no default |
    | `DJANGO_SUPERUSER_USERNAME` | `admin` | Super Admin Username |
 
 6. Click **Deploy Web Service**!

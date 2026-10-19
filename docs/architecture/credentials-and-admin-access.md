@@ -40,9 +40,12 @@ The Django Admin is active on the backend at:
 
 ---
 
-## 3. Pre-Configured Credentials
+## 3. Pre-Configured Credentials (development only)
 
-The database comes provisioned with the following test and administrative credentials:
+> **These accounts only exist after running the demo seeders, which refuse to run unless `DEBUG=True`.**
+> In production the admin is created by `setup_admin` from `DJANGO_SUPERUSER_PASSWORD` (no default; well-known passwords are rejected), and an existing admin's password is only changed with `setup_admin --reset-password`.
+
+A local `DEBUG=True` database seeded with the demo data has the following credentials:
 
 | Portal | Email | Password | Role | Permissions & Clearances |
 | :--- | :--- | :--- | :--- | :--- |

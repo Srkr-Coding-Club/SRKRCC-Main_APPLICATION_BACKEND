@@ -32,6 +32,7 @@ from apps.core.dmc.contracts import (
     SortClause,
 )
 from apps.core.dmc.export_service import ExportService
+from apps.core.dmc.filter_engine import FilterError
 from apps.core.dmc.permissions import (
     DMCBasePermission,
     can_export_dataset,
@@ -176,6 +177,10 @@ class DatasetQueryView(APIView):
             query_req.sort.field = dataset_def.default_sort_field
 
         adapter = dataset_def.adapter_class()
+        try:
+            adapter.validate_filters(query_req.filters)
+        except FilterError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         result = adapter.query(query_req, request.user)
 
         # Permission filter on returned columns
@@ -269,6 +274,10 @@ class DatasetExportView(APIView):
         )
 
         adapter = dataset_def.adapter_class()
+        try:
+            adapter.validate_filters(query_req.filters)
+        except FilterError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         svc = ExportService(dataset_def, adapter, request.user)
         result = svc.run(export_req, query_req)
 

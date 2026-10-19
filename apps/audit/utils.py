@@ -1,4 +1,7 @@
+import logging
 from .models import AuditLog
+
+logger = logging.getLogger(__name__)
 
 def log_audit_event(actor=None, action="", target_model="", target_id="", details=None):
     """
@@ -14,4 +17,6 @@ def log_audit_event(actor=None, action="", target_model="", target_id="", detail
             details=details or {}
         )
     except Exception:
+        # Never break the caller's action, but never lose the fact that an audit record was lost.
+        logger.exception('Could not write audit event %r (target %s %s)', action, target_model, target_id)
         return None

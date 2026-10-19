@@ -6,16 +6,19 @@ from rest_framework.response import Response as DRFResponse
 from .models import Event, EventStatus
 from .serializers import EventSerializer
 from apps.core.permissions import IsAdminOrClubLeadOrReadOnly, _is_admin_or_club_lead
+from apps.core.cache import PublicReadCacheControlMixin
 from apps.audit.utils import log_audit_event
 
-class EventViewSet(viewsets.ModelViewSet):
+class EventViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = EventSerializer
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'
 
     def get_queryset(self):
         """Annotate events with real registration count (form responses, excluding test submissions)."""
-        queryset = Event.objects.select_related('registration_form').annotate(
+        queryset = Event.objects.select_related('registration_form').prefetch_related(
+            'registration_form__fields',
+        ).annotate(
             registration_count=Count(
                 'registration_form__responses',
                 filter=Q(registration_form__responses__is_test_submission=False),

@@ -48,7 +48,9 @@ The public page `/hackathons/[slug]` shows problem statements, public announceme
 Full detail on this module: [../modules/hackathon.md](../modules/hackathon.md).
 
 ## Creating an IconCoders Edition
-IconCoders editions are created the same way as any hackathon (above), but flagged as "flagship" so they also appear on the permanent `/iconcoders` branded page and, after results, get added to the **Hall of Fame**.
+> **Status:** IconCoders is being reviewed separately. For now every event, including a future IconCoders edition, is created as a normal hackathon (above). There is no "flagship" option on the hackathon form any more, so nothing links a hackathon to the `/iconcoders` page or the Hall of Fame until that is decided.
+
+The text below describes the earlier design.
 
 1. **Admin → IconCoders → New Edition** (this creates a linked Hackathon entry).
 2. Fill in the year's theme, sponsors, prize pool, dates.

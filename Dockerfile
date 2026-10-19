@@ -35,8 +35,12 @@ RUN chmod +x entrypoint.sh
 
 # WhiteNoise assets in the image. Lambda skips entrypoint startup tasks.
 # Render still collectstatics in build.sh. Compose still collectstatics on boot.
-# Placeholder SECRET_KEY is build-only; DEBUG=False rejects the insecure default.
+# Placeholder values are build-only: with DEBUG=False, settings.py refuses the insecure
+# SECRET_KEY default and requires ALLOWED_HOSTS and a non-local FRONTEND_URL. Real values
+# come from the runtime environment.
 RUN SECRET_KEY=collectstatic-build-placeholder-not-used-at-runtime \
+    ALLOWED_HOSTS=build.invalid \
+    FRONTEND_URL=https://build.invalid \
     DEBUG=False \
     EMAIL_PROVIDER=console \
     DATABASE_URL=sqlite:////tmp/build.db \
@@ -44,10 +48,6 @@ RUN SECRET_KEY=collectstatic-build-placeholder-not-used-at-runtime \
 
 EXPOSE 8000
 
-# entrypoint.sh: startup tasks only when RUN_STARTUP_TASKS=1 (Compose).
-# Then Gunicorn serves config.wsgi:application. Lambda Web Adapter forwards
-# Function URL HTTP to 0.0.0.0:8000. One worker is the Lambda default;
-# Compose overrides this CMD to three workers.
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Timeout 45s is below Lambda's 60s so a hung worker dies before the

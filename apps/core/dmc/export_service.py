@@ -64,6 +64,20 @@ def _format_json_cell(cv: CanonicalValue | Any) -> Any:
     return {"state": cv.state, "value": cv.value, "display_value": cv.display_value}
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", chr(9), chr(13))
+
+
+def _safe_cell(value: str) -> str:
+    """Neutralise spreadsheet formula injection: Excel/Sheets run cells that start with = + - @.
+
+    User-controlled text (names, answers, team names) must never be interpreted as a formula, so a
+    leading apostrophe forces it to plain text. The "-" placeholder for not-applicable is left alone.
+    """
+    if value and value != "-" and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 # ---------------------------------------------------------------------------
 # CSV generator
 # ---------------------------------------------------------------------------
@@ -74,10 +88,10 @@ def _generate_csv(
 ) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow([c.label for c in columns])
+    writer.writerow([_safe_cell(c.label) for c in columns])
     keys = [c.key for c in columns]
     for record in records:
-        writer.writerow([_format_cell(record.get(k)) for k in keys])
+        writer.writerow([_safe_cell(_format_cell(record.get(k))) for k in keys])
     return buf.getvalue().encode("utf-8-sig")
 
 
@@ -99,11 +113,11 @@ def _generate_xlsx(
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("DMC Export")
     from openpyxl.styles import Font
-    header = [c.label for c in columns]
+    header = [_safe_cell(c.label) for c in columns]
     ws.append(header)
     keys = [c.key for c in columns]
     for record in records:
-        ws.append([_format_cell(record.get(k)) for k in keys])
+        ws.append([_safe_cell(_format_cell(record.get(k))) for k in keys])
     wb.save(buf)
     return buf.getvalue()
 
@@ -126,6 +140,28 @@ def _generate_json(
 # ---------------------------------------------------------------------------
 # ExportService
 # ---------------------------------------------------------------------------
+
+def serialize_records(
+    columns: list[ColumnDefinition],
+    records: Generator[dict[str, CanonicalValue], None, None],
+    fmt: str,
+) -> tuple[bytes, str]:
+    """Render canonical records as CSV, XLSX or JSON bytes, plus their content type."""
+    if fmt == "csv":
+        return _generate_csv(columns, records), "text/csv"
+    elif fmt == "xlsx":
+        return _generate_xlsx(columns, records), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif fmt == "json":
+        return _generate_json(columns, records), "application/json"
+    raise ValueError(f"Unsupported export format: {fmt}")
+
+
+def _count_rows(records: Generator[dict[str, CanonicalValue], None, None], counter: list[int]):
+    """Yields records unchanged while tallying them into counter[0]."""
+    for record in records:
+        counter[0] += 1
+        yield record
+
 
 class ExportService:
     """
@@ -226,13 +262,7 @@ class ExportService:
         return {"mode": "async", "job_id": job.pk, "filename": filename}
 
     def _serialize(self, export_cols, records_iter, fmt: str) -> tuple[bytes, str]:
-        if fmt == "csv":
-            return _generate_csv(export_cols, records_iter), "text/csv"
-        elif fmt == "xlsx":
-            return _generate_xlsx(export_cols, records_iter), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        elif fmt == "json":
-            return _generate_json(export_cols, records_iter), "application/json"
-        raise ValueError(f"Unsupported export format: {fmt}")
+        return serialize_records(export_cols, records_iter, fmt)
 
     def _execute_job(self, job: Any, export_cols: list, export_req: ExportRequest, query_req: QueryRequest, filename: str):
         """Synchronous execution - called directly for small exports, and by
@@ -243,11 +273,15 @@ class ExportService:
         job.started_at = timezone.now()
         job.save(update_fields=["status", "started_at"])
 
+        row_counter = [0]
         try:
-            records = self.adapter.stream_records(
-                query_req,
-                self.user,
-                selected_ids=export_req.selected_record_ids if export_req.row_scope == "selected" else None,
+            records = _count_rows(
+                self.adapter.stream_records(
+                    query_req,
+                    self.user,
+                    selected_ids=export_req.selected_record_ids if export_req.row_scope == "selected" else None,
+                ),
+                row_counter,
             )
             data, _ = self._serialize(export_cols, records, job.format)
 
@@ -257,11 +291,10 @@ class ExportService:
             with open(file_path, "wb") as f:
                 f.write(data)
 
-            row_count = data.count(b"\n") if job.format == "csv" else 0
             job.status = ExportJob.STATUS_COMPLETED
             job.file_path = file_path
             job.file_size = len(data)
-            job.row_count = row_count
+            job.row_count = row_counter[0]
             job.completed_at = timezone.now()
 
         except Exception as exc:

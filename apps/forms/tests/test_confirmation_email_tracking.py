@@ -1,4 +1,5 @@
 import time
+import uuid
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -6,6 +7,7 @@ from django.core.cache import cache
 from rest_framework.test import APITransactionTestCase
 
 from apps.core.models import EmailTemplate
+from apps.core.tasks import wait_for_background_tasks
 from apps.forms.models import FieldType, FormStatus
 from .factories import make_form, add_field
 
@@ -48,7 +50,7 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
         # other test files' own submission counts.
         cache.clear()
         self.template = EmailTemplate.objects.create(
-            name="confirmation_test",
+            name=f"confirmation_test_{uuid.uuid4().hex}",
             subject_template="Thanks for registering, {{full_name}}!",
             html_template="<p>Hi {{first_name}}, we got your submission.</p>",
             allowed_parameters=["full_name", "first_name", "email", "club_id", "branch",
@@ -74,6 +76,7 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
         )
 
     def tearDown(self):
+        wait_for_background_tasks()
         cache.clear()
 
     def _submit(self):
@@ -110,6 +113,19 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
         self.assertIsNotNone(detail.data["confirmation_email"])
         self.assertEqual(detail.data["confirmation_email"]["status"], "SENT")
         self.assertEqual(detail.data["confirmation_email"]["recipient_email"], self.member.email)
+
+    def test_respondent_without_account_gets_fully_rendered_email(self):
+        body = {
+            "form": self.form.id,
+            "answers": [{"field": self.email_field.id, "value": "guest@example.com"}],
+            "idempotency_key": "confirm-test-guest",
+        }
+        resp = self.client.post("/api/forms/submissions/", body, format="json")
+        self.assertEqual(resp.status_code, 201, resp.data)
+
+        self.assertTrue(_wait_until(lambda: len(mail.outbox) == 1), "confirmation email was never sent")
+        self.assertIn("guest@example.com", mail.outbox[0].to)
+        self.assertIn("Hi guest,", mail.outbox[0].body)
 
     def test_admin_can_resend_confirmation_email(self):
         resp = self._submit()

@@ -26,16 +26,24 @@ services:
           name: srkrcc-postgres
           property: connectionString
       - key: ALLOWED_HOSTS
-        value: ".onrender.com,0.0.0.0,localhost,127.0.0.1"
+        sync: false   # your custom API hostname(s), e.g. api.srkrcc.in (the .onrender.com host is added automatically)
       - key: CORS_ALLOW_ALL_ORIGINS
         value: "False"
       - key: CORS_ALLOWED_ORIGINS
-        value: "http://localhost:3000"
+        sync: false   # the deployed frontend origin, e.g. https://srkrcc.in
       - key: CSRF_TRUSTED_ORIGINS
-        value: "https://*.onrender.com"
+        sync: false   # same origin(s) as above
+      - key: FRONTEND_URL
+        sync: false   # public frontend URL used in email links; unset means links point at localhost (core.W005 warns)
       - key: DJANGO_SUPERUSER_EMAIL
         value: "admin@srkr.ac.in"
       - key: DJANGO_SUPERUSER_PASSWORD
         generateValue: true
       - key: DJANGO_SUPERUSER_USERNAME
         value: "admin"
+      - key: CLIENT_IP_SHARED_SECRET
+        sync: false   # random string; set the same value in the frontend's CLIENT_IP_SHARED_SECRET
+      - key: TRUSTED_PROXY_COUNT
+        value: "1"    # Render's proxy; add 1 for each extra proxy/CDN in front (e.g. Cloudflare = 2)
+      - key: SENTRY_DSN
+        sync: false   # optional: error tracking

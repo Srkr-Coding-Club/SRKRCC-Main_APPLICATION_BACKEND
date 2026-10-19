@@ -15,6 +15,7 @@ Performance strategy for large datasets:
 """
 
 from __future__ import annotations
+import json
 from typing import Any, Generator
 
 from django.db.models import Q
@@ -23,12 +24,16 @@ from apps.core.dmc.adapters.base import BaseDatasetAdapter
 from apps.core.dmc.contracts import (
     CanonicalValue,
     ColumnDefinition,
+    FilterClause,
     FilterDefinition,
     FilterOption,
     QueryRequest,
     QueryResult,
 )
-from apps.forms.models import Form, FormField, Response, Answer
+from apps.core.dmc.filter_engine import (
+    Spec, apply_queryset, choices, distinct_values, person_specs, specs_by_key, to_definitions,
+)
+from apps.forms.models import Form, FormField, FormStatus, Response, Answer
 
 # ---------------------------------------------------------------------------
 # Common columns shared across all form views
@@ -44,9 +49,34 @@ COMMON_COLUMNS: list[ColumnDefinition] = [
     ColumnDefinition(key="submitted_at",    label="Submitted At",   type="datetime", category="meta",   sortable=True,  filterable=False, visible_by_default=True,  renderer="date",  source="forms.Response.submitted_at"),
 ]
 
-FORMS_ALL_FILTERS: list[FilterDefinition] = [
-    FilterDefinition(key="is_manual_entry", label="Entry Type", type="boolean", operators=["eq"]),
+FORM_STATUS_COLUMN = ColumnDefinition(
+    key="form_status", label="Form Status", type="badge", category="common", sortable=False, filterable=True,
+    visible_by_default=True, renderer="badge", source="forms.Form.status",
+    description="Whether the form is open (published), closed, draft, scheduled or archived.",
+)
+
+# "Published" is what admins mean by an open form.
+FORM_STATUS_LABELS = {"PUBLISHED": "Open (Published)"}
+
+
+def _form_options():
+    return [FilterOption(title, str(pk)) for pk, title in Form.objects.order_by("title").values_list("pk", "title")]
+
+
+_RESPONSE_COMMON = [
+    *person_specs("user__"),
+    Spec("is_manual_entry", "Entry Type", "boolean", ("is_manual_entry",)),
+    Spec("submitted_at", "Submitted At", "date", ("submitted_at",)),
 ]
+
+FORMS_ALL_SPECS = specs_by_key(
+    Spec("form_title", "Form", "select", ("form_id",), value_type="int", options=_form_options),
+    Spec("form_status", "Form Status", "select", ("form__status",), options=lambda: choices(FormStatus, FORM_STATUS_LABELS)),
+    Spec("form_category", "Form Category", "select", ("form__category",), options=lambda: distinct_values(Form.objects.all(), "category")),
+    *_RESPONSE_COMMON,
+)
+
+SINGLE_FORM_SPECS = specs_by_key(*_RESPONSE_COMMON)
 
 ALLOWED_SORT_FIELDS_FORMS = {"id", "submitted_at", "form_title", "is_manual_entry"}
 
@@ -63,38 +93,15 @@ class FormsAllAdapter(BaseDatasetAdapter):
     """
 
     def get_schema(self, user: Any) -> tuple[list[ColumnDefinition], list[FilterDefinition]]:
-        return list(COMMON_COLUMNS), list(FORMS_ALL_FILTERS)
+        columns = list(COMMON_COLUMNS)
+        columns.insert(2, FORM_STATUS_COLUMN)
+        return columns, to_definitions(FORMS_ALL_SPECS)
+
+    def filter_specs(self):
+        return FORMS_ALL_SPECS
 
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "is_manual_entry":
-                if op == "eq":
-                    is_true = str(val).lower() in ("true", "1", "yes")
-                    qs = qs.filter(is_manual_entry=is_true)
-            elif field == "form_title":
-                if op == "contains": qs = qs.filter(form__title__icontains=str(val))
-                elif op == "eq": qs = qs.filter(form__title__iexact=str(val))
-                elif op == "neq": qs = qs.exclude(form__title__iexact=str(val))
-                elif op == "starts_with": qs = qs.filter(form__title__istartswith=str(val))
-            elif field == "name":
-                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
-                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
-                elif op == "starts_with": qs = qs.filter(Q(user__first_name__istartswith=str(val)) | Q(user__last_name__istartswith=str(val)))
-            elif field == "email":
-                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
-                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
-                elif op == "starts_with": qs = qs.filter(user__email__istartswith=str(val))
-            elif field == "roll_number":
-                if op == "contains": qs = qs.filter(user__roll_number__icontains=str(val))
-                elif op == "eq": qs = qs.filter(user__roll_number__iexact=str(val))
-            elif field == "submitted_at":
-                if op == "gte": qs = qs.filter(submitted_at__gte=val)
-                elif op == "lte": qs = qs.filter(submitted_at__lte=val)
-                elif op == "eq": qs = qs.filter(submitted_at__date=val)
-        return qs
+        return apply_queryset(qs, filters, FORMS_ALL_SPECS)
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         qs = Response.objects.select_related("form", "user").prefetch_related("answers__field").filter(is_test_submission=False)
@@ -193,6 +200,7 @@ class FormsAllAdapter(BaseDatasetAdapter):
         return {
             "id":              self._val(str(r.pk), "number", "forms.Response.id"),
             "form_title":      self._val(r.form.title, "text", "forms.Form.title"),
+            "form_status":     self._val(r.form.get_status_display(), "badge", "forms.Form.status"),
             "name":            self._val(name, "text", "forms.Response.user.first_name+last_name"),
             "email":           self._val(email, "email", "forms.Response.user.email"),
             "roll_number":     self._val(roll_number, "text", "forms.Response.user.roll_number"),
@@ -204,6 +212,27 @@ class FormsAllAdapter(BaseDatasetAdapter):
 # ---------------------------------------------------------------------------
 # FormIndividualAdapter - full dynamic schema for a specific form
 # ---------------------------------------------------------------------------
+
+def _answer_q(field_id: int):
+    """
+    Filter on what respondents answered for one question.
+
+    Answers are stored as JSON, so a text answer reads as `"Hyderabad"` (quotes
+    included). Matching on that JSON text is what makes "equals" and "starts with"
+    work; a plain iexact/istartswith would never see the leading quote.
+    """
+    def build(op: str, value: str | None) -> Q:
+        has_answer = Q(answers__field_id=field_id)
+        if op == "empty":
+            return ~(has_answer & Q(answers__value__isnull=False))
+        if op == "not_empty":
+            return has_answer & Q(answers__value__isnull=False)
+        quoted = json.dumps(value, ensure_ascii=False)
+        needle = {"contains": value, "starts_with": quoted[:-1], "eq": quoted, "neq": quoted}[op]
+        match = has_answer & Q(answers__value__icontains=needle)
+        return ~match if op == "neq" else match
+    return build
+
 
 class FormIndividualAdapter(BaseDatasetAdapter):
     """
@@ -244,41 +273,17 @@ class FormIndividualAdapter(BaseDatasetAdapter):
                 renderer="text",
                 description=f"Form question: {ff.label} ({ff.type})",
             ))
-        return columns, []
+        return columns, to_definitions(self.filter_specs())
+
+    def filter_specs(self):
+        specs = dict(SINGLE_FORM_SPECS)
+        if self._ensure_form():
+            for ff in self._fields:
+                specs[f"q_{ff.id}"] = Spec(f"q_{ff.id}", ff.label, "text", custom=_answer_q(ff.id))
+        return specs
 
     def _apply_filters(self, qs, filters: list[FilterClause]):
-        for f in filters:
-            field = f.field
-            op = f.operator
-            val = f.value
-            if field == "is_manual_entry":
-                if op == "eq":
-                    is_true = str(val).lower() in ("true", "1", "yes")
-                    qs = qs.filter(is_manual_entry=is_true)
-            elif field == "name":
-                if op == "contains": qs = qs.filter(Q(user__first_name__icontains=str(val)) | Q(user__last_name__icontains=str(val)))
-                elif op == "eq": qs = qs.filter(Q(user__first_name__iexact=str(val)) | Q(user__last_name__iexact=str(val)))
-                elif op == "starts_with": qs = qs.filter(Q(user__first_name__istartswith=str(val)) | Q(user__last_name__istartswith=str(val)))
-            elif field == "email":
-                if op == "contains": qs = qs.filter(user__email__icontains=str(val))
-                elif op == "eq": qs = qs.filter(user__email__iexact=str(val))
-                elif op == "starts_with": qs = qs.filter(user__email__istartswith=str(val))
-            elif field == "roll_number":
-                if op == "contains": qs = qs.filter(user__roll_number__icontains=str(val))
-                elif op == "eq": qs = qs.filter(user__roll_number__iexact=str(val))
-            elif field == "submitted_at":
-                if op == "gte": qs = qs.filter(submitted_at__gte=val)
-                elif op == "lte": qs = qs.filter(submitted_at__lte=val)
-                elif op == "eq": qs = qs.filter(submitted_at__date=val)
-            elif field.startswith("q_") and field[2:].isdigit():
-                fid = int(field[2:])
-                if op == "contains": qs = qs.filter(answers__field_id=fid, answers__value__icontains=str(val))
-                elif op == "starts_with": qs = qs.filter(answers__field_id=fid, answers__value__istartswith=str(val))
-                elif op == "eq": qs = qs.filter(answers__field_id=fid, answers__value__iexact=str(val))
-                elif op == "neq": qs = qs.exclude(answers__field_id=fid, answers__value__iexact=str(val))
-                elif op == "empty": qs = qs.exclude(answers__field_id=fid, answers__value__isnull=False)
-                elif op == "not_empty": qs = qs.filter(answers__field_id=fid, answers__value__isnull=False)
-        return qs
+        return apply_queryset(qs, filters, self.filter_specs())
 
     def query(self, query_req: QueryRequest, user: Any) -> QueryResult:
         if not self._ensure_form():
@@ -297,7 +302,9 @@ class FormIndividualAdapter(BaseDatasetAdapter):
 
         sort_field = "submitted_at" if query_req.sort.field not in {"id", "submitted_at"} else query_req.sort.field
         prefix = "-" if query_req.sort.direction == "desc" else ""
-        qs = qs.order_by(f"{prefix}{sort_field}")
+        # pk breaks ties so OFFSET pages never overlap or skip rows that share a timestamp.
+        ordering = (f"{prefix}{sort_field}", f"{prefix}pk")
+        qs = qs.order_by(*ordering)
 
         total = qs.count()
         offset = (query_req.page - 1) * query_req.page_size
@@ -308,7 +315,7 @@ class FormIndividualAdapter(BaseDatasetAdapter):
             Response.objects.filter(pk__in=page_ids)
             .select_related("user", "form")
             .prefetch_related("answers__field")
-            .order_by(f"{prefix}{sort_field}")
+            .order_by(*ordering)
         )
 
         field_set = {ff.id for ff in self._fields}
@@ -339,7 +346,9 @@ class FormIndividualAdapter(BaseDatasetAdapter):
             qs = self._apply_filters(qs, query_req.filters)
         field_set = {ff.id for ff in self._fields}
 
-        # Stream in chunks of 200 responses; for each chunk prefetch answers
+        # Stream in chunks of 200 responses; for each chunk prefetch answers.
+        # OFFSET chunking is only safe over a deterministic order, so pk is pinned.
+        qs = qs.order_by("pk")
         CHUNK = 200
         offset = 0
         while True:
@@ -350,6 +359,7 @@ class FormIndividualAdapter(BaseDatasetAdapter):
                 Response.objects.filter(pk__in=chunk_ids)
                 .select_related("user", "form")
                 .prefetch_related("answers__field")
+                .order_by("pk")
             )
             for r in chunk:
                 yield self._normalize_full(r, field_set)

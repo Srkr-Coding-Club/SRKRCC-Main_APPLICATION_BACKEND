@@ -1,3 +1,4 @@
+import logging
 import re
 from django.db import models
 from rest_framework import serializers
@@ -6,7 +7,12 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
+from apps.colleges.models import College, get_default_college
+from apps.colleges.serializers import CollegeSerializer
 from apps.accounts.validators import (
+    OTHER_COLLEGE_NAME_MAX_LENGTH,
+    OTHER_COLLEGE_NAME_MIN_LENGTH,
+    OTHER_COLLEGE_NAME_REGEX,
     EMAIL_MAX_LENGTH,
     EMAIL_REGEX,
     NAME_MAX_LENGTH,
@@ -23,6 +29,36 @@ from apps.accounts.validators import (
     normalize_phone_number,
     normalize_roll_number,
 )
+
+logger = logging.getLogger(__name__)
+
+def validate_other_college_name(value):
+    name = normalize_name(value)
+    if not name:
+        return ""
+    if len(name) < OTHER_COLLEGE_NAME_MIN_LENGTH:
+        raise serializers.ValidationError(f"College name must be at least {OTHER_COLLEGE_NAME_MIN_LENGTH} characters long.")
+    if len(name) > OTHER_COLLEGE_NAME_MAX_LENGTH:
+        raise serializers.ValidationError(f"College name must be at most {OTHER_COLLEGE_NAME_MAX_LENGTH} characters long.")
+    if not OTHER_COLLEGE_NAME_REGEX.match(name):
+        raise serializers.ValidationError("College name may only contain letters, numbers, spaces and . , & ' ( ) / -")
+    return name
+
+
+def reconcile_college_choice(attrs, current_other_name=""):
+    """
+    A member's college is either a catalogue row or a typed-in name, never both:
+    picking a catalogue college clears the typed name, and typing a name clears the
+    catalogue link. Clearing the link without supplying a name is rejected.
+    """
+    if attrs.get('college') is not None:
+        attrs['other_college_name'] = ''
+    elif attrs.get('other_college_name'):
+        attrs['college'] = None
+    elif 'college' in attrs and not current_other_name:
+        raise serializers.ValidationError({'college_id': "Select a college or enter your college name."})
+    return attrs
+
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
@@ -92,12 +128,13 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     referred_by_display = serializers.SerializerMethodField()
+    college = CollegeSerializer(read_only=True)
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name',
-            'role', 'club_id', 'membership_status', 'roll_number', 'branch', 'year', 'phone_number',
+            'role', 'club_id', 'membership_status', 'roll_number', 'college', 'other_college_name', 'branch', 'year', 'phone_number',
             'github_profile', 'linkedin_profile', 'registered_at', 'created_from',
             'referred_by_raw', 'referred_by_display', 'created_at'
         ]
@@ -247,20 +284,35 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
     registered events/forms, streak count, and earned badges.
     """
     streak = serializers.SerializerMethodField()
-    points = serializers.SerializerMethodField()
+    problems_solved = serializers.SerializerMethodField()
     events_count = serializers.SerializerMethodField()
-    projects_count = serializers.SerializerMethodField()
+    events_registered_count = serializers.SerializerMethodField()
+    events_attended_count = serializers.SerializerMethodField()
+    hackathon_teams_count = serializers.SerializerMethodField()
     registered_events = serializers.SerializerMethodField()
     badges = serializers.SerializerMethodField()
     referred_by_display = serializers.SerializerMethodField()
+    college = CollegeSerializer(read_only=True)
+    college_id = serializers.PrimaryKeyRelatedField(
+        source='college', queryset=College.objects.all(), write_only=True, required=False, allow_null=True,
+        error_messages={'does_not_exist': 'Select a college from the list.', 'incorrect_type': 'Select a college from the list.'},
+    )
+    other_college_name = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_other_college_name(self, value):
+        return validate_other_college_name(value)
+
+    def validate(self, attrs):
+        return reconcile_college_choice(attrs, current_other_name=self.instance.other_college_name if self.instance else '')
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name', 
-            'role', 'club_id', 'membership_status', 'roll_number', 'branch', 'year', 'phone_number',
+            'role', 'club_id', 'membership_status', 'roll_number', 'college', 'college_id', 'other_college_name', 'branch', 'year', 'phone_number',
             'github_profile', 'linkedin_profile', 'registered_at', 'referred_by_raw', 'referred_by_display', 'created_at',
-            'streak', 'points', 'events_count', 'projects_count',
+            'streak', 'problems_solved', 'events_count', 'events_registered_count',
+            'events_attended_count', 'hackathon_teams_count',
             'registered_events', 'badges'
         ]
         # `email` is the account's identity (USERNAME_FIELD, login identifier,
@@ -363,32 +415,35 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
         except Exception:
             return 0
 
-    def get_points(self, obj):
-        points = 0
-        try:
-            # 50 points per correct problem solved
-            points += obj.codequest_submissions.filter(is_correct=True).count() * 50
-        except Exception:
-            pass
-        try:
-            from apps.forms.models import Response
-            # 25 points per form/event registration
-            points += Response.objects.filter(user=obj, is_test_submission=False).count() * 25
-        except Exception:
-            pass
-        return max(points, 50)  # Baseline onboarding points
+    def get_problems_solved(self, obj):
+        """Distinct CodeQuest problems solved (several correct submissions of one problem count once)."""
+        from apps.codequest.models import Submission
+        return Submission.objects.filter(user=obj, is_correct=True).values('problem_id').distinct().count()
+
+    def get_events_registered_count(self, obj):
+        """Distinct events the member registered for. `events_count` counts every form response instead."""
+        from apps.events.models import Event
+        return Event.objects.filter(
+            registration_form__responses__user=obj,
+            registration_form__responses__is_test_submission=False,
+        ).distinct().count()
+
+    def get_events_attended_count(self, obj):
+        """Distinct events the member was checked in to by a QR attendance scan."""
+        from apps.attendance.models import AttendanceRecord
+        return AttendanceRecord.objects.filter(
+            badge__response__user=obj, badge__response__is_test_submission=False,
+        ).values('badge__response__form_id').distinct().count()
+
+    def get_hackathon_teams_count(self, obj):
+        """Hackathon teams the member belongs to: the same teams the profile's hackathon panel lists."""
+        from apps.hackathons.models import Team
+        return Team.objects.filter(memberships__user=obj).distinct().count()
 
     def get_events_count(self, obj):
         try:
             from apps.forms.models import Response
             return Response.objects.filter(user=obj, is_test_submission=False).count()
-        except Exception:
-            return 0
-
-    def get_projects_count(self, obj):
-        try:
-            from apps.hackathons.models import Team
-            return Team.objects.filter(models.Q(leader=obj) | models.Q(members=obj)).distinct().count()
         except Exception:
             return 0
 
@@ -481,6 +536,12 @@ class RegisterSerializer(serializers.ModelSerializer):
     branch = serializers.CharField()
     year = serializers.IntegerField()
     phone_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    # Optional so older clients keep working; omitted means the club's home college.
+    college_id = serializers.PrimaryKeyRelatedField(
+        source='college', queryset=College.objects.all(), required=False,
+        error_messages={'does_not_exist': 'Select a college from the list.', 'incorrect_type': 'Select a college from the list.'},
+    )
+    other_college_name = serializers.CharField(required=False, allow_blank=True)
     # Derived from email: echoed back in the response, never read from the request.
     username = serializers.CharField(read_only=True)
 
@@ -519,8 +580,17 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'username', 'email', 'password', 'first_name', 'last_name',
-            'role', 'roll_number', 'branch', 'year', 'club_id', 'phone_number',
+            'role', 'roll_number', 'college_id', 'other_college_name', 'branch', 'year', 'club_id', 'phone_number',
         ]
+
+    def _is_admin_caller(self):
+        requester = getattr(self.context.get('request'), 'user', None)
+        return bool(requester and requester.is_authenticated and (
+            requester.is_staff or requester.is_superuser or getattr(requester, 'role', None) in ('ADMIN', 'CLUB_LEAD')
+        ))
+
+    def validate_other_college_name(self, value):
+        return validate_other_college_name(value)
 
     def validate_email(self, value):
         email = normalize_email(value)
@@ -603,11 +673,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         return phone
 
     def validate_role(self, value):
-        requester = getattr(self.context.get('request'), 'user', None)
-        is_admin_caller = bool(requester and requester.is_authenticated and (
-            requester.is_staff or requester.is_superuser or getattr(requester, 'role', None) in ('ADMIN', 'CLUB_LEAD')
-        ))
-        allowed = self.ADMIN_GRANTABLE_ROLES if is_admin_caller else self.SELF_REGISTERABLE_ROLES
+        allowed = self.ADMIN_GRANTABLE_ROLES if self._is_admin_caller() else self.SELF_REGISTERABLE_ROLES
         return value if value in allowed else 'NON_AFFILIATE'
 
     def validate_club_id(self, value):
@@ -624,24 +690,15 @@ class RegisterSerializer(serializers.ModelSerializer):
         return canonical
 
     def validate(self, attrs):
-        # Password strength is checked here rather than in validate_password()
-        # because UserAttributeSimilarityValidator needs the rest of the payload:
-        # it is what rejects a password built out of the applicant's own email or
-        # name, and DRF runs per-field validators before those siblings exist.
+        # Password strength is checked here so every failure is reported under
+        # the 'password' key alongside the other field errors of this payload.
         from django.contrib.auth.password_validation import validate_password
         from django.core.exceptions import ValidationError as DjangoValidationError
 
         password = attrs.get('password')
         if password:
-            email = attrs.get('email', '')
-            candidate = User(
-                email=email,
-                username=email.split('@')[0],
-                first_name=attrs.get('first_name', ''),
-                last_name=attrs.get('last_name', ''),
-            )
             try:
-                validate_password(password, user=candidate)
+                validate_password(password)
             except DjangoValidationError as ex:
                 raise serializers.ValidationError({'password': list(ex.messages)})
 
@@ -649,6 +706,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         # normalized it to canonical form, or to None if blank/omitted - this
         # runs after both validate_role() and validate_club_id() since DRF
         # calls per-field validators before this object-level one).
+        reconcile_college_choice(attrs)
         if attrs.get('role') == 'AFFILIATE' and not attrs.get('club_id'):
             raise serializers.ValidationError({
                 'club_id': "Affiliate members must provide a valid Club ID. "
@@ -675,6 +733,12 @@ class RegisterSerializer(serializers.ModelSerializer):
             candidate = f"{base[:140 - len(tail)]}{tail}"
         return candidate
 
+    @staticmethod
+    def _resolve_college(validated_data):
+        if validated_data.get('college') is not None:
+            return validated_data['college']
+        return None if validated_data.get('other_college_name') else get_default_college()
+
     def create(self, validated_data):
         from django.db import IntegrityError, transaction
 
@@ -695,6 +759,8 @@ class RegisterSerializer(serializers.ModelSerializer):
                     first_name=validated_data.get('first_name', ''),
                     last_name=validated_data.get('last_name', ''),
                     roll_number=roll_number,
+                    college=self._resolve_college(validated_data),
+                    other_college_name=validated_data.get('other_college_name', ''),
                     branch=validated_data.get('branch', ''),
                     year=validated_data.get('year', None),
                     role=validated_data.get('role') or 'NON_AFFILIATE',

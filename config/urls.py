@@ -19,6 +19,7 @@ urlpatterns = [
     path('api/ping', ping_view),
     path('admin/', admin.site.urls),
     path('api/auth/', include('apps.accounts.urls')),
+    path('api/colleges/', include('apps.colleges.urls')),
     path('api/feature-flags/', include('apps.feature_flags.urls')),
     path('api/forms/', include('apps.forms.urls')),
     path('api/members/', include((members_urlpatterns, 'members'))),

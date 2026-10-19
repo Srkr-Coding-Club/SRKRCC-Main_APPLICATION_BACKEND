@@ -19,6 +19,12 @@ class Command(BaseCommand):
     help = "Ingest mock dataset across all SRKR Coding Club backend modules"
 
     def handle(self, *args, **options):
+        from django.core.management.base import CommandError
+        from apps.core.dev_guard import DevelopmentOnlyError, require_development
+        try:
+            require_development('seed_data')
+        except DevelopmentOnlyError as error:
+            raise CommandError(str(error))
         self.stdout.write(self.style.SUCCESS("Starting database mock data ingestion..."))
 
         # 1. Create Core Users & RBAC
@@ -204,7 +210,6 @@ class Command(BaseCommand):
             slug="iconcoders-hackathon-2025",
             defaults={
                 "title": "IconCoders Flagship Hackathon 2025",
-                "is_flagship": True,
                 "theme": "AI for Social Good & Web3 Innovations",
                 "description": "SRKR Coding Club annual flagship 36-hour hackathon.",
                 "prize_pool": "₹1,00,000 INR",

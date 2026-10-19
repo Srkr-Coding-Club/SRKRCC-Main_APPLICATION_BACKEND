@@ -23,8 +23,14 @@ jobs:
     steps:
       - name: Ping backend health endpoint
         env:
-          BACKEND_PING_URL: ${{ vars.BACKEND_PING_URL || 'https://srkrcc-main-application-backend.onrender.com/api/ping/' }}
+          # Repository variable (Settings > Secrets and variables > Actions > Variables),
+          # e.g. https://api.example.com/api/ping/. Nothing is hardcoded to one platform.
+          BACKEND_PING_URL: ${{ vars.BACKEND_PING_URL }}
         run: |
+          if [ -z "$BACKEND_PING_URL" ]; then
+            echo "::notice::BACKEND_PING_URL is not set, skipping. Add it as a repository variable to enable this job."
+            exit 0
+          fi
           echo "Pinging backend at: $BACKEND_PING_URL"
           response=$(curl -sSL -w "\nHTTP_STATUS:%{http_code}\nTIME_TOTAL:%{time_total}s\n" --max-time 35 --retry 2 --retry-delay 5 "$BACKEND_PING_URL")
           echo "$response"
