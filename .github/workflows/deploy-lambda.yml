@@ -26,12 +26,11 @@ env:
   LAMBDA_HEALTH_URL: https://bpta2b57zq225e7w7gsmr4mjom0lxqpx.lambda-url.ap-south-1.on.aws/api/ping/
   SSM_SECRET_KEY_NAME: /srkrcc/dev/backend/secret_key
   SSM_DATABASE_URL_NAME: /srkrcc/dev/backend/database_url
-  # Same host list Django expects with DEBUG=False. Must match (or be a
-  # subset of) the Lambda function's ALLOWED_HOSTS. Migrates do not serve
-  # HTTP; they only need settings to load. Set the repository variable to
-  # the Function URL pattern used by Terraform, e.g.
-  # .lambda-url.ap-south-1.on.aws
-  ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS }}
+  # Same host list Django expects with DEBUG=False. Migrates do not serve
+  # HTTP; they only need settings to load. Default matches Terraform's
+  # Lambda ALLOWED_HOSTS. Override with repository variable ALLOWED_HOSTS
+  # when a custom API hostname is added.
+  ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS || '.lambda-url.ap-south-1.on.aws' }}
 
 jobs:
   deploy:
@@ -45,13 +44,6 @@ jobs:
         run: |
           if [ -z "$AWS_DEPLOY_ROLE_ARN" ]; then
             echo "::error::Set the repository variable AWS_DEPLOY_ROLE_ARN to the IAM role GitHub Actions may assume."
-            exit 1
-          fi
-
-      - name: Require ALLOWED_HOSTS for Django management commands
-        run: |
-          if [ -z "$ALLOWED_HOSTS" ]; then
-            echo "::error::Set the repository variable ALLOWED_HOSTS to the hostnames this backend serves (comma separated), e.g. .lambda-url.ap-south-1.on.aws. Matches config/security_config.py with DEBUG=False."
             exit 1
           fi
 

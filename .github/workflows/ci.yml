@@ -60,4 +60,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build the Lambda image without pushing
-        run: docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .
+        run: |
+          set -euo pipefail
+          # Public base-image pulls occasionally flake on GitHub runners.
+          # One retry keeps the same Dockerfile and does not skip the build.
+          if ! docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .; then
+            echo "First image build failed; retrying once."
+            docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .
+          fi
