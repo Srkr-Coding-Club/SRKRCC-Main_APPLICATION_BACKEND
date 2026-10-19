@@ -12,8 +12,8 @@ class Command(BaseCommand):
         parser.add_argument(
             '--email',
             type=str,
-            default=os.getenv('DJANGO_SUPERUSER_EMAIL', 'admin@srkr.ac.in'),
-            help='Super Admin email address (defaults to DJANGO_SUPERUSER_EMAIL or admin@srkr.ac.in)'
+            default=os.getenv('DJANGO_SUPERUSER_EMAIL', 'srkrcodingclubofficial@gmail.com'),
+            help='Super Admin email address (defaults to DJANGO_SUPERUSER_EMAIL or srkrcodingclubofficial@gmail.com)'
         )
         parser.add_argument(
             '--password',

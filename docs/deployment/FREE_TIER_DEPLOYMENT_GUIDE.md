@@ -81,7 +81,7 @@ We recommend **Neon.tech** for the database because its free tier **never suspen
    | `FRONTEND_URL` | `https://your-frontend.example` | **Strongly recommended.** Public frontend address used in email links. If unset it defaults to localhost, so password-setup, reset and invite emails would link to a local machine (`manage.py check` warns with `core.W005`) |
    | `CORS_ALLOWED_ORIGINS` | `https://your-frontend.example` | Exact frontend origin(s). `CORS_ALLOW_ALL_ORIGINS` is refused when `DEBUG=False` |
    | `CSRF_TRUSTED_ORIGINS` | `https://your-frontend.example` | Exact origin(s); no wildcards |
-   | `DJANGO_SUPERUSER_EMAIL` | `admin@srkr.ac.in` | **Super Admin Email** |
+   | `DJANGO_SUPERUSER_EMAIL` | `srkrcodingclubofficial@gmail.com` | **Super Admin Email** |
    | `DJANGO_SUPERUSER_PASSWORD` | *(a strong random value)* | **Super Admin Password.** Required; well-known passwords are rejected and there is no default |
    | `DJANGO_SUPERUSER_USERNAME` | `admin` | Super Admin Username |
 
@@ -120,7 +120,7 @@ We recommend **Neon.tech** for the database because its free tier **never suspen
 1. Navigate to your live frontend URL:
    `https://srkrcc.vercel.app/login`
 2. Enter your Super Admin credentials:
-   - **Email**: `admin@srkr.ac.in` (or the email you set in `DJANGO_SUPERUSER_EMAIL`)
+   - **Email**: `srkrcodingclubofficial@gmail.com` (or the email you set in `DJANGO_SUPERUSER_EMAIL`)
    - **Password**: The password you specified in `DJANGO_SUPERUSER_PASSWORD`
 3. Access the **Admin Control Room**:
    - Feature flags management: `/admin/flags`
@@ -169,7 +169,7 @@ python manage.py setup_admin
 python manage.py setup_admin --email president@srkr.ac.in --password "SuperSecret@2025" --username president --first-name "Club" --last-name "President"
 
 # Reset existing admin password:
-python manage.py setup_admin --email admin@srkr.ac.in --password "NewPassword@123" --reset-password
+python manage.py setup_admin --email srkrcodingclubofficial@gmail.com --password "NewPassword@123" --reset-password
 ```
 
 ---
