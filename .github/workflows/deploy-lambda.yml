@@ -26,10 +26,16 @@ env:
   LAMBDA_HEALTH_URL: https://bpta2b57zq225e7w7gsmr4mjom0lxqpx.lambda-url.ap-south-1.on.aws/api/ping/
   SSM_SECRET_KEY_NAME: /srkrcc/dev/backend/secret_key
   SSM_DATABASE_URL_NAME: /srkrcc/dev/backend/database_url
+  # Same host list Django expects with DEBUG=False. Migrates do not serve
+  # HTTP; they only need settings to load. Default matches Terraform's
+  # Lambda ALLOWED_HOSTS. Override with repository variable ALLOWED_HOSTS
+  # when a custom API hostname is added.
+  ALLOWED_HOSTS: ${{ vars.ALLOWED_HOSTS || '.lambda-url.ap-south-1.on.aws' }}
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # Pin 24.04 while ubuntu-latest migrates to Ubuntu 26 (started 2026-10-19).
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +61,9 @@ jobs:
 
       - name: Log in to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Record the Lambda image currently in service
         run: |
@@ -111,6 +120,7 @@ jobs:
             -e AWS_DEFAULT_REGION="$AWS_REGION" \
             -e SERVERLESS=1 \
             -e DEBUG=False \
+            -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
@@ -135,6 +145,7 @@ jobs:
             -e AWS_DEFAULT_REGION="$AWS_REGION" \
             -e SERVERLESS=1 \
             -e DEBUG=False \
+            -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
@@ -160,6 +171,7 @@ jobs:
             -e AWS_DEFAULT_REGION="$AWS_REGION" \
             -e SERVERLESS=1 \
             -e DEBUG=False \
+            -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
@@ -178,6 +190,7 @@ jobs:
             -e AWS_DEFAULT_REGION="$AWS_REGION" \
             -e SERVERLESS=1 \
             -e DEBUG=False \
+            -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
             -e SSM_SECRET_KEY_NAME \
