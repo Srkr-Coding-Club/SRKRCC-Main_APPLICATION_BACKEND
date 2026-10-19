@@ -75,7 +75,7 @@ def seed_users():
         email = user_data['email']
         password = user_data['password']
         
-        user, created = User.objects.get_or_select = User.objects.get_or_create(
+        user, created = User.objects.get_or_create(
             email=email,
             defaults={
                 'username': user_data['username'],
