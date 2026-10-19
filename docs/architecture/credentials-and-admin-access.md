@@ -49,7 +49,7 @@ A local `DEBUG=True` database seeded with the demo data has the following creden
 
 | Portal | Email | Password | Role | Permissions & Clearances |
 | :--- | :--- | :--- | :--- | :--- |
-| **Django Admin & Frontend** | `admin@srkr.ac.in` | `Admin@123` | `ADMIN` | **Superuser & Staff** — Full backend & frontend control |
+| **Django Admin & Frontend** | `srkrcodingclubofficial@gmail.com` | *(from `DJANGO_SUPERUSER_PASSWORD`)* | `ADMIN` | **Superuser & Staff** — Full backend & frontend control |
 | **Django Admin & Frontend** | `clublead@srkr.ac.in` | `ClubLead@123` | `CLUB_LEAD` | **Staff** — Full frontend admin control room & data health |
 | **Frontend Portal** | `judge@srkr.ac.in` | `Judge@123` | `JUDGE` | Hackathon project evaluation & grading |
 | **Frontend Portal** | `rahul.sharma@srkr.ac.in` | `Member@123` | `NON_AFFILIATE` | Pre-seeded with 14-day CodeQuest streak & form submissions |

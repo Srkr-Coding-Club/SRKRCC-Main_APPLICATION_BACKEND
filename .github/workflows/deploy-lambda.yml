@@ -158,11 +158,20 @@ jobs:
           fi
 
       - name: Seed feature flags and the admin account
+        env:
+          # Secret, not a variable: never store the admin password in plain text.
+          DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
+          DJANGO_SUPERUSER_EMAIL: ${{ vars.DJANGO_SUPERUSER_EMAIL || 'srkrcodingclubofficial@gmail.com' }}
         run: |
           set -euo pipefail
           # Same commands as entrypoint.sh when RUN_STARTUP_TASKS=1.
-          # setup_admin does not reset an existing password.
+          # setup_admin only uses the password when creating the first admin;
+          # an existing admin's password is left alone unless --reset-password.
           # Direct host: the pooler drops the session lock migrate just used.
+          if [ -z "${DJANGO_SUPERUSER_PASSWORD:-}" ]; then
+            echo "::error::Set the repository secret DJANGO_SUPERUSER_PASSWORD (Settings → Secrets and variables → Actions). There is no default admin password when DEBUG=False."
+            exit 1
+          fi
           if ! docker run --rm --entrypoint python \
             -e AWS_ACCESS_KEY_ID \
             -e AWS_SECRET_ACCESS_KEY \
@@ -193,6 +202,8 @@ jobs:
             -e ALLOWED_HOSTS \
             -e EMAIL_PROVIDER=console \
             -e DATABASE_USE_DIRECT=1 \
+            -e DJANGO_SUPERUSER_EMAIL \
+            -e DJANGO_SUPERUSER_PASSWORD \
             -e SSM_SECRET_KEY_NAME \
             -e SSM_DATABASE_URL_NAME \
             "$IMMUTABLE_IMAGE" \
