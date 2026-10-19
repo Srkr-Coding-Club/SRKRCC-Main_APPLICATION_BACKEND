@@ -48,6 +48,11 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Verify AWS identity
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+
       - name: Log in to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
