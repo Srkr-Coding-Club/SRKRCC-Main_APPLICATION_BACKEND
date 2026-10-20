@@ -157,6 +157,32 @@ jobs:
             exit 1
           fi
 
+      - name: Create database cache table
+        run: |
+          set -euo pipefail
+          # DatabaseCache LOCATION=django_cache_table backs DRF throttling when
+          # DEBUG=False. createcachetable is idempotent: it creates the table
+          # only if missing and leaves an existing table untouched.
+          if ! docker run --rm --entrypoint python \
+            -e AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY \
+            -e AWS_SESSION_TOKEN \
+            -e AWS_REGION \
+            -e AWS_DEFAULT_REGION="$AWS_REGION" \
+            -e SERVERLESS=1 \
+            -e DEBUG=False \
+            -e ALLOWED_HOSTS \
+            -e EMAIL_PROVIDER=console \
+            -e DATABASE_USE_DIRECT=1 \
+            -e SSM_SECRET_KEY_NAME \
+            -e SSM_DATABASE_URL_NAME \
+            "$IMMUTABLE_IMAGE" \
+            manage.py createcachetable >"$RUNNER_TEMP/createcachetable.txt" 2>&1; then
+            echo "::error::Database cache table creation failed."
+            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/createcachetable.txt" || true
+            exit 1
+          fi
+
       - name: Seed feature flags and the admin account
         env:
           # Secret, not a variable: never store the admin password in plain text.
