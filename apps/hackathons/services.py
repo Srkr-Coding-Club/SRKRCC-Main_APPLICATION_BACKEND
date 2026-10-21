@@ -19,12 +19,13 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
 from django.utils import timezone
-from rest_framework.exceptions import APIException, PermissionDenied
+from rest_framework.exceptions import PermissionDenied
 
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import _is_admin_or_club_lead
 
-from . import team_emails
+from . import access, registration, round_rules, team_emails
+from .errors import HackathonError
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, InviteStatus,
     EmailInviteStatus, HackathonStage, ProblemStatement, Round, RoundEntry, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamRole,
@@ -40,18 +41,6 @@ ROUND_SCOPED_AUDIENCES = (
 )
 
 
-class HackathonError(APIException):
-    """400 with a stable machine-readable ``code`` the frontend can branch on."""
-    status_code = 400
-    default_code = 'HACKATHON_ERROR'
-
-    def __init__(self, message, code='HACKATHON_ERROR', field=None, status=None, **extra):
-        detail = {'detail': message, 'code': code, **extra}
-        if field:
-            detail['field'] = field
-        self.detail = detail
-        if status:
-            self.status_code = status
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +85,14 @@ def _require_registration_open(hackathon: Hackathon):
         raise HackathonError('Team registration is not open for this hackathon.', 'REGISTRATION_CLOSED')
 
 
+def _is_team_organizer(hackathon: Hackathon, actor) -> bool:
+    """Site-wide organizers, or staff of this hackathon allowed to manage teams."""
+    return access.has_permission(hackathon, actor, 'teams')
+
+
 def _require_team_editable(team: Team, actor):
-    """Participant-side edits need open registration and an unlocked hackathon; admins bypass both."""
-    if _is_admin_or_club_lead(actor):
+    """Participant-side edits need open registration and an unlocked hackathon; organizers bypass both."""
+    if _is_team_organizer(team.hackathon, actor):
         return
     if team.status in (TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN):
         raise HackathonError('This team can no longer be changed.', 'TEAM_INACTIVE')
@@ -108,7 +102,7 @@ def _require_team_editable(team: Team, actor):
 
 
 def _require_leader(team: Team, actor):
-    if not (is_leader(team, actor) or _is_admin_or_club_lead(actor)):
+    if not (is_leader(team, actor) or _is_team_organizer(team.hackathon, actor)):
         raise PermissionDenied('Only the team leader can do this.')
 
 
@@ -126,7 +120,12 @@ MAX_PROBLEM_DOMAIN = 100
 MAX_PROBLEM_DESCRIPTION = 5000
 
 
-def _check_problem_statement(hackathon: Hackathon, ps: ProblemStatement, *, exclude_team: Team | None = None):
+def _require_problems_revealed(hackathon: Hackathon, ps: ProblemStatement | None):
+    if ps is not None and hackathon.problem_statements_reveal_at and hackathon.problem_statements_reveal_at > timezone.now():
+        raise HackathonError('Problem statements have not been revealed yet.', 'PROBLEMS_NOT_REVEALED', field='problem_statement')
+
+
+def _check_problem_statement(hackathon: Hackathon, ps: ProblemStatement | None, *, exclude_team: Team | None = None):
     # A team keeps the statement it already holds even after an admin deactivates it,
     # so it can still be renamed; only picking a new statement needs an active one.
     if exclude_team is not None and exclude_team.problem_statement_id == ps.id:
@@ -212,7 +211,7 @@ def _recompute_status(team: Team) -> bool:
         return False
     team.status = new_status
     team.save(update_fields=['status', 'updated_at'])
-    if new_status == TeamStatus.REGISTERED:
+    if new_status == TeamStatus.REGISTERED and not team.is_waitlisted:
         team_emails.notify_team('team_registered', team)
         return True
     return False
@@ -375,7 +374,7 @@ class TeamService:
     @staticmethod
     @transaction.atomic
     def create_team(hackathon: Hackathon, leader, name: str, problem_statement: ProblemStatement | None = None,
-                    open_innovation: dict | None = None, actor=None) -> Team:
+                    open_innovation: dict | None = None, actor=None, registration_data: dict | None = None) -> Team:
         name = (name or '').strip()
         if not name:
             raise HackathonError('Team name is required.', 'NAME_REQUIRED', field='name')
@@ -383,20 +382,34 @@ class TeamService:
             raise HackathonError('Team name is too long (max 150 characters).', 'NAME_TOO_LONG', field='name')
 
         hackathon = Hackathon.objects.select_for_update().get(pk=hackathon.pk)
-        if not (actor and _is_admin_or_club_lead(actor)):
+        by_admin = bool(actor and _is_team_organizer(hackathon, actor))
+        accepted_at, answers, waitlisted = None, {}, False
+        if not by_admin:
             _require_registration_open(hackathon)
             if hackathon.team_edits_locked:
                 raise HackathonError('Team changes are locked for this hackathon, so new teams cannot be created.', 'TEAM_EDITS_LOCKED')
             _require_profile_complete(hackathon, leader)
+            registration.check_eligibility(hackathon, leader)
+            accepted_at, answers = registration.registration_inputs(hackathon, registration_data)
+        elif registration_data:
+            accepted_at, answers = registration.registration_inputs(hackathon, {**registration_data, 'accept_rules': True})
         if TeamMember.objects.filter(hackathon=hackathon, user=leader).exists():
             raise HackathonError('You are already in a team for this hackathon.' if (not actor or actor == leader) else 'That user is already in a team for this hackathon.', 'ALREADY_IN_TEAM')
         if hackathon.teams.filter(name__iexact=name).exists():
             raise HackathonError('That team name is already taken.', 'NAME_TAKEN', field='name')
         problem = _resolve_problem(hackathon, problem_statement, open_innovation)
+        if not by_admin:
+            _require_problems_revealed(hackathon, problem_statement)
+            waitlisted = registration.should_waitlist_new_team(hackathon)
 
         try:
-            team = Team.objects.create(hackathon=hackathon, name=name, leader=leader, status=TeamStatus.FORMING, **problem)
-            TeamMember.objects.create(team=team, hackathon=hackathon, user=leader, role=TeamRole.LEADER)
+            team = Team.objects.create(
+                hackathon=hackathon, name=name, leader=leader, status=TeamStatus.FORMING, is_waitlisted=waitlisted, **problem,
+            )
+            TeamMember.objects.create(
+                team=team, hackathon=hackathon, user=leader, role=TeamRole.LEADER,
+                rules_accepted_at=accepted_at, answers=answers,
+            )
         except IntegrityError:
             raise HackathonError('You are already in a team, or that name is taken.', 'CONFLICT')
 
@@ -409,17 +422,32 @@ class TeamService:
         if team.status == TeamStatus.FORMING:
             team_emails.notify_team('team_created', team)
         audit_actor = actor or leader
-        _audit(audit_actor, 'Created Hackathon Team', team, problem=problem_label(team), leader=leader.email)
+        _audit(audit_actor, 'Created Hackathon Team', team, problem=problem_label(team), leader=leader.email, waitlisted=waitlisted)
+        if waitlisted:
+            _notify_after_commit(
+                [leader], f"{team.name} is on the waitlist",
+                f"{hackathon.title} is full. Your team is queued and will be placed automatically if a spot opens up.",
+                hackathon, actor,
+            )
         return team
 
     @staticmethod
     @transaction.atomic
     def update_team(team: Team, actor, *, name=None, change_problem=False,
-                    problem_statement: ProblemStatement | None = None, open_innovation: dict | None = None) -> Team:
+                    problem_statement: ProblemStatement | None = None, open_innovation: dict | None = None,
+                    recruiting: dict | None = None) -> Team:
         team = _lock_team(team)
         _require_leader(team, actor)
         _require_team_editable(team, actor)
         changes = {}
+        if recruiting is not None:
+            looking = bool(recruiting.get('looking_for_members'))
+            note = ' '.join(str(recruiting.get('looking_for') or '').split())[:200]
+            if looking and not team.hackathon.feature('team_finder'):
+                raise HackathonError('The team finder is not enabled for this hackathon.', 'FEATURE_OFF')
+            if (looking, note) != (team.looking_for_members, team.looking_for):
+                changes['recruiting'] = [[team.looking_for_members, team.looking_for], [looking, note]]
+                team.looking_for_members, team.looking_for = looking, note
         if name is not None:
             name = name.strip()
             if not name:
@@ -431,9 +459,11 @@ class TeamService:
                 team.name = name
         if change_problem:
             before = problem_label(team)
+            if not _is_team_organizer(team.hackathon, actor):
+                _require_problems_revealed(team.hackathon, problem_statement)
             problem = _resolve_problem(team.hackathon, problem_statement, open_innovation, exclude_team=team)
             if (
-                not _is_admin_or_club_lead(actor)
+                not _is_team_organizer(team.hackathon, actor)
                 and team.round_entries.exists()
                 and _problem_differs(team, problem)
             ):
@@ -604,7 +634,7 @@ class TeamService:
 
     @staticmethod
     @transaction.atomic
-    def accept_invite(invite: TeamInvite, user) -> Team:
+    def accept_invite(invite: TeamInvite, user, registration_data: dict | None = None) -> Team:
         team = _lock_team(invite.team)
         invite = TeamInvite.objects.select_for_update().get(pk=invite.pk)
         if invite.invited_user_id != user.id:
@@ -620,12 +650,19 @@ class TeamService:
         if TeamMember.objects.filter(hackathon=hackathon, user=user).exists():
             raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
         _require_profile_complete(hackathon, user)
+        registration.check_eligibility(hackathon, user)
+        accepted_at, answers = registration.registration_inputs(hackathon, registration_data)
         if team.memberships.count() >= hackathon.max_team_size:
             raise HackathonError('This team is already full.', 'TEAM_FULL')
+        if not team.is_waitlisted and registration.participants_would_exceed(hackathon):
+            raise HackathonError('This hackathon has reached its participant limit.', 'HACKATHON_FULL')
 
         try:
             with transaction.atomic():
-                TeamMember.objects.create(team=team, hackathon=hackathon, user=user, role=TeamRole.MEMBER)
+                TeamMember.objects.create(
+                    team=team, hackathon=hackathon, user=user, role=TeamRole.MEMBER,
+                    rules_accepted_at=accepted_at, answers=answers,
+                )
         except IntegrityError:
             raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
 
@@ -686,6 +723,7 @@ class TeamService:
         membership.delete()
         _recompute_status(team)
         _audit(actor, 'Removed Hackathon Team Member', team, removed=email)
+        WaitlistService.promote_after_commit(team.hackathon)
         team_emails.notify_team('member_left', team, removed_user)
         team_emails.notify_team('member_removed', team, removed_user)
         _notify_after_commit(
@@ -717,11 +755,13 @@ class TeamService:
                 status=InviteStatus.CANCELLED, responded_at=timezone.now(),
             )
             _audit(user, 'Withdrew Hackathon Team', team)
+            WaitlistService.promote_after_commit(team.hackathon)
             return team
         membership.delete()
         _recompute_status(team)
         _audit(user, 'Left Hackathon Team', team)
         team_emails.notify_team('member_left', team, user)
+        WaitlistService.promote_after_commit(team.hackathon)
         return team
 
     @staticmethod
@@ -729,7 +769,7 @@ class TeamService:
     def transfer_leadership(team: Team, actor, user_id: int) -> Team:
         team = _lock_team(team)
         _require_leader(team, actor)
-        if not _is_admin_or_club_lead(actor) and team.status not in ACTIVE_TEAM_STATUSES:
+        if not _is_team_organizer(team.hackathon, actor) and team.status not in ACTIVE_TEAM_STATUSES:
             raise HackathonError('This team can no longer be changed.', 'TEAM_INACTIVE')
         new_leader = team.memberships.select_related('user').filter(user_id=user_id).first()
         if new_leader is None:
@@ -821,16 +861,19 @@ class TeamService:
 
     @staticmethod
     @transaction.atomic
-    def admin_set_status(team: Team, actor, new_status: str) -> Team:
+    def admin_set_status(team: Team, actor, new_status: str, reason: str = '') -> Team:
         team = _lock_team(team)
         if new_status not in TeamStatus.values:
             raise HackathonError('Unknown team status.', 'INVALID_STATUS', field='status')
         old = team.status
         team.status = new_status
-        team.save(update_fields=['status', 'updated_at'])
+        team.status_reason = ' '.join((reason or '').split())[:300] if new_status in (TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN) else ''
+        team.save(update_fields=['status', 'status_reason', 'updated_at'])
         if new_status in ACTIVE_TEAM_STATUSES:
             _recompute_status(team)
         _audit(actor, 'Admin Changed Hackathon Team Status', team, old=old, new=team.status)
+        if team.status not in ACTIVE_TEAM_STATUSES:
+            WaitlistService.promote_after_commit(team.hackathon)
         if team.status != old:
             wording = {
                 TeamStatus.DISQUALIFIED: 'was disqualified by the organizers. Contact them if you think this is a mistake.',
@@ -838,6 +881,8 @@ class TeamService:
                 TeamStatus.REGISTERED: 'is registered.',
                 TeamStatus.FORMING: 'is still forming: it needs more members to be registered.',
             }.get(team.status, f'is now {team.status.lower()}.')
+            if team.status_reason:
+                wording = f'{wording} Reason: {team.status_reason}'
             _notify_after_commit(
                 [m.user for m in team.memberships.select_related('user')],
                 f"{team.name}: status updated", f"Your team '{team.name}' {wording}", team.hackathon, actor,
@@ -1057,6 +1102,20 @@ class StageService:
 # Rounds & shortlisting
 # ---------------------------------------------------------------------------
 
+def effective_round_status(round_obj: Round) -> str:
+    """What the round's dates say it is right now; the stored status only matters when no dates are set."""
+    from .models import RoundStatus
+
+    now = timezone.now()
+    if round_obj.starts_at and now < round_obj.starts_at:
+        return RoundStatus.UPCOMING
+    if round_obj.ends_at and now >= round_obj.ends_at:
+        return RoundStatus.COMPLETED
+    if round_obj.starts_at:
+        return RoundStatus.ACTIVE
+    return round_obj.status
+
+
 class RoundService:
 
     @staticmethod
@@ -1065,9 +1124,9 @@ class RoundService:
         hackathon = round_obj.hackathon
         previous = hackathon.rounds.filter(order__lt=round_obj.order).order_by('-order').first()
         if previous is None:
-            return hackathon.teams.filter(status=TeamStatus.REGISTERED)
+            return hackathon.teams.filter(status=TeamStatus.REGISTERED, is_waitlisted=False)
         return hackathon.teams.filter(
-            status=TeamStatus.REGISTERED,
+            status=TeamStatus.REGISTERED, is_waitlisted=False,
             round_entries__round=previous,
             round_entries__status=EntryStatus.SHORTLISTED,
         )
@@ -1136,9 +1195,18 @@ class RoundService:
     @staticmethod
     @transaction.atomic
     def decide(round_obj: Round, actor, team_ids: list[int], status: str, *, feedback=None, admin_notes=None,
-               confirm_published=False) -> int:
+               confirm_published=False, confirm_over_limit=False) -> int:
         if status not in EntryStatus.values:
             raise HackathonError('Unknown entry status.', 'INVALID_STATUS', field='status')
+        if status == EntryStatus.SHORTLISTED and round_obj.shortlist_limit and not confirm_over_limit:
+            already = round_obj.entries.filter(status=EntryStatus.SHORTLISTED)
+            newly = round_obj.entries.filter(team_id__in=team_ids).exclude(status=EntryStatus.SHORTLISTED).count()
+            total = already.count() + newly
+            if total > round_obj.shortlist_limit:
+                raise HackathonError(
+                    f'This round is meant to shortlist {round_obj.shortlist_limit} teams and this would make it {total}. Confirm to go over.',
+                    'SHORTLIST_LIMIT', field='confirm_over_limit', status=409, limit=round_obj.shortlist_limit, would_be=total,
+                )
         if round_obj.results_published and not confirm_published:
             raise HackathonError(
                 'Results for this round are already published, so this change is visible to the teams immediately. '
@@ -1209,6 +1277,56 @@ class RoundService:
             target_id=round_obj.pk, details={'round': round_obj.name},
         )
         return round_obj
+
+    @staticmethod
+    @transaction.atomic
+    def auto_shortlist(round_obj: Round, actor, rule: str, value=None, *, reject_rest=False, apply=False,
+                       confirm_published=False, confirm_over_limit=False) -> dict:
+        """Pick the teams a rule selects. ``apply=False`` only previews; ``apply=True`` records the decisions."""
+        rows = round_rules.evaluate(round_obj, rule, value)
+        selected = [row for row in rows if row['selected']]
+        rest = [row for row in rows if not row['selected']]
+        result = {
+            'rule': rule, 'value': value, 'selected': selected, 'not_selected': rest, 'applied': False,
+            'limit': round_obj.shortlist_limit, 'over_limit': bool(round_obj.shortlist_limit and len(selected) > round_obj.shortlist_limit),
+        }
+        if not apply:
+            return result
+        if not selected:
+            raise HackathonError('That rule selects no team, so nothing was changed.', 'NOTHING_SELECTED')
+        RoundService.decide(
+            round_obj, actor, [row['team_id'] for row in selected], EntryStatus.SHORTLISTED,
+            confirm_published=confirm_published, confirm_over_limit=confirm_over_limit,
+        )
+        if reject_rest:
+            undecided = [row['team_id'] for row in rest if row['status'] == EntryStatus.PENDING]
+            if undecided:
+                RoundService.decide(round_obj, actor, undecided, EntryStatus.REJECTED, confirm_published=confirm_published)
+        log_audit_event(
+            actor=actor, action='Auto-shortlisted Hackathon Round', target_model='HackathonRound', target_id=round_obj.pk,
+            details={'round': round_obj.name, 'rule': rule, 'value': value, 'shortlisted': len(selected), 'rejected_rest': bool(reject_rest)},
+        )
+        result['applied'] = True
+        return result
+
+    @staticmethod
+    @transaction.atomic
+    def reorder(hackathon: Hackathon, actor, ids: list[int]) -> None:
+        """Change the order of rounds. Only while nobody has been decided yet: later rounds depend on earlier shortlists."""
+        rounds = {r.id: r for r in hackathon.rounds.all()}
+        if sorted(ids) != sorted(rounds) or len(set(ids)) != len(ids):
+            raise HackathonError('Send every round exactly once.', 'INVALID', field='ids')
+        if RoundEntry.objects.filter(round__hackathon=hackathon).exclude(status=EntryStatus.PENDING).exists():
+            raise HackathonError('Teams have already been decided, so the order can no longer change.', 'ROUNDS_IN_USE', status=409)
+        offset = max(r.order for r in rounds.values()) + len(rounds) + 1
+        for round_obj in rounds.values():
+            Round.objects.filter(pk=round_obj.pk).update(order=round_obj.order + offset)
+        for position, round_id in enumerate(ids, start=1):
+            Round.objects.filter(pk=round_id).update(order=position)
+        log_audit_event(
+            actor=actor, action='Reordered Hackathon Rounds', target_model='Hackathon', target_id=hackathon.slug,
+            details={'order': [rounds[i].name for i in ids]},
+        )
 
     @staticmethod
     @transaction.atomic
@@ -1511,3 +1629,42 @@ class AnnouncementService:
         )
         run_in_background(lambda: process_email_job(job.id))
         return len(recipients)
+
+
+# ---------------------------------------------------------------------------
+# Waitlist
+# ---------------------------------------------------------------------------
+
+class WaitlistService:
+    """Places queued teams (oldest first) whenever a team or participant slot opens up."""
+
+    @staticmethod
+    @transaction.atomic
+    def promote(hackathon: Hackathon) -> list[Team]:
+        if not hackathon.waitlist_enabled and not hackathon.teams.filter(is_waitlisted=True).exists():
+            return []
+        promoted = []
+        queue = (
+            hackathon.teams.select_for_update()
+            .filter(is_waitlisted=True, status__in=ACTIVE_TEAM_STATUSES).order_by('created_at', 'id')
+        )
+        for team in queue:
+            if registration.teams_full(hackathon):
+                break
+            if registration.participants_would_exceed(hackathon, team.memberships.count()):
+                continue
+            team.is_waitlisted = False
+            team.save(update_fields=['is_waitlisted', 'updated_at'])
+            promoted.append(team)
+            _audit(None, 'Promoted Team From Waitlist', team)
+            _notify_after_commit(
+                [m.user for m in team.memberships.select_related('user')],
+                f'{team.name} is in!',
+                f"A spot opened up and your team '{team.name}' is now registered for {hackathon.title}.",
+                hackathon,
+            )
+        return promoted
+
+    @staticmethod
+    def promote_after_commit(hackathon: Hackathon) -> None:
+        transaction.on_commit(lambda: WaitlistService.promote(hackathon))
