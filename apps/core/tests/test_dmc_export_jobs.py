@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITransactionTestCase
 
 from apps.core.dmc.models import ExportJob
+from apps.core.tasks import wait_for_background_tasks
 
 User = get_user_model()
 
@@ -45,6 +46,9 @@ class DMCAsyncExportTests(APITransactionTestCase):
             User.objects.create_user(
                 username=f"exportuser{i}", email=f"exportuser{i}@srkr.ac.in", password="pw12345!", role="NON_AFFILIATE",
             )
+
+    def tearDown(self):
+        wait_for_background_tasks()
 
     def test_export_endpoint_dispatches_and_completes_in_background(self):
         self.client.force_authenticate(self.admin)

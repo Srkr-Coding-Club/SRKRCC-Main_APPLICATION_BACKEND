@@ -1,4 +1,5 @@
 import time
+import uuid
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -6,6 +7,7 @@ from django.core.cache import cache
 from rest_framework.test import APITransactionTestCase
 
 from apps.core.models import EmailTemplate
+from apps.core.tasks import wait_for_background_tasks
 from apps.forms.models import FieldType, FormStatus
 from .factories import make_form, add_field
 
@@ -48,7 +50,7 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
         # other test files' own submission counts.
         cache.clear()
         self.template = EmailTemplate.objects.create(
-            name="confirmation_test",
+            name=f"confirmation_test_{uuid.uuid4().hex}",
             subject_template="Thanks for registering, {{full_name}}!",
             html_template="<p>Hi {{first_name}}, we got your submission.</p>",
             allowed_parameters=["full_name", "first_name", "email", "club_id", "branch",
@@ -74,6 +76,7 @@ class ConfirmationEmailTrackingTests(APITransactionTestCase):
         )
 
     def tearDown(self):
+        wait_for_background_tasks()
         cache.clear()
 
     def _submit(self):

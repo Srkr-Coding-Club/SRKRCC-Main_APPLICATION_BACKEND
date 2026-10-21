@@ -29,7 +29,7 @@ class Command(BaseCommand):
 
         # 1. Create Core Users & RBAC
         admin_user, _ = User.objects.get_or_create(
-            email="admin@srkr.ac.in",
+            email="srkrcodingclubofficial@gmail.com",
             defaults={
                 "username": "admin",
                 "first_name": "Admin",

@@ -147,14 +147,14 @@ class EmailInviteTests(TestCase):
         self.assertTrue(Notification.objects.filter(recipient=newcomer).exists())
 
     def test_registration_endpoint_claims_invites_too(self):
-        self._invite('signup@example.com')
+        self._invite('signup@gmail.com')
         with self.captureOnCommitCallbacks(execute=True):
             response = APIClient().post('/api/auth/register/', {
-                'email': 'signup@example.com', 'password': 'StrongPass123!', 'first_name': 'Sign', 'last_name': 'Up',
+                'email': 'signup@gmail.com', 'password': 'StrongPass123!', 'first_name': 'Sign', 'last_name': 'Up',
                 'roll_number': '22B91A0577', 'branch': 'CSE', 'year': 2,
             }, format='json')
         self.assertEqual(response.status_code, 201)
-        self.assertTrue(TeamInvite.objects.filter(invited_user__email='signup@example.com').exists())
+        self.assertTrue(TeamInvite.objects.filter(invited_user__email='signup@gmail.com').exists())
 
     def test_invite_is_dropped_when_the_team_can_no_longer_take_them(self):
         self._invite()

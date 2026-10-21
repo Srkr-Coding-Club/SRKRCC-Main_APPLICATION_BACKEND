@@ -139,7 +139,7 @@ class CollegeOnUsersTests(TestCase):
 
     def _payload(self, **overrides):
         payload = {
-            'email': 'new@example.com', 'password': 'StrongPass123!', 'first_name': 'New',
+            'email': 'new@gmail.com', 'password': 'StrongPass123!', 'first_name': 'New',
             'last_name': 'Member', 'roll_number': '22B91A0599', 'branch': 'CSE', 'year': 2,
         }
         payload.update(overrides)
@@ -148,12 +148,12 @@ class CollegeOnUsersTests(TestCase):
     def test_signup_without_college_defaults_to_srkr(self):
         response = self.client.post('/api/auth/register/', self._payload(), format='json')
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(User.objects.get(email='new@example.com').college, get_default_college())
+        self.assertEqual(User.objects.get(email='new@gmail.com').college, get_default_college())
 
     def test_signup_with_chosen_college(self):
         response = self.client.post('/api/auth/register/', self._payload(college_id=self.other.id), format='json')
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(User.objects.get(email='new@example.com').college, self.other)
+        self.assertEqual(User.objects.get(email='new@gmail.com').college, self.other)
 
     def test_signup_with_unknown_college_is_rejected_on_the_field(self):
         response = self.client.post('/api/auth/register/', self._payload(college_id=999999), format='json')
@@ -162,7 +162,7 @@ class CollegeOnUsersTests(TestCase):
 
     def test_profile_returns_college_and_allows_changing_it(self):
         self.client.post('/api/auth/register/', self._payload(), format='json')
-        self.client.force_authenticate(User.objects.get(email='new@example.com'))
+        self.client.force_authenticate(User.objects.get(email='new@gmail.com'))
         me = self.client.get('/api/auth/me/')
         self.assertEqual(me.data['college']['code'], DEFAULT_COLLEGE_CODE)
         patched = self.client.patch('/api/auth/me/', {'college_id': self.other.id}, format='json')
@@ -172,7 +172,7 @@ class CollegeOnUsersTests(TestCase):
     def test_signup_with_unlisted_college_stores_typed_name_and_no_catalogue_link(self):
         response = self.client.post('/api/auth/register/', self._payload(other_college_name='  Tiny   Town Institute '), format='json')
         self.assertEqual(response.status_code, 201)
-        user = User.objects.get(email='new@example.com')
+        user = User.objects.get(email='new@gmail.com')
         self.assertIsNone(user.college)
         self.assertEqual(user.other_college_name, 'Tiny Town Institute')
 
@@ -188,13 +188,13 @@ class CollegeOnUsersTests(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, 201)
-        user = User.objects.get(email='new@example.com')
+        user = User.objects.get(email='new@gmail.com')
         self.assertEqual(user.college, self.other)
         self.assertEqual(user.other_college_name, '')
 
     def test_profile_switches_between_catalogue_and_typed_college(self):
         self.client.post('/api/auth/register/', self._payload(), format='json')
-        self.client.force_authenticate(User.objects.get(email='new@example.com'))
+        self.client.force_authenticate(User.objects.get(email='new@gmail.com'))
 
         typed = self.client.patch('/api/auth/me/', {'college_id': None, 'other_college_name': 'Tiny Town Institute'}, format='json')
         self.assertEqual(typed.status_code, 200)
@@ -207,7 +207,7 @@ class CollegeOnUsersTests(TestCase):
 
     def test_profile_cannot_clear_college_without_a_typed_name(self):
         self.client.post('/api/auth/register/', self._payload(), format='json')
-        self.client.force_authenticate(User.objects.get(email='new@example.com'))
+        self.client.force_authenticate(User.objects.get(email='new@gmail.com'))
         response = self.client.patch('/api/auth/me/', {'college_id': None}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertIn('college_id', response.data)

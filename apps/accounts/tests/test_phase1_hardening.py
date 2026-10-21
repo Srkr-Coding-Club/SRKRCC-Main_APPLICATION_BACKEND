@@ -41,7 +41,7 @@ class SetupAdminTests(TestCase):
     @override_settings(DEBUG=False)
     def test_production_creates_the_admin_with_the_configured_password(self):
         run_setup_admin(DJANGO_SUPERUSER_PASSWORD=STRONG)
-        admin = User.objects.get(email='admin@srkr.ac.in')
+        admin = User.objects.get(email='srkrcodingclubofficial@gmail.com')
         self.assertTrue(admin.check_password(STRONG))
         self.assertTrue(admin.is_superuser)
 
@@ -51,12 +51,12 @@ class SetupAdminTests(TestCase):
         os.environ.pop('DJANGO_SUPERUSER_PASSWORD', None)
         output = run_setup_admin()
         self.assertIn('development password', output)
-        self.assertTrue(User.objects.get(email='admin@srkr.ac.in').check_password('Admin@123'))
+        self.assertTrue(User.objects.get(email='srkrcodingclubofficial@gmail.com').check_password('Admin@123'))
 
     @override_settings(DEBUG=False)
     def test_an_existing_admins_password_survives_redeploys(self):
         run_setup_admin(DJANGO_SUPERUSER_PASSWORD=STRONG)
-        admin = User.objects.get(email='admin@srkr.ac.in')
+        admin = User.objects.get(email='srkrcodingclubofficial@gmail.com')
         admin.set_password('Changed-by-admin-9!x')
         admin.save()
         run_setup_admin(DJANGO_SUPERUSER_PASSWORD=STRONG)
@@ -66,7 +66,7 @@ class SetupAdminTests(TestCase):
     @override_settings(DEBUG=False)
     def test_an_existing_admin_does_not_fail_a_redeploy_over_a_weak_environment_password(self):
         run_setup_admin(DJANGO_SUPERUSER_PASSWORD=STRONG)
-        admin = User.objects.get(email='admin@srkr.ac.in')
+        admin = User.objects.get(email='srkrcodingclubofficial@gmail.com')
         output = run_setup_admin(DJANGO_SUPERUSER_PASSWORD='Admin@123')
         self.assertIn('already exists', output)
         admin.refresh_from_db()
@@ -85,13 +85,13 @@ class SetupAdminTests(TestCase):
         run_setup_admin(DJANGO_SUPERUSER_PASSWORD=STRONG)
         with self.assertRaises(CommandError):
             run_setup_admin('--reset-password', '--password', 'Admin@123')
-        self.assertTrue(User.objects.get(email='admin@srkr.ac.in').check_password(STRONG))
+        self.assertTrue(User.objects.get(email='srkrcodingclubofficial@gmail.com').check_password(STRONG))
 
     @override_settings(DEBUG=False)
     def test_reset_password_flag_replaces_it_on_request(self):
         run_setup_admin(DJANGO_SUPERUSER_PASSWORD=STRONG)
         run_setup_admin('--reset-password', '--password', 'An0ther-Strong-pass-77!')
-        self.assertTrue(User.objects.get(email='admin@srkr.ac.in').check_password('An0ther-Strong-pass-77!'))
+        self.assertTrue(User.objects.get(email='srkrcodingclubofficial@gmail.com').check_password('An0ther-Strong-pass-77!'))
 
 
 class DevOnlySeedersTests(TestCase):

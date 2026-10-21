@@ -46,15 +46,21 @@ the running system.
 - Costs only start appearing once the platform is genuinely successful (high usage), at which point the club can budget for it.
 - The target architecture above is deliberately provider-agnostic (e.g. Redis via Upstash, Postgres via Neon/Supabase) so the club isn't locked into one vendor if pricing changes — but none of that is provisioned yet; today it's a single Render web service and a single Render Postgres database.
 
-## AWS Lambda secrets (prepared, not the live Render service)
+## AWS Lambda (dev function `srkrcc-dev-backend`)
 
 Render is unchanged: `build.sh` still runs `migrate` at build time, and the start command is Gunicorn with `SECRET_KEY` and `DATABASE_URL` from the Render environment. That path does not set `SERVERLESS` or `AWS_LAMBDA_FUNCTION_NAME`, so it never calls Parameter Store.
 
-On Lambda, `config/ssm_secrets.py` loads those two values from `/srkrcc/<env>/backend/` before Django reads settings. The image entrypoint runs `migrate` only when `RUN_STARTUP_TASKS=1`. Terraform does not set that flag, so a Lambda cold start does not migrate. Apply migrations with a one-off command against Neon before sending traffic.
+Lambda does not receive the database URL as an environment variable. `config/ssm_secrets.py` loads `SECRET_KEY` and `DATABASE_URL` from `/srkrcc/dev/backend/secret_key` and `/srkrcc/dev/backend/database_url` in `ap-south-1` before Django reads settings. `/api/ping/` does not query Postgres, so a healthy ping does not mean the database is reachable.
+
+The image entrypoint runs `migrate`, `seed_flags`, and `setup_admin` only when `RUN_STARTUP_TASKS=1` (local Compose). Lambda leaves that unset, so a cold start does not create tables. `.github/workflows/deploy-lambda.yml` runs those commands once, after a commit lands on `main`, inside the new image. It sets `DATABASE_USE_DIRECT=1` so migrations use Neon's direct host (the `-pooler` host is PgBouncer and drops Django's session lock). The running function keeps the pooled URL, pins the socket to an IPv4 address, and does not send `statement_timeout` in the startup packet. Neon's pooler rejects that parameter, and its IPv6 addresses time out from Lambda.
+
+Pull requests do not deploy. A manually pushed image will serve `/api/ping/` and still have an empty database until `main` is updated or migrations are applied by hand.
 
 ## Continuous Integration / Deployment
 
-**Target design, not current**: no `.github/workflows/` directory exists in either repo today, so there is no automated CI (tests/lint/build checks) or automated deploy pipeline yet. Render deploys directly from a pushed branch (its own built-in git integration), which is not the same as a GitHub Actions pipeline running checks first.
+- Pull requests into `main` run `.github/workflows/ci.yml`: Django tests against Postgres 15, a migration check, and a local image build. That workflow has no AWS credentials and does not touch Neon.
+- A push to `main` runs `.github/workflows/deploy-lambda.yml`: build, push to ECR, migrate, seed flags, create the admin if missing, update `srkrcc-dev-backend`, then ping the function URL.
+- Render still deploys from its own git integration. That is separate from the Lambda workflow.
 
 ## Related Docs
 - [README.md](README.md) — architecture overview
