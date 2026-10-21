@@ -10,7 +10,7 @@ from apps.core.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.audit.utils import log_audit_event
-from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, _is_admin_or_club_lead
+from apps.core.permissions import IsAdmin, _is_admin_or_club_lead
 from apps.core.cache import PublicReadCacheControlMixin
 
 from . import team_emails
@@ -23,8 +23,11 @@ from .serializers import (
     HackathonAnnouncementSerializer, HackathonSerializer, ProblemStatementSerializer,
     AdminStageSerializer, PublicStageSerializer, RoundSerializer, SubmissionSerializer, TeamInviteSerializer, TeamSerializer,
 )
+from . import access, registration
+from .access import scoped, scoped_or_read_only
 from .services import (
-    AnnouncementService, HackathonError, ProblemStatementService, RoundService, StageService, TeamService, is_leader, is_member,
+    AnnouncementService, HackathonError, ProblemStatementService, RoundService, StageService, TeamService, WaitlistService,
+    is_leader, is_member, effective_round_status,
     membership_of, missing_profile_fields, round_entry_for_details_form,
 )
 
@@ -33,14 +36,26 @@ LOOKUP_MIN_QUERY_LENGTH = 3
 LOOKUP_MAX_RESULTS = 5
 
 
+def _public_window_q() -> Q:
+    """What an ordinary visitor may see: published, not hidden, inside the visibility window."""
+    now = timezone.now()
+    return (
+        ~Q(status=HackathonStatus.DRAFT) & Q(hidden_at__isnull=True)
+        & (Q(visible_from__isnull=True) | Q(visible_from__lte=now))
+        & (Q(visible_until__isnull=True) | Q(visible_until__gt=now))
+    )
+
+
 def _visible_hackathons(user):
+    """Organizers see everything; this hackathon's staff also see theirs, drafts and hidden included."""
     qs = Hackathon.objects.all()
     if _is_admin_or_club_lead(user):
         return qs
-    now = timezone.now()
-    return qs.exclude(status=HackathonStatus.DRAFT).filter(Q(visible_from__isnull=True) | Q(visible_from__lte=now)).filter(
-        Q(visible_until__isnull=True) | Q(visible_until__gt=now)
-    )
+    return qs.filter(_public_window_q() | Q(pk__in=access.hackathon_ids_managed_by(user)))
+
+
+def _can(hackathon, user, key: str) -> bool:
+    return access.has_permission(hackathon, user, key)
 
 
 def _get_hackathon(request, slug):
@@ -84,7 +99,7 @@ def _parse_problem_choice(hackathon, data):
 class IsSubmissionTeamMemberOrAdmin(permissions.BasePermission):
     """Writes require the submitting team's leader/member or admin."""
     def has_object_permission(self, request, view, obj):
-        if _is_admin_or_club_lead(request.user):
+        if _can(obj.team.hackathon, request.user, 'submissions'):
             return True
         team = obj.team
         if request.method in permissions.SAFE_METHODS:
@@ -96,10 +111,32 @@ class IsSubmissionTeamMemberOrAdmin(permissions.BasePermission):
 # Hackathon CRUD (admin) + public read
 # ---------------------------------------------------------------------------
 
+class HackathonObjectPermission(permissions.BasePermission):
+    """Anyone reads; only site-wide organizers create; changing one needs its 'settings' permission."""
+
+    def has_permission(self, request, view):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        if view.action == 'create':
+            return _is_admin_or_club_lead(request.user)
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        return _can(obj, request.user, 'settings')
+
+
 class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     serializer_class = HackathonSerializer
-    permission_classes = [IsAdminOrClubLeadOrReadOnly]
+    permission_classes = [HackathonObjectPermission]
     lookup_field = 'slug'
+    ADMIN_ONLY_ACTIONS = ('destroy', 'delete_impact')
+
+    def get_permissions(self):
+        if self.action in self.ADMIN_ONLY_ACTIONS:
+            return [IsAdmin()]
+        return super().get_permissions()
 
     def get_queryset(self):
         """Annotate hackathons with real registration count and team count."""
@@ -111,19 +148,15 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
             ),
             team_count=Count('teams', filter=Q(teams__status__in=ACTIVE), distinct=True),
             registered_team_count=Count('teams', filter=Q(teams__status=TeamStatus.REGISTERED), distinct=True),
+            waitlisted_team_count=Count('teams', filter=Q(teams__status__in=ACTIVE, teams__is_waitlisted=True), distinct=True),
         ).order_by('-start_date')
 
         if _is_admin_or_club_lead(self.request.user):
             return queryset
 
-        # Public/anonymous viewers only see hackathons inside their visibility
-        # window - see the matching comment in apps.events.views.EventViewSet.
-        now = timezone.now()
-        return queryset.exclude(status=HackathonStatus.DRAFT).filter(
-            Q(visible_from__isnull=True) | Q(visible_from__lte=now)
-        ).filter(
-            Q(visible_until__isnull=True) | Q(visible_until__gt=now)
-        )
+        # Public/anonymous viewers only see hackathons inside their visibility window (see
+        # apps.events.views.EventViewSet); a hackathon's own staff also see it while it is a draft or hidden.
+        return queryset.filter(_public_window_q() | Q(pk__in=access.hackathon_ids_managed_by(self.request.user)))
 
     def perform_create(self, serializer):
         # New hackathons start private: nothing is public or open for teams until an admin publishes it.
@@ -138,17 +171,54 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
         }
         if 'min_team_size' in changed:
             changed['teams_status_rechecked'] = TeamService.recompute_statuses(instance)
+        if {'max_teams', 'max_participants', 'waitlist_enabled'} & set(changed):
+            WaitlistService.promote(instance)
+        if 'certificate_config' in serializer.validated_data:
+            was = bool((before.get('certificate_config') or {}).get('released'))
+            now = bool((instance.certificate_config or {}).get('released'))
+            if now and not was and instance.feature('certificates'):
+                from .services import _notify_users
+                _notify_users(
+                    [m.user for m in instance.memberships.select_related('user')],
+                    f'{instance.title}: certificates are ready', 'Open the hackathon dashboard to download yours.',
+                    instance, self.request.user,
+                )
         if changed:
             log_audit_event(
                 actor=self.request.user, action="Updated Hackathon",
                 target_model="Hackathon", target_id=instance.slug, details={"changes": changed},
             )
 
+    @staticmethod
+    def _delete_impact(hackathon):
+        """What a hard delete removes. The linked registration form and its responses are kept."""
+        return {
+            'teams': hackathon.teams.count(),
+            'members': hackathon.memberships.count(),
+            'problem_statements': hackathon.problem_statements.count(),
+            'rounds': hackathon.rounds.count(),
+            'round_entries': RoundEntry.objects.filter(round__hackathon=hackathon).count(),
+            'announcements': hackathon.announcements.count(),
+            'stages': hackathon.stages.count(),
+            'submissions': Submission.objects.filter(team__hackathon=hackathon).count(),
+        }
+
+    @action(detail=True, methods=['get'], url_path='delete-impact')
+    def delete_impact(self, request, slug=None):
+        """GET /api/hackathons/{slug}/delete-impact/ - counts of what deleting this hackathon would remove (admin only)."""
+        return DRFResponse(self._delete_impact(self.get_object()))
+
     def perform_destroy(self, instance):
+        if self.request.query_params.get('confirm_slug') != instance.slug:
+            raise HackathonError(
+                'Type the hackathon slug to confirm deletion.', 'CONFIRM_SLUG_MISMATCH',
+            )
+        impact = self._delete_impact(instance)
         details = {
             "title": instance.title,
             "registration_form": instance.registration_form_id,
-            "teams_deleted": instance.teams.count(),
+            "teams_deleted": impact['teams'],
+            "deleted": impact,
         }
         slug = instance.slug
         instance.delete()
@@ -205,12 +275,12 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='hide')
     def hide(self, request, slug=None):
         """POST /api/hackathons/{slug}/hide/ - removes the hackathon from the public list entirely."""
-        return self._set(request, "Hid Hackathon From Public", visible_until=timezone.now())
+        return self._set(request, "Hid Hackathon From Public", hidden_at=timezone.now())
 
     @action(detail=True, methods=['post'], url_path='show')
     def show(self, request, slug=None):
-        """POST /api/hackathons/{slug}/show/ - undoes `hide`, clearing visible_until."""
-        return self._set(request, "Made Hackathon Publicly Visible Again", visible_until=None)
+        """POST /api/hackathons/{slug}/show/ - undoes `hide`. The visible_from/visible_until window is left as configured."""
+        return self._set(request, "Made Hackathon Publicly Visible Again", hidden_at=None)
 
 
 # ---------------------------------------------------------------------------
@@ -226,13 +296,15 @@ def _ps_queryset(hackathon):
 
 
 class ProblemStatementListView(APIView):
-    """GET (public: active only; admin: all) / POST (admin) /api/hackathons/{slug}/problem-statements/"""
-    permission_classes = [IsAdminOrClubLeadOrReadOnly]
+    """GET (public: active only; content managers: all) / POST (content managers) /api/hackathons/{slug}/problem-statements/"""
+    permission_classes = [scoped_or_read_only('content')]
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
         qs = _ps_queryset(hackathon)
-        if not _is_admin_or_club_lead(request.user):
+        if not _can(hackathon, request.user, 'content'):
+            if hackathon.problem_statements_reveal_at and hackathon.problem_statements_reveal_at > timezone.now():
+                return DRFResponse([])
             qs = qs.filter(is_active=True)
         return DRFResponse(ProblemStatementSerializer(qs, many=True).data)
 
@@ -251,7 +323,7 @@ class ProblemStatementUploadView(APIView):
     CSV with title, description and domain columns; the application assigns each
     statement's ID. Responds with how many were created, skipped and which rows failed.
     """
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
     parser_classes = [MultiPartParser]
     MAX_BYTES = 1024 * 1024
 
@@ -270,7 +342,7 @@ class ProblemStatementUploadView(APIView):
 
 class ProblemStatementReorderView(APIView):
     """POST (admin) /api/hackathons/{slug}/problem-statements/reorder/ - body {ids: [every statement id, in the new order]}."""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def post(self, request, slug):
         hackathon = _get_hackathon(request, slug)
@@ -283,7 +355,7 @@ class ProblemStatementReorderView(APIView):
 
 class ProblemStatementDetailView(APIView):
     """PATCH / DELETE (admin) /api/hackathons/{slug}/problem-statements/{id}/"""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def _get(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
@@ -326,7 +398,8 @@ def _round_payload(round_obj, entry, *, viewer_is_leader, user):
     data = {
         'id': round_obj.id, 'order': round_obj.order, 'name': round_obj.name,
         'description': round_obj.description, 'starts_at': round_obj.starts_at,
-        'ends_at': round_obj.ends_at, 'status': round_obj.status,
+        'ends_at': round_obj.ends_at, 'status': round_obj.status, 'kind': round_obj.kind,
+        'effective_status': effective_round_status(round_obj),
         'results_published': published, 'entry': None, 'details_form': None,
     }
     if entry is not None:
@@ -356,7 +429,7 @@ class HackathonStagesView(APIView):
 
 class StageListView(APIView):
     """GET / POST (admin) /api/hackathons/{slug}/timeline/ - every timeline entry, hidden ones included."""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
@@ -372,7 +445,7 @@ class StageListView(APIView):
 
 class StageDetailView(APIView):
     """PATCH / DELETE (admin) /api/hackathons/{slug}/timeline/{id}/"""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def _get(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
@@ -398,7 +471,7 @@ class StageDetailView(APIView):
 
 class StageReorderView(APIView):
     """POST (admin) /api/hackathons/{slug}/timeline/reorder/ - {ids: [every stage id, in the new order]}."""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def post(self, request, slug):
         hackathon = _get_hackathon(request, slug)
@@ -411,7 +484,7 @@ class StageReorderView(APIView):
 
 class StageImportRoundsView(APIView):
     """POST (admin) /api/hackathons/{slug}/timeline/import-rounds/ - add a stage for every round not yet in the timeline."""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def post(self, request, slug):
         hackathon = _get_hackathon(request, slug)
@@ -447,6 +520,11 @@ class MyTeamView(APIView):
         return DRFResponse({
             'hackathon': HackathonSerializer(hackathon).data,
             'profile_missing': missing_profile_fields(hackathon, user),
+            'registration': {
+                'rules_accepted': membership.rules_accepted_at is not None,
+                'answers': membership.answers,
+                'missing': registration.missing_registration_details(hackathon, membership),
+            } if membership else None,
             'team': TeamSerializer(team).data if team else None,
             'is_leader': bool(team and team.leader_id == user.id),
             'invites': TeamInviteSerializer(invites, many=True).data,
@@ -463,9 +541,9 @@ class HackathonTeamsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, slug):
-        if not _is_admin_or_club_lead(request.user):
-            raise PermissionDenied('Only admins can list all teams.')
         hackathon = _get_hackathon(request, slug)
+        if not access.has_any_permission(hackathon, request.user, ('teams', 'rounds', 'results')):
+            raise PermissionDenied('You are not allowed to list every team.')
         qs = _team_queryset().filter(hackathon=hackathon).prefetch_related(
             Prefetch('memberships', queryset=TeamMember.objects.select_related('user', 'user__college')),
             Prefetch('email_invites', queryset=TeamEmailInvite.objects.all()),
@@ -496,7 +574,7 @@ class HackathonTeamsView(APIView):
         hackathon = _get_hackathon(request, slug)
         _, ps, open_innovation = _parse_problem_choice(hackathon, request.data)
         leader = request.user
-        if _is_admin_or_club_lead(request.user) and request.data.get('leader_email'):
+        if _can(hackathon, request.user, 'teams') and request.data.get('leader_email'):
             leader_email = request.data['leader_email'].strip()
             from django.contrib.auth import get_user_model
             UserModel = get_user_model()
@@ -504,7 +582,10 @@ class HackathonTeamsView(APIView):
             if not leader_user:
                 raise HackathonError(f'No account found with email {leader_email}.', 'USER_NOT_FOUND', field='leader_email')
             leader = leader_user
-        team = TeamService.create_team(hackathon, leader, request.data.get('name', ''), ps, open_innovation, actor=request.user)
+        team = TeamService.create_team(
+            hackathon, leader, request.data.get('name', ''), ps, open_innovation, actor=request.user,
+            registration_data=request.data,
+        )
         return DRFResponse(TeamSerializer(team).data, status=status.HTTP_201_CREATED)
 
 
@@ -542,7 +623,7 @@ class UserLookupView(APIView):
             if membership is not None:
                 target_team = membership.team
 
-        is_admin = _is_admin_or_club_lead(request.user)
+        is_admin = _can(hackathon, request.user, 'teams')
         if not is_admin and not (target_team is not None and target_team.leader_id == request.user.id):
             raise PermissionDenied('Only a team leader can search for teammates.')
 
@@ -654,7 +735,7 @@ class InviteRespondView(APIView):
         if invite.invited_user_id != request.user.id:
             raise PermissionDenied('This invite is not for you.')
         if decision == 'accept':
-            team = TeamService.accept_invite(invite, request.user)
+            team = TeamService.accept_invite(invite, request.user, registration_data=request.data)
             return DRFResponse({'accepted': True, 'team': TeamSerializer(team).data,
                                 'hackathon_slug': team.hackathon.slug})
         invite = TeamService.decline_invite(invite, request.user)
@@ -671,14 +752,14 @@ class TeamDetailView(APIView):
 
     def _get(self, request, pk):
         team = get_object_or_404(_team_queryset(), pk=pk)
-        if not (is_member(team, request.user) or _is_admin_or_club_lead(request.user)):
+        if not (is_member(team, request.user) or _can(team.hackathon, request.user, 'teams')):
             # 404, not 403: don't confirm another team's existence to outsiders.
             from django.http import Http404
             raise Http404
         return team
 
     def _serialize(self, request, team):
-        cls = AdminTeamSerializer if _is_admin_or_club_lead(request.user) else TeamSerializer
+        cls = AdminTeamSerializer if _can(team.hackathon, request.user, 'teams') else TeamSerializer
         return cls(_team_queryset().get(pk=team.pk)).data
 
     def get(self, request, pk):
@@ -692,17 +773,24 @@ class TeamDetailView(APIView):
         present, ps, open_innovation = _parse_problem_choice(team.hackathon, request.data)
         if present:
             kwargs.update(change_problem=True, problem_statement=ps, open_innovation=open_innovation)
+        if 'looking_for_members' in request.data or 'looking_for' in request.data:
+            kwargs['recruiting'] = {
+                'looking_for_members': request.data.get('looking_for_members', team.looking_for_members),
+                'looking_for': request.data.get('looking_for', team.looking_for),
+            }
         TeamService.update_team(team, request.user, **kwargs)
         return DRFResponse(self._serialize(request, team))
 
     def delete(self, request, pk):
-        if not _is_admin_or_club_lead(request.user):
-            raise PermissionDenied('Only admins can delete teams.')
         team = get_object_or_404(_team_queryset(), pk=pk)
+        if not _can(team.hackathon, request.user, 'teams'):
+            raise PermissionDenied('You are not allowed to delete teams in this hackathon.')
         team_id = team.pk
         team_name = team.name
         slug = team.hackathon.slug
+        hackathon = team.hackathon
         team.delete()
+        WaitlistService.promote(hackathon)
         log_audit_event(actor=request.user, action="Deleted Hackathon Team", target_model="HackathonTeam",
                         target_id=team_id, details={"hackathon": slug, "name": team_name})
         return DRFResponse({'deleted': True, 'id': team_id})
@@ -716,7 +804,7 @@ class TeamEmailInviteView(APIView):
 
     def post(self, request, pk):
         team = get_object_or_404(_team_queryset(), pk=pk)
-        if not (is_member(team, request.user) or _is_admin_or_club_lead(request.user)):
+        if not (is_member(team, request.user) or _can(team.hackathon, request.user, 'teams')):
             from django.http import Http404
             raise Http404
         invite = TeamService.invite_by_email(team, request.user, request.data.get('email', ''))
@@ -744,7 +832,7 @@ class TeamActionView(APIView):
     def post(self, request, pk, team_action):
         team = get_object_or_404(_team_queryset(), pk=pk)
         user = request.user
-        admin = _is_admin_or_club_lead(user)
+        admin = _can(team.hackathon, user, 'teams')
         if team_action in self.ADMIN_ONLY and not admin:
             raise PermissionDenied('Admins only.')
         if not admin and not is_member(team, user):
@@ -773,7 +861,7 @@ class TeamActionView(APIView):
         elif team_action == 'admin-add-member':
             TeamService.admin_add_member(team, user, data.get('email', ''))
         elif team_action == 'admin-set-status':
-            TeamService.admin_set_status(team, user, data.get('status', ''))
+            TeamService.admin_set_status(team, user, data.get('status', ''), data.get('reason', ''))
         else:
             from django.http import Http404
             raise Http404
@@ -788,7 +876,7 @@ class TeamActionView(APIView):
 
 class RoundListView(APIView):
     """GET / POST (admin) /api/hackathons/{slug}/rounds/"""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('rounds')]
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
@@ -803,9 +891,22 @@ class RoundListView(APIView):
         return DRFResponse(RoundSerializer(round_obj).data, status=status.HTTP_201_CREATED)
 
 
+class RoundReorderView(APIView):
+    """POST (rounds) /api/hackathons/{slug}/rounds/reorder/ {ids: [...]} - every round once, in the new order."""
+    permission_classes = [scoped('rounds')]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        ids = request.data.get('ids')
+        if not isinstance(ids, list):
+            raise HackathonError('Send the round ids in order.', 'INVALID', field='ids')
+        RoundService.reorder(hackathon, request.user, [_int(i, 'ids') for i in ids])
+        return DRFResponse(RoundSerializer(hackathon.rounds.select_related('details_form'), many=True).data)
+
+
 class RoundDetailView(APIView):
     """PATCH / DELETE (admin) /api/hackathons/{slug}/rounds/{id}/"""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('rounds')]
 
     def _get(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
@@ -833,7 +934,7 @@ class RoundDetailView(APIView):
 
 class RoundEntriesView(APIView):
     """GET (admin) /api/hackathons/{slug}/rounds/{id}/entries/?status=&search="""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('rounds')]
 
     def get(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
@@ -843,8 +944,11 @@ class RoundEntriesView(APIView):
             Exists(RoundEntry.objects.filter(round_id=next_round.id, team_id=OuterRef('team_id')))
             if next_round else Value(False, output_field=BooleanField())
         )
-        qs = round_obj.entries.select_related('team__leader', 'team__problem_statement', 'decided_by').annotate(
+        qs = round_obj.entries.select_related(
+            'team__leader', 'team__problem_statement', 'decided_by', 'team__idea', 'team__submission',
+        ).annotate(
             member_total=Count('team__memberships', distinct=True), promoted_total=promoted,
+            checked_in_total=Count('team__check_ins', distinct=True),
         )
         if request.query_params.get('status'):
             qs = qs.filter(status=request.query_params['status'])
@@ -862,7 +966,7 @@ class RoundActionView(APIView):
       unpublish
       populate
     """
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('rounds')]
 
     def post(self, request, slug, pk, round_action):
         hackathon = _get_hackathon(request, slug)
@@ -878,7 +982,14 @@ class RoundActionView(APIView):
                 round_obj, request.user, team_ids, data.get('status', ''),
                 feedback=data.get('feedback'), admin_notes=data.get('admin_notes'),
                 confirm_published=bool(data.get('confirm_published')),
+                confirm_over_limit=bool(data.get('confirm_over_limit')),
             )
+        elif round_action == 'auto-shortlist':
+            result.update(RoundService.auto_shortlist(
+                round_obj, request.user, str(data.get('rule', '')), data.get('value'),
+                reject_rest=bool(data.get('reject_rest')), apply=bool(data.get('apply')),
+                confirm_published=bool(data.get('confirm_published')), confirm_over_limit=bool(data.get('confirm_over_limit')),
+            ))
         elif round_action == 'publish':
             RoundService.publish_results(
                 round_obj, request.user, announce=bool(data.get('announce')), message=data.get('message', ''),
@@ -923,14 +1034,14 @@ class AnnouncementListView(APIView):
          (anonymous: public only). Admins add ?all=true for every announcement.
     POST (admin) - create; send_email=true emails the audience.
     """
-    permission_classes = [IsAdminOrClubLeadOrReadOnly]
+    permission_classes = [scoped_or_read_only('content')]
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
         # No scheduler runs here, so scheduled emails go out the first time the
         # hackathon's announcements are read after their publish time.
         AnnouncementService.send_due_emails(hackathon)
-        if request.query_params.get('all') == 'true' and _is_admin_or_club_lead(request.user):
+        if request.query_params.get('all') == 'true' and _can(hackathon, request.user, 'content'):
             qs = hackathon.announcements.select_related('round', 'created_by').prefetch_related('target_teams')
             return DRFResponse(AdminHackathonAnnouncementSerializer(qs, many=True).data)
         qs = AnnouncementService.visible_for(hackathon, request.user).select_related('round')
@@ -948,7 +1059,7 @@ class AnnouncementListView(APIView):
 
 class AnnouncementDetailView(APIView):
     """PATCH / DELETE (admin) /api/hackathons/{slug}/announcements/{id}/"""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def _get(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
@@ -989,7 +1100,7 @@ class AnnouncementDetailView(APIView):
 
 class AnnouncementNotifyView(APIView):
     """POST (admin) /api/hackathons/{slug}/announcements/{id}/notify/ - (re)send the email."""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def post(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
@@ -1011,7 +1122,7 @@ class TeamEmailSettingsView(APIView):
     PUT {emails: {<key>: {enabled, subject, body}}} replaces the overrides; a blank
     subject/body means "use the built-in wording".
     """
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     @staticmethod
     def _payload(hackathon):
@@ -1037,7 +1148,7 @@ class TeamEmailSettingsView(APIView):
 
 class TeamEmailTestView(APIView):
     """POST (admin) /api/hackathons/{slug}/team-emails/test/ {email, subject?, body?} - send a sample to yourself."""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('content')]
 
     def post(self, request, slug):
         hackathon = _get_hackathon(request, slug)
@@ -1062,7 +1173,7 @@ class TeamEmailTestView(APIView):
 
 class FormingTeamsReminderView(APIView):
     """POST (admin) /api/hackathons/{slug}/remind-forming/ - nudge leaders of teams below the minimum size."""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('teams')]
 
     def post(self, request, slug):
         hackathon = _get_hackathon(request, slug)
@@ -1071,7 +1182,7 @@ class FormingTeamsReminderView(APIView):
 
 class HackathonStatsView(APIView):
     """GET (admin) /api/hackathons/{slug}/stats/"""
-    permission_classes = [IsAdminOrClubLead]
+    permission_classes = [scoped('insights')]
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)

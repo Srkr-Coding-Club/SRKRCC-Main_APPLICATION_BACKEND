@@ -3,7 +3,8 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.hackathons.models import Hackathon, Team
+from apps.audit.models import AuditLog
+from apps.hackathons.models import Hackathon, Round, Team, TeamMember, TeamRole
 from apps.forms.models import Form, FormStatus, Response
 
 User = get_user_model()
@@ -174,3 +175,113 @@ class HackathonsApiTests(TestCase):
         self.assertEqual(resp.status_code, 403)
         hackathon.refresh_from_db()
         self.assertIsNone(hackathon.visible_until)
+
+
+class HackathonVisibilityAndDeletionTests(TestCase):
+    """Manual hide/show is independent of the scheduled window; hard delete is admin-only and slug-confirmed."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username='vis_admin', email='vis_admin@srkr.ac.in', password='pw12345!', role='ADMIN')
+        self.club_lead = User.objects.create_user(username='vis_lead', email='vis_lead@srkr.ac.in', password='pw12345!', role='CLUB_LEAD')
+        self.hackathon = Hackathon.objects.create(
+            title='Deletable', slug='deletable-hack', theme='t', description='d',
+            start_date=_dates()[0], end_date=_dates()[1],
+        )
+        team = Team.objects.create(hackathon=self.hackathon, name='Doomed', leader=self.admin)
+        TeamMember.objects.create(team=team, hackathon=self.hackathon, user=self.admin, role=TeamRole.LEADER)
+        Round.objects.create(hackathon=self.hackathon, order=1, name='Round 1')
+
+    def test_hide_and_show_keep_the_scheduled_window(self):
+        window_end = timezone.now() + timezone.timedelta(days=30)
+        self.hackathon.visible_until = window_end
+        self.hackathon.save()
+        self.client.force_authenticate(self.admin)
+
+        hidden = self.client.post(f'/api/hackathons/{self.hackathon.slug}/hide/')
+        self.assertTrue(hidden.data['is_hidden'])
+        self.assertTrue(hidden.data['is_manually_hidden'])
+        self.assertIsNone(APIClient().get(f'/api/hackathons/{self.hackathon.slug}/').data.get('slug'))
+
+        shown = self.client.post(f'/api/hackathons/{self.hackathon.slug}/show/')
+        self.assertFalse(shown.data['is_hidden'])
+        self.assertFalse(shown.data['is_manually_hidden'])
+        self.hackathon.refresh_from_db()
+        self.assertEqual(self.hackathon.visible_until, window_end)
+        self.assertEqual(APIClient().get(f'/api/hackathons/{self.hackathon.slug}/').status_code, 200)
+
+    def test_show_does_not_override_an_expired_window(self):
+        self.hackathon.visible_until = timezone.now() - timezone.timedelta(hours=1)
+        self.hackathon.save()
+        self.client.force_authenticate(self.admin)
+        resp = self.client.post(f'/api/hackathons/{self.hackathon.slug}/show/')
+        self.assertTrue(resp.data['is_hidden'])
+        self.assertFalse(resp.data['is_manually_hidden'])
+
+    def test_delete_impact_counts_what_will_be_removed(self):
+        self.client.force_authenticate(self.admin)
+        resp = self.client.get(f'/api/hackathons/{self.hackathon.slug}/delete-impact/')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['teams'], 1)
+        self.assertEqual(resp.data['members'], 1)
+        self.assertEqual(resp.data['rounds'], 1)
+
+    def test_delete_requires_the_matching_slug(self):
+        self.client.force_authenticate(self.admin)
+        for query in ('', '?confirm_slug=wrong'):
+            resp = self.client.delete(f'/api/hackathons/{self.hackathon.slug}/{query}')
+            self.assertEqual(resp.status_code, 400, resp.data)
+            self.assertEqual(resp.data['code'], 'CONFIRM_SLUG_MISMATCH')
+        self.assertTrue(Hackathon.objects.filter(pk=self.hackathon.pk).exists())
+
+    def test_admin_delete_cascades_keeps_the_form_and_writes_an_audit_entry(self):
+        form = Form.objects.create(title='Reg', slug='reg-form', status=FormStatus.PUBLISHED)
+        self.hackathon.registration_form = form
+        self.hackathon.save()
+        self.client.force_authenticate(self.admin)
+
+        resp = self.client.delete(f'/api/hackathons/{self.hackathon.slug}/?confirm_slug={self.hackathon.slug}')
+        self.assertEqual(resp.status_code, 204, getattr(resp, 'data', None))
+        self.assertFalse(Hackathon.objects.filter(pk=self.hackathon.pk).exists())
+        self.assertEqual(Team.objects.filter(name='Doomed').count(), 0)
+        self.assertTrue(Form.objects.filter(pk=form.pk).exists())
+        entry = AuditLog.objects.get(action='Deleted Hackathon', target_id='deletable-hack')
+        self.assertEqual(entry.details['deleted']['teams'], 1)
+
+    def test_club_lead_cannot_delete_or_read_impact_but_can_hide(self):
+        self.client.force_authenticate(self.club_lead)
+        slug = self.hackathon.slug
+        self.assertEqual(self.client.delete(f'/api/hackathons/{slug}/?confirm_slug={slug}').status_code, 403)
+        self.assertEqual(self.client.get(f'/api/hackathons/{slug}/delete-impact/').status_code, 403)
+        self.assertEqual(self.client.post(f'/api/hackathons/{slug}/hide/').status_code, 200)
+        self.assertTrue(Hackathon.objects.filter(pk=self.hackathon.pk).exists())
+
+
+class HackathonBannerCropTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username='crop_admin', email='crop_admin@srkr.ac.in', password='pw12345!', role='ADMIN')
+        self.hackathon = Hackathon.objects.create(
+            title='Cropped', slug='cropped-hack', theme='t', description='d',
+            start_date=_dates()[0], end_date=_dates()[1], banner_image='https://example.com/banner.jpg',
+        )
+        self.client.force_authenticate(self.admin)
+        self.url = f'/api/hackathons/{self.hackathon.slug}/'
+
+    def test_banner_crop_defaults_to_empty(self):
+        self.assertEqual(self.client.get(self.url).data['banner_crop'], {})
+
+    def test_admin_can_save_and_clear_banner_crop(self):
+        resp = self.client.patch(self.url, {'banner_crop': {'x': 30, 'y': 72.5, 'zoom': 1.5}}, format='json')
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data['banner_crop'], {'x': 30.0, 'y': 72.5, 'zoom': 1.5})
+        cleared = self.client.patch(self.url, {'banner_crop': {}}, format='json')
+        self.assertEqual(cleared.data['banner_crop'], {})
+
+    def test_invalid_banner_crop_is_rejected(self):
+        for bad in ({'x': 120, 'y': 50, 'zoom': 1}, {'x': 50, 'y': 50, 'zoom': 5}, {'x': 'a', 'y': 1, 'zoom': 1},
+                    {'x': 50, 'y': 50}, {'x': 50, 'y': 50, 'zoom': 1, 'rotate': 90}, [1, 2, 3]):
+            resp = self.client.patch(self.url, {'banner_crop': bad}, format='json')
+            self.assertEqual(resp.status_code, 400, bad)
+        self.hackathon.refresh_from_db()
+        self.assertEqual(self.hackathon.banner_crop, {})

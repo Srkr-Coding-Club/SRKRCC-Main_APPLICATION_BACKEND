@@ -27,7 +27,7 @@ def seed_database():
     # 1. Seed Core Platform Users
     users_data = [
         {
-            'email': 'admin@srkr.ac.in',
+            'email': 'srkrcodingclubofficial@gmail.com',
             'username': 'admin',
             'password': 'Admin@123',
             'first_name': 'System',
@@ -111,7 +111,7 @@ def seed_database():
         print(f" [User] {user.email:25} | Role: {user.role:10} | Name: {user.get_full_name()}")
 
     rahul = users_map['rahul.sharma@srkr.ac.in']
-    admin = users_map['admin@srkr.ac.in']
+    admin = users_map['srkrcodingclubofficial@gmail.com']
 
     # 2. Seed CodeQuest Problems & User Streak
     today = date.today()

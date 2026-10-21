@@ -11,7 +11,7 @@ from apps.accounts.models import User, UserRole
 
 DEFAULT_USERS = [
     {
-        'email': 'admin@srkr.ac.in',
+        'email': 'srkrcodingclubofficial@gmail.com',
         'username': 'admin',
         'password': 'Admin@123',
         'first_name': 'Admin',
@@ -75,7 +75,7 @@ def seed_users():
         email = user_data['email']
         password = user_data['password']
         
-        user, created = User.objects.get_or_select = User.objects.get_or_create(
+        user, created = User.objects.get_or_create(
             email=email,
             defaults={
                 'username': user_data['username'],
@@ -99,7 +99,7 @@ def seed_users():
         action = "Created" if created else "Updated & Reset"
     # Seed initial audit logs
     from apps.audit.models import AuditLog
-    admin_user = User.objects.filter(email='admin@srkr.ac.in').first()
+    admin_user = User.objects.filter(email='srkrcodingclubofficial@gmail.com').first()
     if not AuditLog.objects.exists():
         AuditLog.objects.create(
             actor=admin_user,

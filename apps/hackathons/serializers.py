@@ -3,6 +3,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from apps.forms.models import ProfileField
+from . import config_validation as config
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, HackathonStage, InviteStatus,
     ProblemStatement, Round, RoundEntry, Submission, Team, TeamInvite, TeamMember, TeamStatus,
@@ -17,30 +18,111 @@ class HackathonSerializer(serializers.ModelSerializer):
     # Teams that actually meet the minimum size; team_count also includes ones still forming.
     registered_team_count = serializers.IntegerField(read_only=True, default=0)
     is_hidden = serializers.SerializerMethodField()
+    is_manually_hidden = serializers.SerializerMethodField()
     is_registration_open = serializers.BooleanField(read_only=True)
+    waitlisted_team_count = serializers.IntegerField(read_only=True, default=0)
+    is_full = serializers.SerializerMethodField()
+    submissions_open = serializers.SerializerMethodField()
+    results_published = serializers.SerializerMethodField()
+    problems_revealed = serializers.SerializerMethodField()
 
     class Meta:
         model = Hackathon
         fields = [
             'id', 'title', 'slug', 'theme', 'description',
-            'prize_pool', 'banner_image', 'status', 'start_date', 'end_date',
-            'visible_from', 'visible_until', 'is_hidden', 'registration_form',
+            'prize_pool', 'banner_image', 'banner_crop', 'status', 'start_date', 'end_date',
+            'visible_from', 'visible_until', 'is_hidden', 'is_manually_hidden', 'registration_form',
             'form_slug', 'form_title', 'registration_count', 'team_count', 'registered_team_count',
             'mode', 'venue', 'organizer_name', 'logo_image', 'tags', 'prizes', 'problem_domains',
             'registration_opens_at', 'registration_closes_at', 'min_team_size', 'max_team_size',
             'team_edits_locked', 'allow_open_innovation', 'required_profile_fields', 'faq', 'is_registration_open',
+            'features', 'max_teams', 'max_participants', 'waitlist_enabled', 'eligibility', 'rules',
+            'require_rules_acceptance', 'registration_questions', 'problem_statements_reveal_at',
+            'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'idea_review_required',
+            'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
+            'certificate_config', 'mentors', 'judges', 'sponsors', 'contacts', 'community_links', 'venue_map_url',
+            'waitlisted_team_count', 'is_full', 'submissions_open', 'results_published', 'problems_revealed',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['status']
+        read_only_fields = ['status', 'results_published_at']
+
+    def get_is_full(self, obj) -> bool:
+        if not obj.max_teams:
+            return False
+        placed = obj.teams.filter(
+            status__in=(TeamStatus.FORMING, TeamStatus.REGISTERED), is_waitlisted=False,
+        ).count()
+        return placed >= obj.max_teams
+
+    def get_submissions_open(self, obj) -> bool:
+        if not obj.feature('submissions'):
+            return False
+        now = timezone.now()
+        return (not obj.submission_opens_at or obj.submission_opens_at <= now) and (
+            not obj.submission_deadline or now < obj.submission_deadline
+        )
+
+    def get_results_published(self, obj) -> bool:
+        return obj.results_published_at is not None
+
+    def get_problems_revealed(self, obj) -> bool:
+        return not obj.problem_statements_reveal_at or obj.problem_statements_reveal_at <= timezone.now()
+
+    def validate_features(self, value):
+        return config.clean_features(value)
+
+    def validate_eligibility(self, value):
+        return config.clean_eligibility(value)
+
+    def validate_registration_questions(self, value):
+        return config.clean_registration_questions(value)
+
+    def validate_certificate_config(self, value):
+        return config.clean_certificate_config(value)
+
+    def validate_mentors(self, value):
+        return config.clean_people(value, kind='mentors')
+
+    def validate_judges(self, value):
+        return config.clean_people(value, kind='judges')
+
+    def validate_sponsors(self, value):
+        return config.clean_sponsors(value)
+
+    def validate_contacts(self, value):
+        return config.clean_contacts(value)
+
+    def validate_community_links(self, value):
+        return config.clean_community_links(value)
 
     def get_is_hidden(self, obj) -> bool:
         """See EventSerializer.get_is_hidden - identical window logic."""
+        if obj.hidden_at:
+            return True
         now = timezone.now()
         if obj.visible_from and obj.visible_from > now:
             return True
         if obj.visible_until and obj.visible_until <= now:
             return True
         return False
+
+    def get_is_manually_hidden(self, obj) -> bool:
+        return obj.hidden_at is not None
+
+    BANNER_CROP_LIMITS = {'x': (0, 100), 'y': (0, 100), 'zoom': (1, 3)}
+
+    def validate_banner_crop(self, value):
+        if value in (None, {}):
+            return {}
+        if not isinstance(value, dict) or set(value) - set(self.BANNER_CROP_LIMITS):
+            raise serializers.ValidationError('Must be {x, y, zoom}.')
+        cleaned = {}
+        for key, (low, high) in self.BANNER_CROP_LIMITS.items():
+            number = value.get(key)
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not low <= number <= high:
+                raise serializers.ValidationError(f'{key} must be a number between {low} and {high}.')
+            cleaned[key] = round(float(number), 2)
+        return cleaned
 
     MAX_TAGS = 10
     MAX_PRIZES = 12
@@ -115,7 +197,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             cleaned.append({'question': question, 'answer': answer})
         return cleaned
 
-    RESERVED_SLUGS = {'my-teams', 'my-invites', 'teams', 'invites', 'submissions'}
+    RESERVED_SLUGS = {'my-teams', 'my-invites', 'teams', 'invites', 'submissions', 'certificates'}
 
     def validate_slug(self, value):
         if self.instance is not None and value != self.instance.slug:
@@ -180,7 +262,36 @@ class HackathonSerializer(serializers.ModelSerializer):
         closes = attrs.get('registration_closes_at', getattr(self.instance, 'registration_closes_at', None))
         if opens and closes and closes <= opens:
             raise serializers.ValidationError({'registration_closes_at': 'Must be after the registration opening time.'})
+        idea_opens = attrs.get('idea_opens_at', getattr(self.instance, 'idea_opens_at', None))
+        idea_deadline = attrs.get('idea_deadline', getattr(self.instance, 'idea_deadline', None))
+        if idea_opens and idea_deadline and idea_deadline <= idea_opens:
+            raise serializers.ValidationError({'idea_deadline': 'Must be after the time idea submission opens.'})
+        project_deadline = attrs.get('submission_deadline', getattr(self.instance, 'submission_deadline', None))
+        if idea_deadline and project_deadline and idea_deadline > project_deadline:
+            raise serializers.ValidationError({'idea_deadline': 'The idea phase must end before the project deadline.'})
+        sub_opens = attrs.get('submission_opens_at', getattr(self.instance, 'submission_opens_at', None))
+        sub_deadline = attrs.get('submission_deadline', getattr(self.instance, 'submission_deadline', None))
+        if sub_opens and sub_deadline and sub_deadline <= sub_opens:
+            raise serializers.ValidationError({'submission_deadline': 'Must be after the time submissions open.'})
+        self._check_capacity(attrs)
         return attrs
+
+    def _check_capacity(self, attrs):
+        """A cap below what is already placed would silently orphan existing teams."""
+        if self.instance is None:
+            return
+        if attrs.get('max_teams'):
+            placed = self.instance.teams.filter(
+                status__in=(TeamStatus.FORMING, TeamStatus.REGISTERED), is_waitlisted=False,
+            ).count()
+            if attrs['max_teams'] < placed:
+                raise serializers.ValidationError({'max_teams': f'{placed} teams are already placed. Choose at least {placed}.'})
+        if attrs.get('max_participants'):
+            members = self.instance.memberships.filter(
+                team__status__in=(TeamStatus.FORMING, TeamStatus.REGISTERED), team__is_waitlisted=False,
+            ).count()
+            if attrs['max_participants'] < members:
+                raise serializers.ValidationError({'max_participants': f'{members} participants have already joined. Choose at least {members}.'})
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +415,9 @@ class AdminTeamMemberSerializer(TeamMemberSerializer):
     roll_number = serializers.CharField(source='user.roll_number', read_only=True)
 
     class Meta(TeamMemberSerializer.Meta):
-        fields = TeamMemberSerializer.Meta.fields + ['phone_number', 'branch', 'year', 'roll_number', 'college']
+        fields = TeamMemberSerializer.Meta.fields + [
+            'phone_number', 'branch', 'year', 'roll_number', 'college', 'answers', 'rules_accepted_at',
+        ]
 
     def get_college(self, obj):
         user = obj.user
@@ -357,7 +470,8 @@ class TeamSerializer(serializers.ModelSerializer):
     class Meta:
         model = Team
         fields = [
-            'id', 'name', 'hackathon_slug', 'status', 'problem_statement', 'open_innovation', 'leader_id',
+            'id', 'name', 'hackathon_slug', 'status', 'is_waitlisted', 'status_reason', 'looking_for_members',
+            'looking_for', 'problem_statement', 'open_innovation', 'leader_id',
             'members', 'member_count', 'pending_invites', 'pending_email_invites', 'created_at', 'updated_at',
         ]
 
@@ -428,11 +542,12 @@ class RoundSerializer(serializers.ModelSerializer):
     details_form_slug = serializers.CharField(source='details_form.slug', read_only=True)
     details_form_title = serializers.CharField(source='details_form.title', read_only=True)
     entry_counts = serializers.SerializerMethodField()
+    effective_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Round
         fields = [
-            'id', 'order', 'name', 'description', 'starts_at', 'ends_at', 'status',
+            'id', 'order', 'name', 'kind', 'shortlist_limit', 'description', 'starts_at', 'ends_at', 'status', 'effective_status',
             'details_form', 'details_form_slug', 'details_form_title',
             'results_published', 'entry_counts', 'created_at', 'updated_at',
         ]
@@ -467,6 +582,15 @@ class RoundSerializer(serializers.ModelSerializer):
         value = (value or '').strip()
         if not value:
             raise serializers.ValidationError('Round name is required.')
+        return value
+
+    def get_effective_status(self, obj):
+        from .services import effective_round_status
+        return effective_round_status(obj)
+
+    def validate_shortlist_limit(self, value):
+        if value is not None and value < 1:
+            raise serializers.ValidationError('Must be 1 or more, or left blank.')
         return value
 
     def validate_order(self, value):
@@ -548,6 +672,11 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
     decided_by_name = serializers.SerializerMethodField()
     details_response_id = serializers.IntegerField(read_only=True)
     is_promoted_to_next = serializers.SerializerMethodField()
+    idea_status = serializers.SerializerMethodField()
+    idea_score = serializers.SerializerMethodField()
+    has_project = serializers.SerializerMethodField()
+    project_score = serializers.SerializerMethodField()
+    checked_in = serializers.SerializerMethodField()
 
     class Meta:
         model = RoundEntry
@@ -555,7 +684,31 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
             'id', 'team_id', 'team_name', 'team_status', 'leader_email', 'member_count',
             'problem_statement', 'problem_code', 'status', 'admin_notes', 'feedback',
             'decided_by_name', 'decided_at', 'details_response_id', 'is_promoted_to_next',
+            'idea_status', 'idea_score', 'has_project', 'project_score', 'checked_in',
         ]
+
+    @staticmethod
+    def _one(team, name):
+        return getattr(team, name) if hasattr(team, name) else None
+
+    def get_idea_status(self, obj):
+        idea = self._one(obj.team, 'idea')
+        return idea.status if idea else None
+
+    def get_idea_score(self, obj):
+        idea = self._one(obj.team, 'idea')
+        return idea.score if idea and idea.review_count else None
+
+    def get_has_project(self, obj):
+        return self._one(obj.team, 'submission') is not None
+
+    def get_project_score(self, obj):
+        project = self._one(obj.team, 'submission')
+        return project.score if project and project.review_count else None
+
+    def get_checked_in(self, obj):
+        annotated = getattr(obj, 'checked_in_total', None)
+        return int(annotated) if annotated is not None else obj.team.check_ins.count()
 
     def get_member_count(self, obj):
         annotated = getattr(obj, 'member_total', None)
@@ -650,9 +803,10 @@ class SubmissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Submission
         fields = '__all__'
-        # score is judge/admin-only (assigned via Django admin); no grading UI writes it yet,
-        # so leaving it writable would let a team self-assign its own hackathon score.
-        read_only_fields = ['score']
+        # score / review_count come only from judges' reviews; leaving them writable would let a
+        # team grade itself. Submissions made through this legacy endpoint skip the submission window,
+        # so the app uses /{slug}/my-submission/ instead.
+        read_only_fields = ['score', 'review_count', 'submitted_by']
 
     def validate_team(self, team):
         if self.instance is not None and team != self.instance.team:

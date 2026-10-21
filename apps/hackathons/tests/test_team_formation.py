@@ -408,7 +408,7 @@ class ProblemStatementApiTests(APITestCase):
         HackathonAnnouncement.objects.create(hackathon=self.hack, title='t', message='m', audience='TEAMS').target_teams.add(team)
 
         self.client.force_authenticate(self.admin)
-        resp = self.client.delete(f'/api/hackathons/{self.hack.slug}/')
+        resp = self.client.delete(f'/api/hackathons/{self.hack.slug}/?confirm_slug={self.hack.slug}')
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(Hackathon.objects.filter(pk=self.hack.pk).exists())
         for model in (Team, TeamMember, TeamInvite, ProblemStatement, Round, RoundEntry, HackathonAnnouncement):

@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from . import views
+from . import views, views_ops
 
 router = DefaultRouter()
 router.register(r'submissions', views.SubmissionViewSet, basename='hackathon-submission')
@@ -10,6 +10,7 @@ router.register(r'', views.HackathonViewSet, basename='hackathon')
 # Explicit paths come before the router so fixed prefixes (my-invites/,
 # teams/<id>/, invites/<id>/) are matched before the `{slug}` detail route.
 urlpatterns = [
+    path('certificates/verify/<str:code>/', views_ops.CertificateVerifyView.as_view(), name='hackathon-certificate-verify'),
     path('my-invites/', views.MyInvitesView.as_view(), name='hackathon-my-invites'),
     path('my-teams/', views.MyTeamsView.as_view(), name='hackathon-my-teams'),
     path('invites/<int:pk>/<str:decision>/', views.InviteRespondView.as_view(), name='hackathon-invite-respond'),
@@ -31,12 +32,48 @@ urlpatterns = [
     path('<slug:slug>/team-emails/test/', views.TeamEmailTestView.as_view(), name='hackathon-team-emails-test'),
     path('<slug:slug>/remind-forming/', views.FormingTeamsReminderView.as_view(), name='hackathon-remind-forming'),
 
+    path('<slug:slug>/my-submission/', views_ops.MySubmissionView.as_view(), name='hackathon-my-submission'),
+    path('<slug:slug>/my-permissions/', views_ops.MyPermissionsView.as_view(), name='hackathon-my-permissions'),
+    path('<slug:slug>/my-idea/', views_ops.MyIdeaView.as_view(), name='hackathon-my-idea'),
+    path('<slug:slug>/ideas/', views_ops.AdminIdeasView.as_view(), name='hackathon-admin-ideas'),
+    path('<slug:slug>/ideas/remind/', views_ops.IdeaRemindView.as_view(), name='hackathon-ideas-remind'),
+    path('<slug:slug>/ideas/<int:pk>/review/', views_ops.IdeaReviewView.as_view(), name='hackathon-idea-review'),
+    path('<slug:slug>/my-registration/', views_ops.MyRegistrationView.as_view(), name='hackathon-my-registration'),
+    path('<slug:slug>/my-check-in/', views_ops.MyCheckInView.as_view(), name='hackathon-my-check-in'),
+    path('<slug:slug>/my-certificate/', views_ops.MyCertificateView.as_view(), name='hackathon-my-certificate'),
+    path('<slug:slug>/results/', views_ops.ResultsView.as_view(), name='hackathon-results'),
+    path('<slug:slug>/results/<str:action>/', views_ops.ResultsPublishView.as_view(), name='hackathon-results-publish'),
+    path('<slug:slug>/showcase/', views_ops.ShowcaseView.as_view(), name='hackathon-showcase'),
+    path('<slug:slug>/finder/', views_ops.FinderView.as_view(), name='hackathon-finder'),
+    path('<slug:slug>/finder/me/', views_ops.FinderMeView.as_view(), name='hackathon-finder-me'),
+    path('<slug:slug>/finder/seekers/<int:pk>/invite/', views_ops.FinderInviteView.as_view(), name='hackathon-finder-invite'),
+    path('<slug:slug>/finder/teams/<int:pk>/request/', views_ops.FinderRequestView.as_view(), name='hackathon-finder-request'),
+    path('<slug:slug>/judging/', views_ops.JudgingListView.as_view(), name='hackathon-judging'),
+    path('<slug:slug>/judging/ideas/', views_ops.JudgingIdeasListView.as_view(), name='hackathon-judging-ideas'),
+    path('<slug:slug>/judging/ideas/<int:pk>/', views_ops.JudgingIdeaReviewView.as_view(), name='hackathon-judging-idea-review'),
+    path('<slug:slug>/judging/<int:pk>/', views_ops.JudgingReviewView.as_view(), name='hackathon-judging-review'),
+    path('<slug:slug>/ideas/<int:pk>/reviews/', views_ops.IdeaReviewsView.as_view(), name='hackathon-idea-reviews'),
+    path('<slug:slug>/criteria/', views_ops.CriteriaView.as_view(), name='hackathon-criteria'),
+    path('<slug:slug>/staff/', views_ops.StaffView.as_view(), name='hackathon-staff'),
+    path('<slug:slug>/staff/<int:pk>/', views_ops.StaffDetailView.as_view(), name='hackathon-staff-detail'),
+    path('<slug:slug>/leaderboard/', views_ops.LeaderboardView.as_view(), name='hackathon-leaderboard'),
+    path('<slug:slug>/winners/', views_ops.WinnersView.as_view(), name='hackathon-winners'),
+    path('<slug:slug>/check-in/', views_ops.CheckInView.as_view(), name='hackathon-check-in'),
+    path('<slug:slug>/check-in/<int:user_id>/', views_ops.CheckInDetailView.as_view(), name='hackathon-check-in-detail'),
+    path('<slug:slug>/submissions/', views_ops.AdminSubmissionsView.as_view(), name='hackathon-admin-submissions'),
+    path('<slug:slug>/submissions/remind/', views_ops.SubmissionRemindView.as_view(), name='hackathon-submissions-remind'),
+    path('<slug:slug>/submissions/<int:pk>/reviews/', views_ops.SubmissionReviewsView.as_view(), name='hackathon-submission-reviews'),
+    path('<slug:slug>/certificates/', views_ops.AdminCertificatesView.as_view(), name='hackathon-admin-certificates'),
+    path('<slug:slug>/participants/', views_ops.ParticipantsView.as_view(), name='hackathon-participants'),
+    path('<slug:slug>/analytics/', views_ops.AnalyticsView.as_view(), name='hackathon-analytics'),
+    path('<slug:slug>/clone/', views_ops.CloneView.as_view(), name='hackathon-clone'),
     path('<slug:slug>/problem-statements/', views.ProblemStatementListView.as_view(), name='hackathon-ps-list'),
     path('<slug:slug>/problem-statements/upload/', views.ProblemStatementUploadView.as_view(), name='hackathon-ps-upload'),
     path('<slug:slug>/problem-statements/reorder/', views.ProblemStatementReorderView.as_view(), name='hackathon-ps-reorder'),
     path('<slug:slug>/problem-statements/<int:pk>/', views.ProblemStatementDetailView.as_view(), name='hackathon-ps-detail'),
 
     path('<slug:slug>/rounds/', views.RoundListView.as_view(), name='hackathon-round-list'),
+    path('<slug:slug>/rounds/reorder/', views.RoundReorderView.as_view(), name='hackathon-round-reorder'),
     path('<slug:slug>/rounds/<int:pk>/', views.RoundDetailView.as_view(), name='hackathon-round-detail'),
     path('<slug:slug>/rounds/<int:pk>/entries/', views.RoundEntriesView.as_view(), name='hackathon-round-entries'),
     path('<slug:slug>/rounds/<int:pk>/<str:round_action>/', views.RoundActionView.as_view(), name='hackathon-round-action'),

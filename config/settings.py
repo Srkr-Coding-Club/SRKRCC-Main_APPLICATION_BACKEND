@@ -1,7 +1,9 @@
 import os
+import socket
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 import dj_database_url
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
@@ -40,6 +42,107 @@ def database_conn_max_age() -> int:
     # Persistent connections leak on Lambda because the process is frozen after
     # the response. Neon pooled URLs also expect short-lived clients.
     return 0 if _is_serverless() else 600
+
+
+def use_direct_database() -> bool:
+    # The deploy job sets this for migrate/seed. Lambda leaves it unset and
+    # keeps the pooled host from Parameter Store.
+    return _env_truthy('DATABASE_USE_DIRECT')
+
+
+def rewrite_direct_database_url(url: str) -> str:
+    """Use Neon's direct host when DATABASE_USE_DIRECT is set.
+
+    Hosts that contain ``-pooler.`` are PgBouncer. Django migrations take a
+    session advisory lock, which that pooler does not keep. Other URLs,
+    including local Postgres, are returned unchanged.
+    """
+    if not url or not use_direct_database():
+        return url
+    parts = urlsplit(url)
+    host = parts.hostname or ''
+    if '-pooler.' not in host:
+        return url
+    direct_host = host.replace('-pooler.', '.', 1)
+    userinfo, sep, _hostport = parts.netloc.rpartition('@')
+    hostport = direct_host if parts.port is None else f'{direct_host}:{parts.port}'
+    netloc = f'{userinfo}{sep}{hostport}' if sep else hostport
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _prefer_ipv4_hostaddr(config: dict) -> dict:
+    """Pin serverless Postgres to an A record.
+
+    Neon publishes IPv6 addresses that do not accept connections from Lambda
+    or from networks without working IPv6. libpq tries those first and holds
+    the Gunicorn worker until the connect timeout. ``host`` stays the hostname
+    so TLS still matches the certificate; ``hostaddr`` is only the socket.
+    """
+    host = (config.get('HOST') or '').strip()
+    if not host or host in {'localhost', '127.0.0.1', '::1'}:
+        return config
+    try:
+        socket.inet_aton(host)
+        return config
+    except OSError:
+        pass
+    try:
+        port = int(config.get('PORT') or 5432)
+        infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except (OSError, TypeError, ValueError):
+        return config
+    if not infos:
+        return config
+    options = dict(config.get('OPTIONS') or {})
+    options['hostaddr'] = infos[0][4][0]
+    config['OPTIONS'] = options
+    return config
+
+
+# Bounded waits for Lambda only. Neon can take a few seconds to wake; these
+# values fail the request instead of blocking until Gunicorn's worker timeout.
+# connect_timeout is seconds (libpq). statement_timeout is milliseconds.
+POSTGRES_CONNECT_TIMEOUT_SECONDS = 10
+POSTGRES_STATEMENT_TIMEOUT_MS = 10000
+
+
+def apply_database_options(config: dict) -> dict:
+    """Return a dj-database-url dict with Lambda-safe Postgres timeouts.
+
+    Django's request-finished hook calls close_old_connections ->
+    close_if_unusable_or_obsolete. When errors_occurred is set, that path
+    runs PostgreSQL is_usable() -> SELECT 1 with no default query timeout,
+    which hung Gunicorn workers on a stale Neon socket. CONN_HEALTH_CHECKS
+    stays False so reuse-path health checks are not added. CONN_MAX_AGE is
+    unchanged by this function.
+    """
+    config = dict(config)
+    config['CONN_HEALTH_CHECKS'] = False
+    host = config.get('HOST') or ''
+    if use_direct_database() and '-pooler.' in host:
+        # dj-database-url reads DATABASE_URL itself, so rewriting only the
+        # default argument does not change HOST. Rewrite the parsed host.
+        config['HOST'] = host.replace('-pooler.', '.', 1)
+
+    if not _is_serverless():
+        return config
+
+    engine = config.get('ENGINE') or ''
+    if 'postgresql' not in engine and 'postgres' not in engine:
+        return config
+
+    options = dict(config.get('OPTIONS') or {})
+    options.setdefault('connect_timeout', POSTGRES_CONNECT_TIMEOUT_SECONDS)
+    # Neon's pooled endpoint rejects statement_timeout in the startup packet.
+    # The direct host accepts it. connect_timeout is a libpq parameter and stays.
+    pooled = '-pooler.' in (config.get('HOST') or '')
+    if not pooled:
+        existing = (options.get('options') or '').strip()
+        if 'statement_timeout' not in existing:
+            extra = f'-c statement_timeout={POSTGRES_STATEMENT_TIMEOUT_MS}'
+            options['options'] = f'{existing} {extra}'.strip()
+    config['OPTIONS'] = options
+    return _prefer_ipv4_hostaddr(config)
 
 
 def resolve_media_root() -> Path:
@@ -179,9 +282,12 @@ ASGI_APPLICATION = 'config.asgi.application'
 # Database Configuration: Uses local PostgreSQL by default.
 # DATABASE_URL still comes only from the environment (or the local default).
 DATABASES = {
-    'default': dj_database_url.config(
-        default=os.getenv('DATABASE_URL', 'postgres://postgres:postgres@localhost:5432/srkrcc_db'),
-        conn_max_age=database_conn_max_age(),
+    'default': apply_database_options(
+        dj_database_url.config(
+            default=os.getenv('DATABASE_URL', 'postgres://postgres:postgres@localhost:5432/srkrcc_db'),
+            conn_max_age=database_conn_max_age(),
+            conn_health_checks=False,
+        )
     )
 }
 
