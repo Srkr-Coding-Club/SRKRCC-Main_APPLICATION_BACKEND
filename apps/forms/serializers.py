@@ -1,4 +1,5 @@
 import base64
+import json
 import re
 import uuid
 import logging
@@ -8,6 +9,9 @@ from rest_framework.exceptions import APIException
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db import transaction
+from django.db.models import TextField
+from django.db.models.functions import Cast, Lower
 from django.utils import timezone
 
 from .models import Form, FormField, FieldType, FormStatus, Response, Answer, BulkIngestSession
@@ -20,6 +24,11 @@ from .validation import (
     STRICT,
     PARTIAL,
 )
+from .validation import codes
+from . import capacity, spam
+from .validation import limits
+from .validation.schema import condition_depth
+from . import versions as form_versions
 # Backward-compat: the conditional helpers now live in apps.forms.validation.
 # Re-exported here because apps.forms.views still imports them by name.
 from .validation.conditional import evaluate_condition, evaluate_visible_fields  # noqa: F401
@@ -87,13 +96,29 @@ class FormValidationError(APIException):
 # Serializers
 # ---------------------------------------------------------------------------
 
+def clean_redirect_url(value) -> str:
+    """An https:// address or a path on this site; anything else (javascript:, data:, //host, plain http) is refused."""
+    from urllib.parse import urlparse
+    value = (value or '').strip()
+    if not value:
+        return ''
+    if len(value) > 500 or re.search(r'[\s\\]', value):
+        raise serializers.ValidationError("The redirect address must be a single address of at most 500 characters.")
+    if value.startswith('/') and not value.startswith('//'):
+        return value
+    parsed = urlparse(value)
+    if parsed.scheme == 'https' and parsed.netloc and not parsed.username:
+        return value
+    raise serializers.ValidationError("The redirect must be an https:// address or a path on this site such as /events.")
+
+
 class FormFieldSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
 
     class Meta:
         model = FormField
         fields = [
-            'id', 'label', 'type', 'placeholder', 'is_required',
+            'id', 'label', 'type', 'placeholder', 'description', 'is_required',
             'options', 'rows', 'min_value', 'max_value',
             'conditional_logic', 'validation_rules', 'order', 'profile_field',
         ]
@@ -105,6 +130,8 @@ class FormFieldSerializer(serializers.ModelSerializer):
         if 'validation_rules' in attrs:
             attrs['validation_rules'] = normalize_validation_rules(ftype, attrs.get('validation_rules'))
         if 'conditional_logic' in attrs:
+            if condition_depth(attrs.get('conditional_logic')) > limits.MAX_CONDITION_DEPTH:
+                raise serializers.ValidationError({'conditional_logic': f"A condition can nest groups at most {limits.MAX_CONDITION_DEPTH} deep."})
             attrs['conditional_logic'] = normalize_conditional_logic(attrs.get('conditional_logic'))
         return attrs
 
@@ -118,7 +145,7 @@ class FormSerializer(serializers.ModelSerializer):
     class Meta:
         model = Form
         fields = [
-            'id', 'title', 'slug', 'description', 'image_url', 'category', 'status',
+            'id', 'title', 'slug', 'description', 'image_url', 'category', 'status', 'is_template',
             'version', 'allow_multiple_responses', 'allow_response_editing', 'enable_prefill', 'max_responses_per_user',
             'max_total_responses', 'prevent_duplicate_email_answers',
             'allow_edits_until', 'open_at', 'close_at',
@@ -126,10 +153,12 @@ class FormSerializer(serializers.ModelSerializer):
             'confirmation_email_enabled', 'confirmation_email_template',
             'confirmation_notification_enabled', 'notify_admin_on_submission',
             'notify_members_on_publish', 'notification_title', 'notification_message',
+            'confirmation_message', 'redirect_url', 'redirect_delay_seconds', 'captcha_enabled', 'language',
             'attendance_enabled', 'attendance_start_date', 'attendance_days',
             'attendance_sessions_per_day', 'attendance_window_minutes',
             'fields', 'created_at', 'response_count',
         ]
+        read_only_fields = ['is_template']
 
     def validate_title(self, value):
         # DRF's CharField only rejects a literal "" ("may not be blank") - a
@@ -152,6 +181,26 @@ class FormSerializer(serializers.ModelSerializer):
         if not re.match(r'^[A-Z]{2,6}$', clean):
             raise serializers.ValidationError("Club ID prefix must be 2-6 letters (e.g. 'SCC').")
         return clean
+
+    def validate_confirmation_message(self, value):
+        value = (value or '').strip()
+        if len(value) > 2000:
+            raise serializers.ValidationError("The thank-you message can be at most 2000 characters.")
+        return value
+
+    def validate_language(self, value):
+        value = (value or 'en').strip().lower()
+        if value not in ('en', 'te', 'hi'):
+            raise serializers.ValidationError("language must be 'en' (English), 'te' (Telugu) or 'hi' (Hindi).")
+        return value
+
+    def validate_redirect_url(self, value):
+        return clean_redirect_url(value)
+
+    def validate_redirect_delay_seconds(self, value):
+        if not (0 <= value <= 30):
+            raise serializers.ValidationError("redirect_delay_seconds must be between 0 and 30.")
+        return value
 
     def validate_attendance_days(self, value):
         if not (1 <= value <= 30):
@@ -214,6 +263,12 @@ class FormSerializer(serializers.ModelSerializer):
                     'attendance_start_date': "Attendance tracking requires a start date.",
                 })
 
+        captcha_on = data.get('captcha_enabled', getattr(self.instance, 'captcha_enabled', False))
+        if going_live and captcha_on and not spam.captcha_configured():
+            raise serializers.ValidationError({'captcha_enabled': spam.CAPTCHA_NOT_CONFIGURED_MESSAGE})
+
+        self._check_no_type_changes_on_answered_fields(data)
+
         # Form-definition validation. DRAFT saves stay lenient (a form is built
         # incrementally); PUBLISHED / SCHEDULED must have a fully valid definition
         # so every submission against it can be validated.
@@ -230,6 +285,36 @@ class FormSerializer(serializers.ModelSerializer):
 
         return data
 
+    def _check_no_type_changes_on_answered_fields(self, data):
+        """Changing a question's type once people have answered it would reinterpret their stored answers."""
+        if self.instance is None or not data.get('fields'):
+            return
+        incoming = {
+            f['id']: f for f in data['fields']
+            if isinstance(f.get('id'), int) and 0 < f['id'] < 2147483647
+        }
+        if not incoming:
+            return
+        locked = []
+        for existing in FormField.all_objects.filter(form=self.instance, id__in=incoming.keys()):
+            new_type = incoming[existing.id].get('type')
+            if new_type and new_type != existing.type and Answer.objects.filter(field=existing).exists():
+                locked.append(FieldError(
+                    code=codes.FIELD_TYPE_LOCKED, field_id=existing.id, label=existing.label,
+                    message=(
+                        f"'{existing.label}' already has responses, so its type cannot change from "
+                        f"{existing.type} to {new_type}. Add a new question instead."
+                    ),
+                ))
+        if locked:
+            raise FormValidationError({
+                'detail': 'A question that already has responses cannot change type.',
+                'code': codes.FIELD_TYPE_LOCKED,
+                'errors': [e.as_dict() for e in locked],
+                'warnings': [],
+            })
+
+    @transaction.atomic
     def create(self, validated_data):
         fields_data = validated_data.pop('fields', [])
         form = Form.objects.create(**validated_data)
@@ -243,8 +328,14 @@ class FormSerializer(serializers.ModelSerializer):
         # automations react to their own toggle+config fields.
         from apps.attendance.services import generate_sessions
         generate_sessions(form)
+        self._record_version(form, self.context.get('version_note') or 'Created')
         return form
 
+    def _record_version(self, form, note):
+        request = self.context.get('request')
+        form_versions.record_version(form, getattr(request, 'user', None), note)
+
+    @transaction.atomic
     def update(self, instance, validated_data):
         fields_data = validated_data.pop('fields', None)
         instance.version += 1
@@ -289,6 +380,7 @@ class FormSerializer(serializers.ModelSerializer):
         # already-scanned sessions - see apps.attendance.services.generate_sessions.
         from apps.attendance.services import generate_sessions
         self._attendance_undeletable_sessions = generate_sessions(instance)
+        self._record_version(instance, self.context.get('version_note') or 'Saved')
         return instance
 
 
@@ -452,6 +544,47 @@ class ResponseSerializer(serializers.ModelSerializer):
     def _resolve_form(self, data):
         return self.context.get('form') or data.get('form') or getattr(self.instance, 'form', None)
 
+    def _report_problem(self, report, error):
+        """A rule an admin's own import may break stays a warning in partial mode; otherwise it blocks the submission."""
+        (report.add_warning if self.context.get('mode', STRICT) == PARTIAL else report.add_error)(error)
+
+    def _check_unique_fields(self, form, report):
+        """Questions marked ``unique``: nobody else may have given the same answer (case-insensitively)."""
+        for f in form.fields.filter(is_deleted=False):
+            rules = f.validation_rules if isinstance(f.validation_rules, dict) else {}
+            value = report.cleaned_answers.get(f.id)
+            if not rules.get('unique') or value in (None, ''):
+                continue
+            wanted = json.dumps(value, ensure_ascii=False).lower()
+            others = Answer.objects.annotate(_stored=Lower(Cast('value', TextField()))).filter(
+                field=f, _stored=wanted, response__form=form, response__is_test_submission=False,
+            )
+            if self.instance is not None:
+                others = others.exclude(response=self.instance)
+            if others.exists():
+                custom = (rules.get('messages') or {}).get('unique')
+                self._report_problem(report, FieldError(
+                    code=codes.DUPLICATE_VALUE, field_id=f.id, label=f.label, rule='unique',
+                    message=custom or f"'{value}' has already been used to answer '{f.label}'.",
+                ))
+
+    def _check_option_capacity(self, form, report):
+        """Options with a limit (``optionLimits``) stop being available once enough responses have taken them."""
+        for f in capacity.limited_fields(form):
+            value = report.cleaned_answers.get(f.id)
+            if value in (None, ''):
+                continue
+            caps = capacity.caps_by_option(f)
+            counts = capacity.option_counts(form, f, exclude_response=self.instance)
+            for item in value if isinstance(value, list) else [value]:
+                key = str(item).strip().lower()
+                if key in caps and counts.get(key, 0) >= caps[key]:
+                    custom = (f.validation_rules.get('messages') or {}).get('optionLimits')
+                    self._report_problem(report, FieldError(
+                        code=codes.OPTION_FULL, field_id=f.id, label=f.label, rule='optionLimits',
+                        message=custom or f"'{item}' is full. Please pick another option.",
+                    ))
+
     def _check_duplicate_emails(self, form, report):
         """
         Opt-in (Form.prevent_duplicate_email_answers) cross-response uniqueness
@@ -465,8 +598,12 @@ class ResponseSerializer(serializers.ModelSerializer):
             value = report.cleaned_answers.get(f.id)
             if not value:
                 continue
-            dup_qs = Answer.objects.filter(
-                field=f, value=value,
+            # Email addresses are case-insensitive in practice: "A@x.com" and "a@x.com" are one person.
+            stored_form = json.dumps(str(value), ensure_ascii=False).lower()
+            dup_qs = Answer.objects.annotate(
+                _stored=Lower(Cast('value', TextField())),
+            ).filter(
+                field=f, _stored=stored_form,
                 response__form=form, response__is_test_submission=False,
             )
             if self.instance is not None:
@@ -535,14 +672,21 @@ class ResponseSerializer(serializers.ModelSerializer):
         normalized_club_id = str(submitted_club_id).strip()
         member = User.objects.filter(club_id__iexact=normalized_club_id).first()
 
-        if member is None:
+        # One generic failure for "no such Club ID" and "details don't match", so this
+        # endpoint can't be used to enumerate Club IDs or probe a member's details.
+        # The specific cause is logged for admins instead.
+        def verification_failed(reason):
+            logger.info("Club ID verification failed on form %s: %s", form.pk, reason)
             report.add_error(FieldError(
-                code='CLUB_ID_NOT_FOUND',
-                message=f"'{normalized_club_id}' is not a registered Club ID.",
+                code=codes.CLUB_ID_VERIFICATION_FAILED,
+                message="We couldn't verify these details against that Club ID. Check them and try again.",
                 field_id=club_id_field_id,
                 label=field_labels.get(club_id_field_id),
                 rule='clubIdVerification',
             ))
+
+        if member is None:
+            verification_failed('unknown club id')
             return
 
         def norm_text(v):
@@ -572,13 +716,8 @@ class ResponseSerializer(serializers.ModelSerializer):
                 # that isn't the submitter's fault.
                 continue
             if normalize(submitted_value) != normalize(member_value):
-                report.add_error(FieldError(
-                    code='CLUB_ID_MISMATCH',
-                    message=f"The {self._CLUB_ID_VERIFY_LABELS[key]} you entered doesn't match our records for Club ID '{normalized_club_id}'.",
-                    field_id=field_id,
-                    label=field_labels.get(field_id),
-                    rule='clubIdVerification',
-                ))
+                verification_failed(f'{self._CLUB_ID_VERIFY_LABELS[key]} mismatch')
+                return
 
     def _resolve_profile_autofill(self, form, mode):
         """
@@ -692,6 +831,11 @@ class ResponseSerializer(serializers.ModelSerializer):
         if form.prevent_duplicate_email_answers and not report.errors:
             self._check_duplicate_emails(form, report)
 
+        if not report.errors:
+            self._check_unique_fields(form, report)
+        if not report.errors:
+            self._check_option_capacity(form, report)
+
         has_dedicated_club_id_field = form.fields.filter(
             is_deleted=False, type=FieldType.CLUB_ID,
         ).exists()
@@ -757,22 +901,69 @@ class ResponseSerializer(serializers.ModelSerializer):
 # Field soft-delete dependency checker (used by views)
 # ---------------------------------------------------------------------------
 
-def check_field_conditional_dependencies(field_id: int, form) -> list:
-    """
-    Return a list of FormField instances whose conditional_logic references
-    the given field_id, indicating a dependency that would break on deletion.
-    Understands the canonical shape ({"rules": [{"field": id}]}), the legacy
-    multi-rule shape ({"rules": [{"if": id}]}) and the legacy single-rule shape
-    ({"if": id}).
-    """
-    from .validation.schema import normalize_conditional_logic, iter_condition_field_refs
+def _condition_mentions(normalized, target: str) -> bool:
+    from .validation.schema import iter_condition_field_refs
+    return bool(normalized) and any(str(ref) == target for ref in iter_condition_field_refs(normalized))
 
-    dependent = []
+
+def _cross_field_target(rule):
+    return str(rule.get('field', rule.get('otherField'))) if isinstance(rule, dict) else None
+
+
+def find_field_references(field_id: int, form):
+    """
+    Everything that would break if ``field_id`` were deleted:
+      * other questions whose conditional rules or cross-field rules point at it
+      * form settings (the Club ID field mapping) that point at it
+    Understands the canonical condition shape and the legacy ``if`` shapes.
+    Returns ``(dependent_fields, mapping_keys)``.
+    """
     target = str(field_id)
+    dependent = []
     for f in form.fields.filter(is_deleted=False).exclude(id=field_id):
-        norm = normalize_conditional_logic(f.conditional_logic)
-        if not norm:
-            continue
-        if any(str(ref) == target for ref in iter_condition_field_refs(norm)):
+        in_condition = _condition_mentions(normalize_conditional_logic(f.conditional_logic), target)
+        cross = (f.validation_rules or {}).get('crossField')
+        in_cross = isinstance(cross, list) and any(_cross_field_target(r) == target for r in cross)
+        if in_condition or in_cross:
             dependent.append(f)
-    return dependent
+    mapping_keys = sorted(k for k, v in (form.club_id_field_mapping or {}).items() if str(v) == target)
+    return dependent, mapping_keys
+
+
+def check_field_conditional_dependencies(field_id: int, form) -> list:
+    """Questions that reference ``field_id`` in a condition or cross-field rule."""
+    return find_field_references(field_id, form)[0]
+
+
+def _prune_condition(node: dict, target: str):
+    """``node`` without any rule that points at ``target``; None when nothing is left."""
+    if 'rules' in node:
+        kept = [p for p in (_prune_condition(r, target) for r in node['rules']) if p]
+        return {**node, 'rules': kept} if kept else None
+    refs = {str(node.get('field_raw', node.get('field'))), str(node.get('value_field'))}
+    return None if target in refs else node
+
+
+def remove_field_references(field_id: int, form) -> None:
+    """Strip every reference to ``field_id`` found by ``find_field_references`` so deleting it leaves no dead rules."""
+    target = str(field_id)
+    dependents, mapping_keys = find_field_references(field_id, form)
+    for f in dependents:
+        normalized = normalize_conditional_logic(f.conditional_logic)
+        if _condition_mentions(normalized, target):
+            f.conditional_logic = _prune_condition(normalized, target) or {}
+        rules = dict(f.validation_rules or {})
+        cross = rules.get('crossField')
+        if isinstance(cross, list):
+            left = [r for r in cross if _cross_field_target(r) != target]
+            if left:
+                rules['crossField'] = left
+            else:
+                rules.pop('crossField', None)
+            f.validation_rules = rules
+        f.save(update_fields=['conditional_logic', 'validation_rules'])
+    if mapping_keys:
+        form.club_id_field_mapping = {
+            k: v for k, v in (form.club_id_field_mapping or {}).items() if str(v) != target
+        }
+        form.save(update_fields=['club_id_field_mapping', 'updated_at'])

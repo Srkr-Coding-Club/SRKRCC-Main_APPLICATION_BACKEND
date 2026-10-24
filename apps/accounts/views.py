@@ -12,7 +12,7 @@ from .serializers import (
     CustomTokenObtainPairSerializer,
 )
 from apps.core.permissions import IsAdminOrClubLead
-from apps.core.throttling import ScopedRateThrottle
+from apps.core.throttling import LoginAttemptThrottle, ScopedRateThrottle
 from apps.audit.utils import log_audit_event
 
 User = get_user_model()
@@ -22,7 +22,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     Custom login view returning access token, refresh token, and user profile data.
     """
     serializer_class = CustomTokenObtainPairSerializer
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedRateThrottle, LoginAttemptThrottle]
     throttle_scope = 'login'
 
     def post(self, request, *args, **kwargs):

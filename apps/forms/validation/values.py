@@ -8,17 +8,22 @@ Value-level helpers shared by every validation layer.
 
 Coercion is deliberately lenient about *input* shape (the frontend sends numbers
 as strings, dates as ``"YYYY-MM-DD"`` strings, etc.) but strict about *type*
-(a CHECKBOX value that is a bare string is a client bug, not a single-selection).
+(a CHECKBOX value that is a bare string is a client bug, not a single-selection)
+and about *safety*: control characters, oversized values, non-finite numbers and
+unverifiable file payloads are rejected here, before any rule runs.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from apps.forms.models import FieldType
+from apps.forms.models import FieldType, NON_ANSWER_FIELD_TYPES
 from . import codes
+from . import limits
+from .uploads import PayloadError, PNG_MAGIC, check_magic, check_plain_url, inspect_data_url
 
 
 class CoercionError(Exception):
@@ -30,12 +35,17 @@ class CoercionError(Exception):
 
 _SCALAR_TEXT_TYPES = {
     FieldType.TEXT, FieldType.PARAGRAPH, FieldType.EMAIL,
-    FieldType.PHONE, FieldType.URL, FieldType.SIGNATURE,
-    FieldType.CLUB_ID,
+    FieldType.PHONE, FieldType.URL,
+    FieldType.CLUB_ID, FieldType.HIDDEN,
     FieldType.RADIO, FieldType.DROPDOWN,
 }
 _MATRIX_TYPES = {FieldType.MATRIX_RADIO, FieldType.MATRIX_CHECKBOX}
 _FILE_TYPES = {FieldType.FILE, FieldType.MULTI_FILE}
+
+_GROUPED_NUMBER_RE = re.compile(r"[+-]?\d{1,3}(,\d{3})+(\.\d+)?")
+# Control characters (except tab / LF / CR) and lone surrogates: PostgreSQL JSON
+# cannot store them and they are never legitimate form input.
+_FORBIDDEN_CHARS_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]")
 
 
 def is_empty(value: Any) -> bool:
@@ -86,16 +96,112 @@ def parse_number(raw: Any) -> Decimal:
         raise CoercionError(codes.INVALID_NUMBER, "Expected a number, got a boolean.")
     if isinstance(raw, (int, float, Decimal)):
         try:
-            return Decimal(str(raw))
+            d = Decimal(str(raw))
         except InvalidOperation:
             raise CoercionError(codes.INVALID_NUMBER, f"'{raw}' is not a valid number.")
-    s = str(raw).strip().replace(",", "")
+        return _check_number(d, raw)
+    s = str(raw).strip()
     if s == "":
         raise CoercionError(codes.INVALID_NUMBER, "Expected a number.")
+    if len(s) > limits.MAX_NUMBER_INPUT_LENGTH:
+        raise CoercionError(codes.INVALID_NUMBER, "That number is too long.")
+    if "," in s:
+        # Thousands separators are only accepted in proper groups (1,234 / 1,234.5);
+        # "1,2,3" must not silently become 123.
+        if not _GROUPED_NUMBER_RE.fullmatch(s):
+            raise CoercionError(codes.INVALID_NUMBER, f"'{raw}' is not a valid number.")
+        s = s.replace(",", "")
     try:
-        return Decimal(s)
+        d = Decimal(s)
     except InvalidOperation:
         raise CoercionError(codes.INVALID_NUMBER, f"'{raw}' is not a valid number.")
+    return _check_number(d, raw)
+
+
+def _check_number(d: Decimal, raw: Any) -> Decimal:
+    """Reject NaN / Infinity and values too large or too precise to store safely."""
+    if not d.is_finite():
+        raise CoercionError(codes.INVALID_NUMBER, f"'{raw}' is not a valid number.")
+    if d.adjusted() > limits.MAX_NUMBER_MAGNITUDE:
+        raise CoercionError(codes.INVALID_NUMBER, "That number is too large.")
+    if d != d.to_integral_value():
+        parts = d.as_tuple()
+        if -parts.exponent > limits.MAX_FRACTIONAL_DIGITS or len(parts.digits) > limits.MAX_FRACTIONAL_DIGITS:
+            raise CoercionError(codes.INVALID_NUMBER, "That number has too many decimal places.")
+    return d
+
+
+def clean_text(label: str, s: str, max_length: int | None = None) -> str:
+    """Validate the characters and length of one submitted string."""
+    if _FORBIDDEN_CHARS_RE.search(s):
+        raise CoercionError(codes.INVALID_CHARACTERS, f"'{label}' contains characters that are not allowed.")
+    if max_length is not None and len(s) > max_length:
+        raise CoercionError(codes.VALUE_TOO_LONG, f"'{label}' is too long (maximum {max_length} characters).")
+    return s
+
+
+def _scalar_item(label: str, v: Any) -> str:
+    if isinstance(v, (list, dict)):
+        raise CoercionError(codes.EXPECTED_SCALAR, f"'{label}' contains a nested value where a single value was expected.")
+    return clean_text(label, str(v).strip(), limits.MAX_ITEM_LENGTH)
+
+
+def _coerce_files(field, raw: Any) -> list[dict[str, Any]]:
+    items = raw if isinstance(raw, list) else [raw]
+    if len(items) > limits.MAX_COLLECTION_ITEMS:
+        raise CoercionError(codes.TOO_MANY_ITEMS, f"Field '{field.label}' has too many files.")
+    cleaned: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or "name" not in item:
+            raise CoercionError(
+                codes.INVALID_FILE_PAYLOAD,
+                f"Field '{field.label}' expects file objects shaped {{\"name\": ..., \"size\": ...}}.",
+            )
+        name = clean_text(field.label, str(item["name"]).strip(), limits.MAX_FILE_NAME_LENGTH)
+        try:
+            size = max(int(item.get("size", 0)), 0)
+        except (TypeError, ValueError):
+            size = 0
+        entry: dict[str, Any] = {"name": name, "size": size}
+        if item.get("type"):
+            entry["type"] = clean_text(field.label, str(item["type"]).strip(), 255)
+        url = item.get("url")
+        if url:
+            url = str(url).strip()
+            try:
+                if url.lower().startswith("data:"):
+                    mime, real_size, head = inspect_data_url(url, max_bytes=limits.MAX_INLINE_FILE_BYTES)
+                    mismatch = check_magic(name, head, real_size)
+                    if mismatch:
+                        raise PayloadError(codes.FILE_CONTENT_MISMATCH, mismatch)
+                    # The client's size / type claims are replaced with what the payload really is.
+                    entry["size"] = real_size
+                    entry["type"] = mime
+                else:
+                    check_plain_url(url)
+            except PayloadError as exc:
+                raise CoercionError(exc.code, f"'{name}': {exc.message}")
+            entry["url"] = url
+        cleaned.append(entry)
+    return cleaned
+
+
+def _coerce_signature(field, raw: Any) -> str:
+    if isinstance(raw, (list, dict)):
+        raise CoercionError(codes.EXPECTED_SCALAR, f"Field '{field.label}' expects a single value.")
+    s = str(raw).strip()
+    try:
+        if s.lower().startswith("data:"):
+            mime, _size, head = inspect_data_url(
+                s, max_bytes=limits.MAX_SIGNATURE_BYTES, code=codes.INVALID_SIGNATURE,
+            )
+            if mime != "image/png" or not head.startswith(PNG_MAGIC):
+                raise PayloadError(codes.INVALID_SIGNATURE, "A signature must be a PNG image.")
+        else:
+            check_plain_url(s, codes.INVALID_SIGNATURE)
+    except PayloadError as exc:
+        raise CoercionError(exc.code, f"'{field.label}': {exc.message}")
+    return s
 
 
 def coerce_value(field, raw: Any) -> Any:
@@ -108,7 +214,10 @@ def coerce_value(field, raw: Any) -> Any:
     if ftype in _SCALAR_TEXT_TYPES:
         if isinstance(raw, (list, dict)):
             raise CoercionError(codes.EXPECTED_SCALAR, f"Field '{field.label}' expects a single value.")
-        return str(raw).strip()
+        return clean_text(field.label, str(raw).strip(), limits.MAX_TEXT_LENGTH.get(ftype))
+
+    if ftype == FieldType.SIGNATURE:
+        return _coerce_signature(field, raw)
 
     if ftype in (FieldType.NUMBER, FieldType.RATING, FieldType.LINEAR_SCALE):
         if isinstance(raw, (list, dict)):
@@ -124,10 +233,12 @@ def coerce_value(field, raw: Any) -> Any:
     if ftype == FieldType.CHECKBOX:
         if isinstance(raw, str):
             # tolerate a single value sent as a bare string
-            return [raw.strip()] if raw.strip() else []
+            return [_scalar_item(field.label, raw)] if raw.strip() else []
         if not isinstance(raw, (list, tuple)):
             raise CoercionError(codes.EXPECTED_LIST, f"Field '{field.label}' expects a list of selections.")
-        return [str(v).strip() for v in raw]
+        if len(raw) > limits.MAX_COLLECTION_ITEMS:
+            raise CoercionError(codes.TOO_MANY_ITEMS, f"Field '{field.label}' has too many selections.")
+        return [_scalar_item(field.label, v) for v in raw]
 
     if ftype in _MATRIX_TYPES:
         if not isinstance(raw, dict):
@@ -135,33 +246,25 @@ def coerce_value(field, raw: Any) -> Any:
                 codes.EXPECTED_OBJECT,
                 f"Field '{field.label}' expects a matrix answer shaped {{\"Row\": \"Column\"}}.",
             )
-        return {str(k): v for k, v in raw.items()}
+        if len(raw) > limits.MAX_COLLECTION_ITEMS:
+            raise CoercionError(codes.TOO_MANY_ITEMS, f"Field '{field.label}' has too many rows.")
+        out: dict[str, Any] = {}
+        for k, cell in raw.items():
+            key = _scalar_item(field.label, k)
+            if isinstance(cell, (list, tuple)):
+                if len(cell) > limits.MAX_COLLECTION_ITEMS:
+                    raise CoercionError(codes.TOO_MANY_ITEMS, f"Field '{field.label}' has too many selections.")
+                out[key] = [_scalar_item(field.label, c) for c in cell]
+            elif cell is None or cell == "":
+                out[key] = cell
+            else:
+                out[key] = _scalar_item(field.label, cell)
+        return out
 
     if ftype in _FILE_TYPES:
-        items = raw if isinstance(raw, list) else [raw]
-        cleaned: list[dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict) or "name" not in item:
-                raise CoercionError(
-                    codes.INVALID_FILE_PAYLOAD,
-                    f"Field '{field.label}' expects file objects shaped {{\"name\": ..., \"size\": ...}}.",
-                )
-            size = item.get("size", 0)
-            try:
-                size = int(size)
-            except (TypeError, ValueError):
-                size = 0
-            entry = {"name": str(item["name"]), "size": size}
-            if item.get("type"):
-                entry["type"] = str(item["type"])
-            if item.get("url"):
-                # data: URI (inline capture) or an absolute URL - kept verbatim
-                # so the responses viewer can render / download it.
-                entry["url"] = str(item["url"])
-            cleaned.append(entry)
-        return cleaned
+        return _coerce_files(field, raw)
 
-    if ftype == FieldType.SECTION:
+    if ftype in NON_ANSWER_FIELD_TYPES:
         return None
 
     # Unknown type - pass through untouched.

@@ -346,6 +346,20 @@ if _use_s3():
         },
     }
 
+# Upload size ceilings for dynamic-form FILE / MULTI_FILE answers. Files travel base64-encoded
+# (+33%) inside the JSON submission, and a Lambda request or response is capped at 6 MB, so on
+# Lambda a submission can carry about 4 MB of file data in total.
+_DEFAULT_MAX_FILE_BYTES = 4 * 1024 * 1024 if _is_serverless() else 10 * 1024 * 1024
+# Cloudflare Turnstile bot check for forms that switch it on (server-side secret; the site key is a frontend env var).
+TURNSTILE_SECRET_KEY = os.getenv('TURNSTILE_SECRET_KEY', '')
+TURNSTILE_TIMEOUT_SECONDS = int(os.getenv('TURNSTILE_TIMEOUT_SECONDS', '5'))
+
+FORM_UPLOAD_MAX_FILE_BYTES = int(os.getenv('FORM_UPLOAD_MAX_FILE_BYTES', _DEFAULT_MAX_FILE_BYTES))
+FORM_UPLOAD_MAX_TOTAL_BYTES = int(os.getenv(
+    'FORM_UPLOAD_MAX_TOTAL_BYTES',
+    FORM_UPLOAD_MAX_FILE_BYTES if _is_serverless() else 25 * 1024 * 1024,
+))
+
 # Dynamic-form FILE / MULTI_FILE answers are captured inline as base64 data URLs
 # (there is no binary-upload endpoint), so a submission body can carry a few MB
 # of image data. Raise the form-post ceiling from Django's 2.5 MB default.
@@ -387,6 +401,7 @@ REST_FRAMEWORK = {
     ],
     # Each rate can be changed with a THROTTLE_<SCOPE> environment variable (see config/throttle_config.py).
     'DEFAULT_THROTTLE_RATES': resolve_throttle_rates(os.environ, testing=TESTING),
+    'EXCEPTION_HANDLER': 'apps.core.exceptions.api_exception_handler',
 }
 
 # CORS Policy
@@ -447,4 +462,3 @@ EMAIL_HOST_PASSWORD = _email['EMAIL_HOST_PASSWORD']
 EMAIL_TIMEOUT = _email['EMAIL_TIMEOUT']
 RESEND_API_KEY = _email['RESEND_API_KEY']
 DEFAULT_FROM_EMAIL = _email['DEFAULT_FROM_EMAIL']
-

@@ -26,12 +26,21 @@ class FieldType(models.TextChoices):
     DATE = 'DATE', 'Date'
     TIME = 'TIME', 'Time'
     SECTION = 'SECTION', 'Section Header'
+    PAGE_BREAK = 'PAGE_BREAK', 'Page Break'
     RATING = 'RATING', 'Star Rating'
     LINEAR_SCALE = 'LINEAR_SCALE', 'Linear Scale'
     MATRIX_RADIO = 'MATRIX_RADIO', 'Matrix Radio Grid'
     MATRIX_CHECKBOX = 'MATRIX_CHECKBOX', 'Matrix Checkbox Grid'
     SIGNATURE = 'SIGNATURE', 'Signature Capture'
     CLUB_ID = 'CLUB_ID', 'Club ID'
+    HIDDEN = 'HIDDEN', 'Hidden Field'
+    CALCULATED = 'CALCULATED', 'Calculated Field'
+
+# Structure only: these carry a title / description, never an answer.
+NON_ANSWER_FIELD_TYPES = (FieldType.SECTION, FieldType.PAGE_BREAK)
+# Never shown as something to fill in, so never "required": a hidden field comes from the link, a calculated one from a formula.
+NEVER_REQUIRED_FIELD_TYPES = (FieldType.HIDDEN, FieldType.CALCULATED)
+
 
 class ProfileField(models.TextChoices):
     """
@@ -55,6 +64,10 @@ class Form(TimeStampedModel):
     description = models.TextField(blank=True)
     image_url = models.TextField(blank=True, null=True)
     category = models.CharField(max_length=100, default='General')
+    is_template = models.BooleanField(
+        default=False,
+        help_text="A reusable starting point: kept out of every normal list and never open for responses.",
+    )
     status = models.CharField(max_length=20, choices=FormStatus.choices, default=FormStatus.DRAFT)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -140,6 +153,28 @@ class Form(TimeStampedModel):
     notification_message = models.TextField(
         blank=True, default='',
         help_text="Custom message for the in-app confirmation notification. Defaults to 'Your response for <Form Title> has been successfully recorded.'",
+    )
+
+    # --- After submitting ------------------------------------------------------
+    confirmation_message = models.TextField(
+        blank=True, default='',
+        help_text="Text shown on the thank-you page. {{12}} is replaced by the answer to question 12. Blank uses the default.",
+    )
+    redirect_url = models.CharField(
+        max_length=500, blank=True, default='',
+        help_text="Where to send the respondent after submitting: an https:// address or a path on this site (/events). Blank stays on the thank-you page.",
+    )
+    redirect_delay_seconds = models.PositiveSmallIntegerField(
+        default=5, help_text="Seconds the thank-you page stays up before redirecting (0-30).",
+    )
+
+    language = models.CharField(
+        max_length=8, default='en',
+        help_text="Language of the form's own buttons and prompts shown to respondents: en, te or hi. Questions and messages are shown as the admin wrote them.",
+    )
+    captcha_enabled = models.BooleanField(
+        default=False,
+        help_text="Ask the respondent to pass a Cloudflare Turnstile check before submitting (needs TURNSTILE_SECRET_KEY).",
     )
 
     # --- QR-code attendance automation ---------------------------------------
@@ -246,6 +281,7 @@ class FormField(TimeStampedModel):
     label = models.CharField(max_length=255)
     type = models.CharField(max_length=20, choices=FieldType.choices, default=FieldType.TEXT)
     placeholder = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True, default='', help_text="Help text shown under the question label.")
     is_required = models.BooleanField(default=False)
     options = models.JSONField(default=list, blank=True, help_text="Choices for dropdown/radio/checkbox")
     rows = models.JSONField(default=list, blank=True, help_text="Row labels for MATRIX field types")
@@ -299,6 +335,43 @@ class Response(TimeStampedModel):
     def __str__(self):
         user_str = self.user.email if self.user else ("Admin Entry" if self.is_manual_entry else "Anonymous")
         return f"Response #{self.id} for {self.form.title} (v{self.form_version}) by {user_str}"
+
+class FormVersion(models.Model):
+    """The definition (settings + questions, no responses) as it was when a version of the form was saved."""
+
+    form = models.ForeignKey(Form, on_delete=models.CASCADE, related_name='versions')
+    version = models.PositiveIntegerField()
+    snapshot = models.JSONField(default=dict)
+    note = models.CharField(max_length=200, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-version']
+        constraints = [models.UniqueConstraint(fields=['form', 'version'], name='one_snapshot_per_form_version')]
+
+    def __str__(self):
+        return f"{self.form.title} v{self.version}"
+
+
+class ResponseDraft(TimeStampedModel):
+    """A signed-in user's unfinished answers to a form, so they can leave and come back (autosave)."""
+
+    form = models.ForeignKey(Form, on_delete=models.CASCADE, related_name='drafts')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='form_drafts')
+    answers = models.JSONField(default=dict, blank=True, help_text="{field id: raw answer}; files and signatures are never kept.")
+    current_page = models.PositiveSmallIntegerField(default=0)
+    form_version = models.PositiveIntegerField(default=1, help_text="Form version the draft was last saved against.")
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['form', 'user'], name='one_draft_per_user_per_form')]
+        indexes = [models.Index(fields=['updated_at'])]
+
+    def __str__(self):
+        return f"Draft of {self.form.title} by {self.user_id}"
+
 
 class Answer(TimeStampedModel):
     response = models.ForeignKey(Response, on_delete=models.CASCADE, related_name='answers')

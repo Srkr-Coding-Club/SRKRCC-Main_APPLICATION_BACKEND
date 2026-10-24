@@ -14,16 +14,20 @@ the RATING / LINEAR_SCALE range live - things that come from the field's own
 
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from decimal import Decimal
 from typing import Any, Callable
 
 from django.core.validators import EmailValidator, URLValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone
 
 from apps.forms.models import FieldType
 from . import codes
+from . import limits
 from .report import FieldError
+from .uploads import extension
 
 _email_validator = EmailValidator()
 _url_validator = URLValidator(schemes=["http", "https"])
@@ -31,6 +35,9 @@ _url_validator = URLValidator(schemes=["http", "https"])
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,}$")
 _SLUG_RE = re.compile(r"^[-a-zA-Z0-9_]+$")
 _PHONE_RE = re.compile(r"^\+?[0-9][0-9\s\-().]{5,}$")
+_CLUB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
+PHONE_MIN_DIGITS = 7      # shortest real subscriber number
+PHONE_MAX_DIGITS = 15     # E.164 maximum
 
 
 def _err(field, code: str, message: str, rule: str | None = None, **context) -> FieldError:
@@ -55,6 +62,11 @@ def _validate_email(field, value: Any) -> list[FieldError]:
         except DjangoValidationError:
             out.append(_err(field, codes.INVALID_EMAIL,
                             f"'{addr}' is not a valid email address."))
+            continue
+        # Django accepts "user@localhost"; a deliverable address needs a dotted domain.
+        if "." not in addr.rsplit("@", 1)[-1]:
+            out.append(_err(field, codes.INVALID_EMAIL,
+                            f"'{addr}' is not a valid email address."))
     return out
 
 
@@ -72,7 +84,7 @@ def _validate_phone(field, value: Any) -> list[FieldError]:
     pattern = rules.get("pattern")
     if pattern:
         try:
-            if not re.search(pattern, raw):
+            if not re.fullmatch(pattern, raw):
                 return [_err(field, codes.INVALID_PHONE,
                              rules.get("patternError") or "Phone number format is invalid.",
                              rule="pattern")]
@@ -82,6 +94,29 @@ def _validate_phone(field, value: Any) -> list[FieldError]:
     if not _PHONE_RE.match(raw):
         return [_err(field, codes.INVALID_PHONE,
                      "Enter a valid phone number (digits, spaces, +, - and () only).")]
+    digits = sum(c.isdigit() for c in raw)
+    if not PHONE_MIN_DIGITS <= digits <= PHONE_MAX_DIGITS:
+        return [_err(field, codes.INVALID_PHONE,
+                     f"A phone number must have {PHONE_MIN_DIGITS} to {PHONE_MAX_DIGITS} digits.")]
+    return []
+
+
+def _validate_club_id(field, value: Any) -> list[FieldError]:
+    if not _CLUB_ID_RE.match(str(value)):
+        return [_err(field, codes.INVALID_FORMAT,
+                     "A Club ID has 3 to 32 letters, digits, dashes or underscores.")]
+    return []
+
+
+def _validate_date(field, value: _dt.date) -> list[FieldError]:
+    """Reject dates no real form wants (year 0001, year 9999) independent of configured bounds."""
+    today = timezone.localdate()
+    lo = _dt.date(limits.DATE_MIN_YEAR, 1, 1)
+    hi = _dt.date(today.year + limits.DATE_MAX_YEARS_AHEAD, 12, 31)
+    if value < lo or value > hi:
+        return [_err(field, codes.DATE_OUT_OF_BOUNDS,
+                     f"Enter a date between {lo.isoformat()} and {hi.isoformat()}.",
+                     rule="dateBounds")]
     return []
 
 
@@ -197,15 +232,40 @@ def _validate_matrix_checkbox(field, value: dict) -> list[FieldError]:
 # File fields
 # ---------------------------------------------------------------------------
 
+def _extension_set(spec) -> set[str]:
+    return {e if e.startswith(".") else f".{e}"
+            for e in (p.strip().lower() for p in str(spec or "").split(",")) if e}
+
+
 def _validate_files(field, value: list[dict]) -> list[FieldError]:
-    # Structural file checks (name present, size numeric) already done in coerce.
-    # Extension / size / count constraints live in rules.py.
+    # Structural checks (name / data-URL integrity / real size) already happened in coerce.
+    # Extension allow-lists, size and count constraints live in rules.py; this layer adds
+    # the safety defaults that apply even when an admin configured nothing.
     out: list[FieldError] = []
+    rules = field.validation_rules or {}
+    allowed = _extension_set(rules.get("allowedFileTypes"))
+
+    if field.type == FieldType.FILE and len(value) > 1:
+        out.append(_err(field, codes.TOO_MANY_FILES, "Attach only one file.", rule="maxFiles", max=1))
+    if field.type == FieldType.MULTI_FILE and rules.get("maxFiles") is None and len(value) > limits.DEFAULT_MAX_FILES:
+        out.append(_err(field, codes.TOO_MANY_FILES,
+                        f"Attach at most {limits.DEFAULT_MAX_FILES} file(s).", rule="maxFiles",
+                        max=limits.DEFAULT_MAX_FILES, actual=len(value)))
+    if sum(int(item.get("size", 0) or 0) for item in value) > limits.MAX_TOTAL_FILE_BYTES:
+        out.append(_err(field, codes.FILE_TOO_LARGE, "The attached files are too large in total."))
+
     for item in value:
         name = item.get("name", "")
         if not name or "\x00" in name or "/" in name or "\\" in name:
             out.append(_err(field, codes.INVALID_FILE_PAYLOAD,
                             f"'{name}' is not a valid file name."))
+            continue
+        ext = extension(name)
+        mime = str(item.get("type", "")).lower()
+        explicitly_allowed = ext in allowed
+        if (ext in limits.DEFAULT_BLOCKED_EXTENSIONS or mime in limits.BLOCKED_MIME_TYPES) and not explicitly_allowed:
+            out.append(_err(field, codes.FILE_TYPE_BLOCKED,
+                            f"'{name}' is a blocked file type.", rule="blockedFileTypes"))
     return out
 
 
@@ -225,6 +285,8 @@ FIELD_VALIDATORS: dict[str, Callable[[Any, Any], list[FieldError]]] = {
     FieldType.CHECKBOX: _validate_checkbox,
     FieldType.MATRIX_RADIO: _validate_matrix_radio,
     FieldType.MATRIX_CHECKBOX: _validate_matrix_checkbox,
+    FieldType.CLUB_ID: _validate_club_id,
+    FieldType.DATE: _validate_date,
     FieldType.FILE: _validate_files,
     FieldType.MULTI_FILE: _validate_files,
 }

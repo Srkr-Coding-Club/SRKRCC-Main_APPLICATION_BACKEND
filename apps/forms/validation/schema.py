@@ -19,13 +19,16 @@ from typing import Any
 
 from apps.forms.models import FieldType
 
+from . import limits
+
 
 # ---------------------------------------------------------------------------
 # validation_rules - which keys each field type accepts
 # ---------------------------------------------------------------------------
 
 # Keys every field type may carry.
-_COMMON_KEYS = {"patternError", "crossField"}
+# messages: {rule key: text} overrides the built-in error for that rule (also "required", "type", "options", "unique").
+_COMMON_KEYS = {"patternError", "crossField", "messages"}
 
 _TEXT_KEYS = {
     "minLength", "maxLength", "exactLength",
@@ -58,23 +61,33 @@ _SCALE_KEYS = {"minValue", "maxValue", "integerOnly", "step"}   # RATING / LINEA
 _MATRIX_KEYS = {"requiredRows", "allRowsRequired"}
 _MATRIX_CHECKBOX_KEYS = _MATRIX_KEYS | {"minPerRow", "maxPerRow"}
 
+# unique: no other response may give the same answer. defaultValue: pre-filled on the form (never invented by the server).
+# optionLimits: {option: how many responses may pick it}.
+_UNIQUE_DEFAULT = {"unique", "defaultValue"}
+_DEFAULT_ONLY = {"defaultValue"}
+
 RULE_COMPAT: dict[str, set[str]] = {
-    FieldType.TEXT: _COMMON_KEYS | _TEXT_KEYS,
-    FieldType.PARAGRAPH: _COMMON_KEYS | _PARAGRAPH_KEYS,
-    FieldType.EMAIL: _COMMON_KEYS | _EMAIL_KEYS | {"minLength", "maxLength"},
-    FieldType.NUMBER: _COMMON_KEYS | _NUMBER_KEYS,
-    FieldType.PHONE: _COMMON_KEYS | _PHONE_KEYS,
-    FieldType.URL: _COMMON_KEYS | _URL_KEYS,
-    FieldType.DROPDOWN: _COMMON_KEYS | _CHOICE_KEYS,
-    FieldType.RADIO: _COMMON_KEYS | _CHOICE_KEYS,
-    FieldType.CHECKBOX: _COMMON_KEYS | _CHECKBOX_KEYS,
+    FieldType.TEXT: _COMMON_KEYS | _TEXT_KEYS | _UNIQUE_DEFAULT,
+    FieldType.PARAGRAPH: _COMMON_KEYS | _PARAGRAPH_KEYS | _DEFAULT_ONLY,
+    FieldType.EMAIL: _COMMON_KEYS | _EMAIL_KEYS | {"minLength", "maxLength"} | _UNIQUE_DEFAULT,
+    FieldType.NUMBER: _COMMON_KEYS | _NUMBER_KEYS | _UNIQUE_DEFAULT,
+    FieldType.PHONE: _COMMON_KEYS | _PHONE_KEYS | _UNIQUE_DEFAULT,
+    FieldType.URL: _COMMON_KEYS | _URL_KEYS | _UNIQUE_DEFAULT,
+    FieldType.DROPDOWN: _COMMON_KEYS | _CHOICE_KEYS | _DEFAULT_ONLY | {"optionLimits"},
+    FieldType.RADIO: _COMMON_KEYS | _CHOICE_KEYS | _DEFAULT_ONLY | {"optionLimits"},
+    FieldType.CHECKBOX: _COMMON_KEYS | _CHECKBOX_KEYS | _DEFAULT_ONLY | {"optionLimits"},
     FieldType.FILE: _COMMON_KEYS | _FILE_KEYS,
     FieldType.MULTI_FILE: _COMMON_KEYS | _MULTI_FILE_KEYS,
-    FieldType.DATE: _COMMON_KEYS | _DATE_KEYS,
-    FieldType.TIME: _COMMON_KEYS | _TIME_KEYS,
+    FieldType.DATE: _COMMON_KEYS | _DATE_KEYS | _DEFAULT_ONLY,
+    FieldType.TIME: _COMMON_KEYS | _TIME_KEYS | _DEFAULT_ONLY,
+    # Filled from a link parameter (queryParam) or a fixed defaultValue; never typed in.
+    FieldType.HIDDEN: _COMMON_KEYS | {"queryParam", "maxLength", "defaultValue"},
+    # Computed on the server from other answers: {id} references, + - * / and brackets.
+    FieldType.CALCULATED: _COMMON_KEYS | {"formula", "decimals"},
     FieldType.SECTION: set(),
-    FieldType.RATING: _COMMON_KEYS | _SCALE_KEYS,
-    FieldType.LINEAR_SCALE: _COMMON_KEYS | _SCALE_KEYS,
+    FieldType.PAGE_BREAK: set(),
+    FieldType.RATING: _COMMON_KEYS | _SCALE_KEYS | _DEFAULT_ONLY,
+    FieldType.LINEAR_SCALE: _COMMON_KEYS | _SCALE_KEYS | _DEFAULT_ONLY,
     FieldType.MATRIX_RADIO: _COMMON_KEYS | _MATRIX_KEYS,
     FieldType.MATRIX_CHECKBOX: _COMMON_KEYS | _MATRIX_CHECKBOX_KEYS,
     FieldType.SIGNATURE: _COMMON_KEYS,
@@ -87,13 +100,14 @@ _NUMERIC_RULE_KEYS = {
     "minSelected", "maxSelected", "exactSelected",
     "minDigits", "maxDigits",
     "maxFileSizeMB", "minFileSizeKB", "minFiles", "maxFiles",
-    "minPerRow", "maxPerRow",
+    "minPerRow", "maxPerRow", "decimals",
 }
 _BOOL_RULE_KEYS = {
     "integerOnly", "allowNegative", "positiveOnly",
     "allowMultiple", "normalizeCase", "numericOnly", "requireHttps",
-    "pastOnly", "futureOnly", "allowToday", "allowOther", "allRowsRequired",
+    "pastOnly", "futureOnly", "allowToday", "allowOther", "allRowsRequired", "unique",
 }
+MAX_CUSTOM_MESSAGE_LENGTH = 200
 _LIST_RULE_KEYS = {"allowedDomains", "blockedDomains", "requiredRows"}
 
 # Recognised values for the short-answer ``format`` rule.
@@ -186,6 +200,33 @@ def normalize_validation_rules(field_type: str, raw: Any) -> dict[str, Any]:
             if isinstance(value, list) and value:
                 out[key] = value
             continue
+        if key == "messages":
+            if isinstance(value, dict):
+                messages = {
+                    str(k).strip(): str(v).strip()[:MAX_CUSTOM_MESSAGE_LENGTH]
+                    for k, v in value.items() if str(k).strip() and v is not None and str(v).strip()
+                }
+                if messages:
+                    out[key] = messages
+            continue
+        if key == "optionLimits":
+            if isinstance(value, dict):
+                caps: dict[str, int] = {}
+                for option, cap in value.items():
+                    n = _to_number(cap)
+                    if isinstance(n, (int, float)) and not isinstance(n, bool) and n >= 1 and float(n).is_integer():
+                        caps[str(option).strip()] = int(n)
+                if caps:
+                    out[key] = caps
+            continue
+        if key == "defaultValue":
+            if isinstance(value, (list, tuple)):
+                items = [str(v).strip() for v in value if v is not None and str(v).strip()]
+                if items:
+                    out[key] = items
+            elif value is not None and not isinstance(value, (dict, bool)) and str(value).strip():
+                out[key] = str(value).strip()
+            continue
         if key in _NUMERIC_RULE_KEYS:
             num = _to_number(value)
             if isinstance(num, (int, float)) and not isinstance(num, bool):
@@ -231,14 +272,26 @@ CONDITIONAL_OPERATORS = frozenset({
     "before", "after", "on", "before_or_equal", "after_or_equal", "date_between",
 })
 
-# Actions the backend actually enforces on submission validity.
-ENFORCED_ACTIONS = frozenset({"show", "hide", "require", "optional"})
-# Actions the schema accepts and stores but the backend does not act on yet
-# (pure frontend flow - skip to section, end the form, prefill, restrict options).
-DEFERRED_ACTIONS = frozenset({
-    "skip", "skip_to_section", "end_form", "set_value", "restrict_options",
-    "display_message",
+NUMERIC_OPERATORS = frozenset({"gt", "gte", "lt", "lte", "between", "not_between"})
+TEXT_OPERATORS = frozenset({"contains", "not_contains", "starts_with", "ends_with", "matches_regex", "not_matches_regex"})
+SELECTION_OPERATORS = frozenset({"selected", "not_selected", "includes", "not_includes", "includes_any", "includes_all"})
+DATE_OPERATORS = frozenset({"before", "after", "on", "before_or_equal", "after_or_equal", "date_between"})
+RANGE_OPERATORS = frozenset({"between", "not_between", "date_between"})
+VALUELESS_OPERATORS = frozenset({"is_empty", "is_not_empty"})
+
+# Actions that take effect. show / hide / require / optional change what is asked; ``set_value``
+# makes the server store ``action_value`` as the answer, ``restrict_options`` limits a choice
+# question to the options listed in ``action_value`` (both enforced on submission), and
+# ``display_message`` shows ``action_value`` as a note on the form (no server effect).
+# ``skip_to_section`` (action_value = the id of a later PAGE_BREAK) and ``end_form`` are page routing:
+# they only make sense on a PAGE_BREAK, where they decide what follows the page before it.
+ENFORCED_ACTIONS = frozenset({
+    "show", "hide", "require", "optional", "set_value", "restrict_options", "display_message",
+    "skip_to_section", "end_form",
 })
+ROUTING_ACTIONS = frozenset({"skip_to_section", "end_form"})
+# Accepted and stored for old forms, but nothing acts on it.
+DEFERRED_ACTIONS = frozenset({"skip"})
 CONDITIONAL_ACTIONS = ENFORCED_ACTIONS | DEFERRED_ACTIONS
 
 # Legacy operator aliases -> canonical.
@@ -271,14 +324,32 @@ def _coerce_ref(raw: Any) -> int | None:
         return UNEVALUABLE_FIELD
 
 
-def _normalize_rule_node(node: Any) -> dict[str, Any] | None:
+def condition_depth(raw: Any) -> int:
+    """How many groups deep a condition goes (a single rule is 1). Iterative, so a hostile one cannot overflow the stack."""
+    deepest = 0
+    stack = [(raw, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        deepest = max(deepest, depth)
+        children = node.get("rules")
+        if isinstance(children, list):
+            stack.extend((child, depth + 1) for child in children)
+    return deepest
+
+
+def _normalize_rule_node(node: Any, depth: int = 1) -> dict[str, Any] | None:
     """Normalize one entry of a ``rules`` array: either a leaf rule or a nested group."""
     if not isinstance(node, dict):
+        return None
+    if depth > limits.MAX_CONDITION_DEPTH:
+        # Saving refuses conditions this deep (see condition_depth); anything that got here is cut off, never recursed into.
         return None
 
     # Nested group
     if "rules" in node and isinstance(node.get("rules"), list):
-        sub = [n for n in (_normalize_rule_node(r) for r in node["rules"]) if n]
+        sub = [n for n in (_normalize_rule_node(r, depth + 1) for r in node["rules"]) if n]
         if not sub:
             return None
         return {"logic": str(node.get("logic", "AND")).upper() or "AND", "rules": sub}
@@ -300,6 +371,10 @@ def _normalize_rule_node(node: Any) -> dict[str, Any] | None:
         "operator": operator,
         "value": value,
     }
+    # Compare against another question's answer instead of a fixed value.
+    value_field = _coerce_ref(node.get("value_field")) if node.get("value_field") not in (None, "") else None
+    if value_field is not None:
+        leaf["value_field"] = value_field
     if field_ref is None and ref_raw not in (None, ""):
         # keep the original (e.g. the broken "parent" placeholder) for diagnostics
         leaf["field_raw"] = ref_raw
@@ -329,12 +404,12 @@ def normalize_conditional_logic(raw: Any) -> dict[str, Any]:
 
     # Multi-rule / grouped form
     if isinstance(raw.get("rules"), list):
-        rules = [n for n in (_normalize_rule_node(r) for r in raw["rules"]) if n]
+        rules = [n for n in (_normalize_rule_node(r, 2) for r in raw["rules"]) if n]
         logic = str(raw.get("logic", "AND")).upper()
         logic = logic if logic in ("AND", "OR") else "AND"
         if not rules:
             return {}
-        return {"logic": logic, "rules": rules, "action": action}
+        return _with_action_value({"logic": logic, "rules": rules, "action": action}, raw)
 
     # Single top-level leaf (legacy {"if"/"field", "equals"/"operator"})
     leaf = _normalize_rule_node(raw)
@@ -344,17 +419,26 @@ def normalize_conditional_logic(raw: Any) -> dict[str, Any]:
     if leaf.get("field") is None and leaf.get("field_raw") in (None, ""):
         # genuinely no condition
         return {}
-    return {"logic": "AND", "rules": [leaf], "action": action}
+    return _with_action_value({"logic": "AND", "rules": [leaf], "action": action}, raw)
+
+
+def _with_action_value(out: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any]:
+    if raw.get("action_value") is not None:
+        out["action_value"] = raw["action_value"]
+    return out
 
 
 def iter_condition_field_refs(normalized: dict[str, Any]):
-    """Yield every raw ``field`` reference used anywhere in a normalized condition tree."""
+    """Yield every raw field reference in a normalized condition tree: the question a rule
+    watches, and the question it compares against when ``value_field`` is used."""
     def _walk(node: dict[str, Any]):
         if "rules" in node:
             for r in node["rules"]:
                 yield from _walk(r)
         else:
             yield node.get("field_raw", node.get("field"))
+            if node.get("value_field") is not None:
+                yield node["value_field"]
 
     if not normalized or "rules" not in normalized:
         return

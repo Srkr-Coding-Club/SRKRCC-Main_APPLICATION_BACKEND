@@ -10,24 +10,32 @@ import re
 import warnings
 from collections.abc import Mapping
 
+# Many students share one campus address, so everything counted per ADDRESS (anonymous traffic) is generous;
+# signed-in traffic is counted per ACCOUNT and can be tighter. Sign-ins are additionally counted per
+# account-and-address, which is what actually stops password guessing.
 DEFAULT_RATES = {
-    'anon': '100/minute',
+    'anon': '600/minute',
     'user': '1000/minute',
-    # Credential stuffing / mass sign-up.
-    'login': '10/minute',
-    'register': '10/hour',
-    # Public form submission is anonymous-writable, so it is kept below the global anon rate.
-    'form_submit': '20/minute',
+    # Sign-in: the address-wide limit only stops floods; 'login_account' stops guessing one account.
+    'login': '120/minute',
+    'login_account': '10/minute',
+    # Sign-up: a whole lab can register at once at an event.
+    'register': '120/hour',
+    # Form submission: per account when signed in, per address when not.
+    'form_submit': '30/minute',
+    'form_submit_anon': '120/minute',
+    # Autosave while someone fills a form in: one write every few seconds.
+    'form_draft': '90/minute',
     # Hackathon teammate lookup by exact email: limited so it cannot enumerate accounts.
-    'hackathon_lookup': '30/minute',
+    'hackathon_lookup': '60/minute',
     # Team leaders emailing people with no account yet: it sends mail to arbitrary addresses.
     'hackathon_email_invite': '20/hour',
-    # Public college dropdown on the signup page: one request per debounced keystroke burst.
-    'college_search': '120/minute',
+    # Public college dropdown on the signup page: one request per debounced keystroke burst, from a whole lab.
+    'college_search': '900/minute',
 }
 
 # The test runner shares one client IP, so the sign-in and sign-up limits are lifted for it.
-TEST_RATES = {'login': '100000/minute', 'register': '100000/hour'}
+TEST_RATES = {'login': '100000/minute', 'login_account': '100000/minute', 'register': '100000/hour'}
 
 # DRF reads "<count>/<period>" and only looks at the first letter of the period.
 _RATE_PATTERN = re.compile(r'^\d+/[smhd][a-z]*$')

@@ -3,7 +3,7 @@ from collections import Counter, defaultdict
 
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.response import Response as DRFResponse
 from rest_framework.pagination import PageNumberPagination
 from django.http import HttpResponse
@@ -13,13 +13,17 @@ from django.db.models import Count, Max, Prefetch, Q
 from django.db.models.functions import Cast
 from django.db.models import TextField
 
-from .models import Form, FormField, FormStatus, Response, Answer, BulkIngestSession, MemberNote, sync_all_scheduled_form_statuses
+from .models import Form, FormField, FormStatus, Response, ResponseDraft, Answer, BulkIngestSession, MemberNote, sync_all_scheduled_form_statuses
+from . import capacity, definition_io, drafts as form_drafts, spam, versions as form_versions
+from .analytics import form_analytics
+from django.core.cache import cache
 from .serializers import (
     FormSerializer,
     ResponseSerializer,
     ResponseDetailSerializer,
     BulkIngestSessionSerializer,
-    check_field_conditional_dependencies,
+    find_field_references,
+    remove_field_references,
     evaluate_visible_fields,
 )
 from .validation import validate_submission, validate_form_definition, PARTIAL
@@ -27,6 +31,7 @@ from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead, _is_admin_or_club_lead
 from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError, RollNumberConflictError
 from .services import FormAutomationService
+from apps.core.throttling import ScopedRateThrottle
 from apps.core.models import EmailDelivery
 from apps.notifications.models import Notification
 from apps.core.idempotency import (
@@ -117,6 +122,13 @@ class FormViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrClubLeadOrReadOnly]
     lookup_field = 'slug'
 
+    def get_throttles(self):
+        # Autosave writes every few seconds while someone fills a form in.
+        if self.action == 'draft':
+            self.throttle_scope = 'form_draft'
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
+
     def get_queryset(self):
         """Annotate forms with real response count (excluding test submissions)."""
         # Auto-sync and transition schedule states (SCHEDULED -> PUBLISHED on open_at, PUBLISHED/SCHEDULED -> CLOSED on close_at)
@@ -131,6 +143,11 @@ class FormViewSet(viewsets.ModelViewSet):
                 filter=Q(responses__is_test_submission=False),
             )
         ).order_by('-created_at')
+
+        # Templates are starting points, not forms: out of every list unless an admin asks for just them.
+        if self.action == 'list':
+            only_templates = self.request.query_params.get('templates') == 'only' and _is_admin_or_club_lead(self.request.user)
+            queryset = queryset.filter(is_template=only_templates)
 
         if _is_admin_or_club_lead(self.request.user):
             return queryset
@@ -208,35 +225,25 @@ class FormViewSet(viewsets.ModelViewSet):
         except FormField.DoesNotExist:
             return DRFResponse({"error": "Field not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        dependent_fields = check_field_conditional_dependencies(field.id, form)
-        if dependent_fields and request.query_params.get('confirm') != 'true':
+        dependent_fields, mapping_keys = find_field_references(field.id, form)
+        if (dependent_fields or mapping_keys) and request.query_params.get('confirm') != 'true':
             return DRFResponse(
                 {
                     "warning": (
                         f"Field '{field.label}' is referenced by {len(dependent_fields)} "
-                        f"conditional rule(s). Pass ?confirm=true to force delete and "
-                        f"cascade-clear those rules."
+                        f"other question(s) and {len(mapping_keys)} form setting(s). Pass ?confirm=true "
+                        f"to force delete and clear those references."
                     ),
                     "dependent_fields": [{"id": f.id, "label": f.label} for f in dependent_fields],
+                    "form_settings": mapping_keys,
                 },
                 status=status.HTTP_200_OK,
             )
 
-        # Cascade-clear rules that reference this field
-        if dependent_fields:
-            field_id_str = str(field.id)
-            for dep in dependent_fields:
-                cl = dep.conditional_logic
-                if cl and "rules" in cl:
-                    cl["rules"] = [r for r in cl["rules"] if str(r.get("if", "")) != field_id_str]
-                    dep.conditional_logic = cl
-                    dep.save(update_fields=["conditional_logic"])
-                elif cl and str(cl.get("if", "")) == field_id_str:
-                    dep.conditional_logic = {}
-                    dep.save(update_fields=["conditional_logic"])
-
-        field.is_deleted = True
-        field.save(update_fields=["is_deleted"])
+        with transaction.atomic():
+            remove_field_references(field.id, form)
+            field.is_deleted = True
+            field.save(update_fields=["is_deleted"])
         return DRFResponse({"status": "deleted", "id": field.id}, status=status.HTTP_200_OK)
 
     # -----------------------------------------------------------------------
@@ -261,9 +268,14 @@ class FormViewSet(viewsets.ModelViewSet):
                 "warnings": [w.as_dict() for w in report.warnings],
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        if form.captcha_enabled and not spam.captcha_configured():
+            return DRFResponse({"detail": spam.CAPTCHA_NOT_CONFIGURED_MESSAGE, "code": "CAPTCHA_NOT_CONFIGURED"},
+                               status=status.HTTP_400_BAD_REQUEST)
+
         form.status = 'PUBLISHED'
         form.version += 1
         form.save(update_fields=['status', 'version', 'updated_at'])
+        form_versions.record_version(form, request.user, 'Published')
         log_audit_event(
             actor=request.user,
             action="Published Dynamic Form",
@@ -321,6 +333,211 @@ class FormViewSet(viewsets.ModelViewSet):
         )
         serializer = self.get_serializer(form)
         return DRFResponse(serializer.data, status=status.HTTP_200_OK)
+
+    # -----------------------------------------------------------------------
+    # History, review before saving, copies and files
+    # -----------------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # Analytics
+    # -----------------------------------------------------------------------
+
+    @action(detail=True, methods=['get'], url_path='analytics', permission_classes=[IsAdminOrClubLead])
+    def analytics(self, request, slug=None):
+        """GET /api/forms/{slug}/analytics/?days=30 - totals, a daily timeline, per-question answers and where people stop."""
+        try:
+            days = int(request.query_params.get('days', 30))
+        except ValueError:
+            days = 30
+        return DRFResponse(form_analytics(self.get_object(), days))
+
+    @action(detail=True, methods=['get'], url_path='versions', permission_classes=[IsAdminOrClubLead])
+    def versions(self, request, slug=None):
+        """GET /api/forms/{slug}/versions/ - the saved versions, newest first, with what changed in each."""
+        form = self.get_object()
+        rows = list(form.versions.select_related('created_by'))
+        out = []
+        for index, row in enumerate(rows):
+            older = rows[index + 1].snapshot if index + 1 < len(rows) else None
+            summary = form_versions.diff_snapshots(older, row.snapshot)['summary'] if older else None
+            who = row.created_by
+            out.append({
+                'version': row.version, 'note': row.note, 'created_at': row.created_at,
+                'created_by': (who.get_full_name().strip() or who.email) if who else None,
+                'summary': summary, 'is_current': row.version == form.version,
+            })
+        return DRFResponse(out)
+
+    @action(detail=True, methods=['get'], url_path=r'versions/(?P<number>[0-9]+)', permission_classes=[IsAdminOrClubLead])
+    def version_detail(self, request, slug=None, number=None):
+        """
+        GET /api/forms/{slug}/versions/{n}/?against=<m|current>
+        The questions in version n and what differs from version m (default: the version before n; "current": the form as it is now).
+        """
+        form = self.get_object()
+        row = form.versions.filter(version=int(number)).first()
+        if row is None:
+            return DRFResponse({"error": "That version does not exist (old versions are pruned after 50)."}, status=status.HTTP_404_NOT_FOUND)
+        against = request.query_params.get('against')
+        if against == 'current':
+            other = form_versions.snapshot_form(form)
+        else:
+            other_row = (
+                form.versions.filter(version=int(against)).first() if against and against.isdigit()
+                else form.versions.filter(version__lt=row.version).order_by('-version').first()
+            )
+            other = other_row.snapshot if other_row else None
+        diff = form_versions.diff_snapshots(other, row.snapshot) if other else None
+        return DRFResponse({'version': row.version, 'note': row.note, 'created_at': row.created_at,
+                            'snapshot': row.snapshot, 'diff': diff})
+
+    @action(detail=True, methods=['post'], url_path=r'versions/(?P<number>[0-9]+)/restore', permission_classes=[IsAdminOrClubLead])
+    def restore_version(self, request, slug=None, number=None):
+        """
+        POST /api/forms/{slug}/versions/{n}/restore/
+        Saves version n's definition as a NEW version. The slug, status and responses are untouched; a question's
+        type still cannot change once it has answers, and a live form must still pass the publish checks.
+        """
+        form = self.get_object()
+        row = form.versions.filter(version=int(number)).first()
+        if row is None:
+            return DRFResponse({"error": "That version does not exist."}, status=status.HTTP_404_NOT_FOUND)
+        from apps.core.models import EmailTemplate
+        payload = {**row.snapshot['form'], 'fields': row.snapshot['fields']}
+        template_id = payload.get('confirmation_email_template')
+        if template_id and not EmailTemplate.objects.filter(pk=template_id).exists():
+            payload['confirmation_email_template'] = None
+            payload['confirmation_email_enabled'] = False
+        with transaction.atomic():
+            serializer = self.get_serializer(
+                form, data=payload, partial=True,
+                context={**self.get_serializer_context(), 'version_note': f'Restored from version {row.version}'},
+            )
+            serializer.is_valid(raise_exception=True)
+            restored = serializer.save()
+        log_audit_event(
+            actor=request.user, action=f"Restored Form to v{row.version}", target_model="Form", target_id=restored.slug,
+            details={"title": restored.title, "restored_from": row.version, "new_version": restored.version},
+        )
+        return DRFResponse(self.get_serializer(restored).data)
+
+    @action(detail=True, methods=['post'], url_path='preview-changes', permission_classes=[IsAdminOrClubLead])
+    def preview_changes(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/preview-changes/   (the same body as saving the form)
+        Nothing is saved. Runs the same validation a save would and answers with what would change and what that
+        means for the responses already collected, so an admin can confirm before a live form changes.
+        """
+        form = self.get_object()
+        serializer = self.get_serializer(form, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        before = form_versions.snapshot_form(form)
+        after = {'form': dict(before['form']), 'fields': before['fields']}
+        for key in form_versions.SETTING_KEYS:
+            if key in serializer.validated_data:
+                value = serializer.validated_data[key]
+                after['form'][key] = value.pk if hasattr(value, 'pk') else form_versions._plain(value)
+        if 'fields' in serializer.validated_data:
+            # A key the request leaves out keeps the question's current value (a new question gets the usual defaults).
+            current = {f['id']: f for f in before['fields']}
+            blank = {'id': None, 'placeholder': '', 'description': '', 'is_required': False, 'options': [], 'rows': [],
+                     'min_value': None, 'max_value': None, 'conditional_logic': {}, 'validation_rules': {}, 'profile_field': None}
+            after['fields'] = [
+                {**blank, **current.get(f.get('id'), {}),
+                 **{k: form_versions._plain(v) for k, v in f.items() if k in form_versions.FIELD_KEYS}}
+                for f in serializer.validated_data['fields']
+            ]
+        diff = form_versions.diff_snapshots(before, after)
+        return DRFResponse({
+            'diff': diff, 'impact': form_versions.change_impact(form, before, after, diff), 'current_version': form.version,
+        })
+
+    @action(detail=True, methods=['post'], url_path='duplicate', permission_classes=[IsAdminOrClubLead])
+    def duplicate(self, request, slug=None):
+        """POST /api/forms/{slug}/duplicate/ {"title"?: ...} - a new DRAFT copy of the definition (no responses)."""
+        source = self.get_object()
+        title = str(request.data.get('title') or '').strip() or None
+        copy = definition_io.duplicate_form(source, user=request.user, title=title)
+        log_audit_event(actor=request.user, action="Duplicated Form", target_model="Form", target_id=copy.slug,
+                        details={"title": copy.title, "copied_from": source.slug})
+        return DRFResponse(self.get_serializer(copy).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='save-as-template', permission_classes=[IsAdminOrClubLead])
+    def save_as_template(self, request, slug=None):
+        """POST /api/forms/{slug}/save-as-template/ {"title"?: ...} - a reusable copy, kept out of the normal lists."""
+        source = self.get_object()
+        title = str(request.data.get('title') or '').strip() or None
+        template = definition_io.duplicate_form(source, user=request.user, title=title, as_template=True)
+        log_audit_event(actor=request.user, action="Saved Form as Template", target_model="Form", target_id=template.slug,
+                        details={"title": template.title, "copied_from": source.slug})
+        return DRFResponse(self.get_serializer(template).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'], url_path='export-definition', permission_classes=[IsAdminOrClubLead])
+    def export_definition(self, request, slug=None):
+        """GET /api/forms/{slug}/export-definition/ - the definition as a portable file (no responses)."""
+        form = self.get_object()
+        log_audit_event(actor=request.user, action="Exported Form Definition", target_model="Form", target_id=form.slug,
+                        details={"title": form.title})
+        response = DRFResponse(definition_io.export_definition(form))
+        response['Content-Disposition'] = f'attachment; filename="{form.slug}-form.json"'
+        return response
+
+    @action(detail=False, methods=['post'], url_path='import-definition', permission_classes=[IsAdminOrClubLead])
+    def import_definition(self, request):
+        """POST /api/forms/import-definition/ <exported file> - creates a new DRAFT form from it."""
+        if len(request.body) > definition_io.MAX_IMPORT_BYTES:
+            return DRFResponse({"error": "That form file is too large."}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        form = definition_io.import_definition(request.data, user=request.user)
+        log_audit_event(actor=request.user, action="Imported Form Definition", target_model="Form", target_id=form.slug,
+                        details={"title": form.title})
+        return DRFResponse(self.get_serializer(form).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'], url_path='availability', permission_classes=[permissions.AllowAny])
+    def availability(self, request, slug=None):
+        """
+        GET /api/forms/{slug}/availability/
+        Places left on every limited option: {"<question id>": {"<option>": places_left}}. Questions without
+        limits are not listed. Counts are cached for a few seconds.
+        """
+        form = self.get_object()
+        data = cache.get_or_set(f"forms:availability:{form.pk}", lambda: capacity.availability(form), 5)
+        return DRFResponse(data)
+
+    @action(detail=True, methods=['get', 'put', 'delete'], url_path='draft',
+            permission_classes=[permissions.IsAuthenticated])
+    def draft(self, request, slug=None):
+        """
+        The signed-in user's unfinished answers to this form (autosave).
+
+        GET    -> {"draft": {...} | null}
+        PUT    {"answers": {"<question id>": value}, "current_page": n} -> saves, replacing the previous draft
+        DELETE -> discards it
+        """
+        form = self.get_object()
+        if request.method == 'DELETE':
+            ResponseDraft.objects.filter(form=form, user=request.user).delete()
+            return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+        if request.method == 'GET':
+            found = form_drafts.fresh_draft(form, request.user)
+            return DRFResponse({"draft": form_drafts.serialize_draft(found, form) if found else None})
+
+        if not form_drafts.form_is_open(form):
+            return DRFResponse({"error": "This form is not taking responses.", "code": "FORM_NOT_OPEN"},
+                               status=status.HTTP_409_CONFLICT)
+        answers, dropped = form_drafts.sanitize_answers(form, request.data.get('answers'))
+        if not form_drafts.fits(answers):
+            return DRFResponse({"error": "That draft is too large to save.", "code": "DRAFT_TOO_LARGE"},
+                               status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        try:
+            page = min(max(int(request.data.get('current_page') or 0), 0), form_drafts.MAX_PAGE_INDEX)
+        except (TypeError, ValueError):
+            page = 0
+        saved, _ = ResponseDraft.objects.update_or_create(
+            form=form, user=request.user,
+            defaults={'answers': answers, 'current_page': page, 'form_version': form.version},
+        )
+        return DRFResponse({"saved_at": saved.updated_at, "dropped": dropped})
 
     @action(detail=True, methods=['get'], url_path='my-response')
     def my_response(self, request, slug=None):
@@ -467,6 +684,9 @@ class FormViewSet(viewsets.ModelViewSet):
         target_status = request.data.get('status', 'DRAFT')
         if target_status not in ['DRAFT', 'PUBLISHED', 'SCHEDULED']:
             target_status = 'DRAFT'
+        if target_status != 'DRAFT' and form.captcha_enabled and not spam.captcha_configured():
+            return DRFResponse({"detail": spam.CAPTCHA_NOT_CONFIGURED_MESSAGE, "code": "CAPTCHA_NOT_CONFIGURED"},
+                               status=status.HTTP_400_BAD_REQUEST)
         form.status = target_status
         form.save(update_fields=['status', 'updated_at'])
         log_audit_event(
@@ -1043,9 +1263,9 @@ class ResponseViewSet(viewsets.ModelViewSet):
         # Public form submission is anonymous-writable; scope-limit it beyond the
         # global anon rate so a form can't be flooded.
         if self.action == 'create':
-            from apps.core.throttling import ScopedRateThrottle
+            from apps.core.throttling import AuthAwareScopedThrottle
             self.throttle_scope = 'form_submit'
-            return [ScopedRateThrottle()]
+            return [AuthAwareScopedThrottle()]
         return super().get_throttles()
 
     @staticmethod
@@ -1067,6 +1287,9 @@ class ResponseViewSet(viewsets.ModelViewSet):
         if cached:
             return cached
 
+        if not hasattr(request.data, 'get'):
+            return DRFResponse({"error": "The request body must be a JSON object.", "code": "BAD_REQUEST"}, status=status.HTTP_400_BAD_REQUEST)
+
         is_test = request.query_params.get('test') == 'true'
         if is_test:
             if not request.user.is_staff:
@@ -1086,9 +1309,12 @@ class ResponseViewSet(viewsets.ModelViewSet):
         form_id = request.data.get('form')
         if not form_id:
             return DRFResponse({"error": "form ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        # A number that fits the database; anything else (text, a list, a huge number) is not a form id.
+        if isinstance(form_id, bool) or not isinstance(form_id, (int, str)) or not str(form_id).strip().isdigit() or int(form_id) > 2147483647:
+            return DRFResponse({"error": "form must be the numeric id of a form.", "code": "BAD_FORM_ID"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            form_obj = Form.objects.get(id=form_id)
+            form_obj = Form.objects.get(id=int(form_id))
         except Form.DoesNotExist:
             return DRFResponse({"error": "Form not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1114,6 +1340,23 @@ class ResponseViewSet(viewsets.ModelViewSet):
         # the form's own mapped email field rather than trusting a client-supplied ID.
         user_to_assign = request.user if request.user and request.user.is_authenticated else None
 
+        # Bots: a filled-in honeypot is answered like a success and dropped; a form with the bot check on
+        # needs a token Turnstile accepts (staff testing their own forms are not asked).
+        if spam.honeypot_filled(request.data):
+            return DRFResponse({"detail": "Received."}, status=status.HTTP_201_CREATED)
+        if form_obj.captcha_enabled and not request.user.is_staff:
+            from apps.core.client_ip import get_client_ip
+            verdict = spam.verify_captcha(request.data.get(spam.CAPTCHA_TOKEN_FIELD), get_client_ip(request))
+            if verdict != spam.OK:
+                messages = {
+                    spam.MISSING: ("Please complete the bot check before submitting.", status.HTTP_400_BAD_REQUEST),
+                    spam.FAILED: ("The bot check did not pass. Please try again.", status.HTTP_400_BAD_REQUEST),
+                    spam.UNAVAILABLE: ("The bot check could not be reached. Please try again in a moment.", status.HTTP_503_SERVICE_UNAVAILABLE),
+                    spam.NOT_CONFIGURED: ("This form's bot check is not set up yet. Please tell the organisers.", status.HTTP_503_SERVICE_UNAVAILABLE),
+                }
+                text, http = messages[verdict]
+                return DRFResponse({"error": text, "code": f"CAPTCHA_{verdict.upper()}"}, status=http)
+
         # A form attached to a hackathon round as its "details" form only
         # accepts the leaders of teams shortlisted in that round.
         from apps.hackathons.services import check_round_form_access
@@ -1134,6 +1377,11 @@ class ResponseViewSet(viewsets.ModelViewSet):
         # rollback) has finished.
         try:
             with transaction.atomic():
+                # Serialize submissions per form: the per-user cap, the form-wide
+                # response cap and the duplicate-email check are all check-then-insert,
+                # so without this lock two simultaneous requests both pass the check.
+                Form.objects.select_for_update().only('id').get(pk=form_obj.pk)
+
                 # Check existing user response & edit window vs deduplication
                 if user_to_assign:
                     user_responses = Response.objects.filter(
@@ -1183,6 +1431,18 @@ class ResponseViewSet(viewsets.ModelViewSet):
                                 )
 
                 if response_obj is None:
+                    # Re-checked under the lock above: the early status check can be stale
+                    # when several requests race for the last slot.
+                    if (
+                        form_obj.max_total_responses is not None
+                        and Response.objects.filter(form=form_obj, is_test_submission=False).count()
+                        >= form_obj.max_total_responses
+                    ):
+                        return DRFResponse(
+                            {"error": "This form has reached its maximum number of responses.",
+                             "code": "MAX_TOTAL_RESPONSES_REACHED"},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
                     serializer = ResponseSerializer(
                         data=request.data, context={'form': form_obj, 'request': request}
                     )
@@ -1219,6 +1479,10 @@ class ResponseViewSet(viewsets.ModelViewSet):
                 if form_obj.attendance_enabled:
                     from apps.attendance.services import issue_badge
                     issue_badge(response_obj)
+
+                # The response replaces any unfinished draft of it.
+                if user_to_assign:
+                    ResponseDraft.objects.filter(form=form_obj, user=user_to_assign).delete()
 
                 # Auto-close once the form-wide response cap is reached. Only a
                 # genuine new response (201) counts toward the total - editing an

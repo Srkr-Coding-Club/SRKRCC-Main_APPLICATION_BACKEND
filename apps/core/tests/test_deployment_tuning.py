@@ -7,11 +7,12 @@ from config.throttle_config import DEFAULT_RATES, resolve_throttle_rates
 
 
 class ThrottleRateTests(SimpleTestCase):
-    def test_defaults_are_unchanged(self):
+    def test_defaults_are_the_campus_friendly_ones(self):
         self.assertEqual(resolve_throttle_rates({}), DEFAULT_RATES)
-        self.assertEqual(DEFAULT_RATES['login'], '10/minute')
-        self.assertEqual(DEFAULT_RATES['register'], '10/hour')
-        self.assertEqual(DEFAULT_RATES['anon'], '100/minute')
+        self.assertEqual(DEFAULT_RATES['login'], '120/minute')
+        self.assertEqual(DEFAULT_RATES['register'], '120/hour')
+        self.assertEqual(DEFAULT_RATES['anon'], '600/minute')
+        self.assertEqual(DEFAULT_RATES['login_account'], '10/minute')
 
     def test_environment_overrides_one_rate_and_leaves_the_rest(self):
         rates = resolve_throttle_rates({'THROTTLE_REGISTER': '200/hour'})
@@ -47,7 +48,7 @@ class ThrottleRateTests(SimpleTestCase):
 
 
 class HstsSettingTests(SimpleTestCase):
-    def test_defaults_are_unchanged(self):
+    def test_defaults_are_the_campus_friendly_ones(self):
         self.assertEqual(
             resolve_hsts_settings({}),
             {'SECURE_HSTS_SECONDS': 31536000, 'SECURE_HSTS_INCLUDE_SUBDOMAINS': True, 'SECURE_HSTS_PRELOAD': True},

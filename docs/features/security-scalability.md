@@ -18,6 +18,19 @@ Not a single button or page — this is a design principle behind the platform: 
 - **Audit Logs** — every sensitive admin action is traceable. See [audit-logs.md](audit-logs.md).
 - **Regular, redundant backups** — daily database backups, weekly file backups, copied to a second provider. See [../architecture/backup-security.md](../architecture/backup-security.md).
 
+## Rate Limits (and why they are shaped this way)
+
+Many students reach the site through one campus address, so a limit counted "per address" would lock a whole lab out together. The limits are therefore layered (`config/throttle_config.py`, `apps/core/throttling.py`):
+
+- **Signed-in people are counted per account**, never per address (`user`, `form_submit`, `form_draft`, ...). A lab of 100 members each has their own budget.
+- **Anonymous traffic is counted per address and is generous** (`anon` 600/min, `college_search` 900/min, `register` 120/hour, `login` 120/min, `form_submit_anon` 120/min): enough for a lab, still low enough to stop a flood.
+- **Password guessing is stopped per account and address** (`login_account` 10/min): one person mistyping is paused briefly, a lab-mate on the same address is not affected, and a stranger elsewhere cannot lock someone out.
+- **The real visitor address** comes from the Next.js proxy (`X-Client-IP` plus a shared secret); see `apps/core/client_ip.py`. Without `CLIENT_IP_SHARED_SECRET` set on both sides, every visitor looks like the proxy and shares one budget.
+- **A throttled request** answers HTTP 429 with `{detail, code: "THROTTLED", retry_after}` and a `Retry-After` header; the website shows a friendly wait message, retries reads once automatically and counts down on the form's submit button.
+- Every rate can be changed without code with a `THROTTLE_<SCOPE>` environment variable (see `.env.example`). For a big sign-up event raise `THROTTLE_REGISTER`, `THROTTLE_ANON` and `THROTTLE_FORM_SUBMIT_ANON`.
+
+Counters live in the Django cache. On AWS Lambda a per-process cache would give every container its own count, so keep the shared database cache (the default outside local development) or move to Redis if traffic grows.
+
 ## Related Docs
 - [../architecture/README.md](../architecture/README.md)
 - [../architecture/backup-security.md](../architecture/backup-security.md)

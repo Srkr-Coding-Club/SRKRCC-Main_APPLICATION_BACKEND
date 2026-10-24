@@ -130,27 +130,33 @@ class ClubIdVerificationSubmissionTests(APITestCase):
         resp = self._submit("25SCC999", "Ravi Kumar", "member1@srkr.ac.in", "verify-bad-1")
         self.assertEqual(resp.status_code, 400)
         codes = [e.get("code") for e in resp.data.get("errors", [])]
-        self.assertIn("CLUB_ID_NOT_FOUND", codes)
+        self.assertIn("CLUB_ID_VERIFICATION_FAILED", codes)
         self.assertFalse(Response.objects.filter(form=self.form).exists())
 
     def test_name_mismatch_is_rejected(self):
         resp = self._submit("25SCC277", "Someone Else", "member1@srkr.ac.in", "verify-bad-2")
         self.assertEqual(resp.status_code, 400)
         codes = [e.get("code") for e in resp.data.get("errors", [])]
-        self.assertIn("CLUB_ID_MISMATCH", codes)
+        self.assertIn("CLUB_ID_VERIFICATION_FAILED", codes)
         self.assertFalse(Response.objects.filter(form=self.form).exists())
 
     def test_email_mismatch_is_rejected(self):
         resp = self._submit("25SCC277", "Ravi Kumar", "not-ravi@srkr.ac.in", "verify-bad-3")
         self.assertEqual(resp.status_code, 400)
         codes = [e.get("code") for e in resp.data.get("errors", [])]
-        self.assertIn("CLUB_ID_MISMATCH", codes)
+        self.assertIn("CLUB_ID_VERIFICATION_FAILED", codes)
 
-    def test_error_is_anchored_to_the_mismatched_field(self):
-        resp = self._submit("25SCC277", "Someone Else", "member1@srkr.ac.in", "verify-bad-4")
-        self.assertEqual(resp.status_code, 400)
-        mismatch = next(e for e in resp.data["errors"] if e["code"] == "CLUB_ID_MISMATCH")
-        self.assertEqual(mismatch["field_id"], self.name_field.id)
+    def test_error_is_anchored_to_the_club_id_field_and_does_not_name_the_mismatch(self):
+        """Not-found and mismatch look identical, so the endpoint can't be used to
+        enumerate Club IDs or learn which of a member's details was wrong."""
+        mismatch_resp = self._submit("25SCC277", "Someone Else", "member1@srkr.ac.in", "verify-bad-4")
+        unknown_resp = self._submit("25SCC999", "Someone Else", "member1@srkr.ac.in", "verify-bad-4b")
+        self.assertEqual(mismatch_resp.status_code, 400)
+        mismatch = next(e for e in mismatch_resp.data["errors"] if e["code"] == "CLUB_ID_VERIFICATION_FAILED")
+        unknown = next(e for e in unknown_resp.data["errors"] if e["code"] == "CLUB_ID_VERIFICATION_FAILED")
+        self.assertEqual(mismatch["field_id"], self.club_id_field.id)
+        self.assertEqual(mismatch["message"], unknown["message"])
+        self.assertNotIn("name", mismatch["message"].lower())
 
     def test_someone_elses_valid_club_id_with_own_details_is_rejected(self):
         """The exact scenario this feature exists to catch: a valid Club ID
@@ -159,7 +165,7 @@ class ClubIdVerificationSubmissionTests(APITestCase):
         resp = self._submit("25SCC277", "Different Person", "different@srkr.ac.in", "verify-bad-5")
         self.assertEqual(resp.status_code, 400)
         codes = [e.get("code") for e in resp.data.get("errors", [])]
-        self.assertIn("CLUB_ID_MISMATCH", codes)
+        self.assertIn("CLUB_ID_VERIFICATION_FAILED", codes)
 
 
 class DedicatedClubIdFieldTests(APITestCase):
@@ -191,5 +197,5 @@ class DedicatedClubIdFieldTests(APITestCase):
     def test_unregistered_id_is_rejected_before_response_is_saved(self):
         response = self._submit("26SCC999", "dedicated-bad-1")
         self.assertEqual(response.status_code, 400)
-        self.assertIn("CLUB_ID_NOT_FOUND", [e.get("code") for e in response.data.get("errors", [])])
+        self.assertIn("CLUB_ID_VERIFICATION_FAILED", [e.get("code") for e in response.data.get("errors", [])])
         self.assertFalse(Response.objects.filter(form=self.form).exists())

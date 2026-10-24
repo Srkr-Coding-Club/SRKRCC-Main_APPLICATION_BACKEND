@@ -15,13 +15,21 @@ failures. Rule keys not applicable to the value's shape are skipped silently
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import re
+import unicodedata
 from decimal import Decimal
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
+from django.utils import timezone
+
+from apps.forms.models import FieldType
 from . import codes
 from .report import FieldError
 from .values import parse_date, parse_time, parse_number, CoercionError
+
+logger = logging.getLogger(__name__)
 
 RuleFn = Callable[[Any, Any, Any, dict], "FieldError | None"]
 
@@ -36,8 +44,13 @@ def _register(*keys: str):
     return deco
 
 
+# patternError is the admin's message for a failed pattern / format, not for
+# every other constraint on the field.
+_PATTERN_ERROR_RULES = frozenset({"pattern", "format"})
+
+
 def _err(field, code, message, rule, **ctx):
-    custom = (field.validation_rules or {}).get("patternError")
+    custom = (field.validation_rules or {}).get("patternError") if rule in _PATTERN_ERROR_RULES else None
     return FieldError(
         code=code,
         message=custom or message,
@@ -131,17 +144,31 @@ def _pattern(field, value, rv, rules):
     if s is None or not rv:
         return None
     try:
-        if re.search(rv, s) is None:
+        # Whole-value match: an unanchored "[0-9]{10}" must not accept "abc1234567890xyz".
+        if re.fullmatch(rv, s) is None:
             return _err(field, codes.PATTERN_MISMATCH,
                         "Value does not match the required format.", "pattern")
     except re.error:
         return None  # invalid admin pattern - definition validator flags it; don't block here
 
 
+def _letters_and_marks(c: str) -> bool:
+    # L* = letters (any script), M* = combining marks (needed for Indic scripts and accents).
+    return unicodedata.category(c)[0] in ("L", "M")
+
+
+def _is_alpha(s: str) -> bool:
+    return bool(s) and all(c == " " or _letters_and_marks(c) for c in s)
+
+
+def _is_alphanumeric(s: str) -> bool:
+    return bool(s) and all(_letters_and_marks(c) or unicodedata.category(c) == "Nd" for c in s)
+
+
 _FORMAT_CHECKS: dict[str, Callable[[str], bool]] = {
-    "alpha": lambda s: bool(re.fullmatch(r"[A-Za-z ]+", s)),
-    "alphabetic": lambda s: bool(re.fullmatch(r"[A-Za-z ]+", s)),
-    "alphanumeric": lambda s: bool(re.fullmatch(r"[A-Za-z0-9]+", s)),
+    "alpha": _is_alpha,
+    "alphabetic": _is_alpha,
+    "alphanumeric": _is_alphanumeric,
     "numeric": lambda s: bool(re.fullmatch(r"[0-9]+", s)),
     "integer": lambda s: bool(re.fullmatch(r"-?[0-9]+", s)),
     "decimal": lambda s: bool(re.fullmatch(r"-?[0-9]+(\.[0-9]+)?", s)),
@@ -362,7 +389,14 @@ def _step(field, value, rv, rules):
 # Email domain
 # ---------------------------------------------------------------------------
 
-def _domains(value: str) -> list[str]:
+def _domains(field, value: str) -> list[str]:
+    """Domains to test: the part after "@" for emails, the host for URLs."""
+    if field.type == FieldType.URL:
+        try:
+            host = urlsplit(str(value).strip()).hostname
+        except ValueError:
+            host = None
+        return [host.lower()] if host else []
     out = []
     for addr in re.split(r"[,;]\s*", str(value)):
         if "@" in addr:
@@ -370,15 +404,28 @@ def _domains(value: str) -> list[str]:
     return out
 
 
+def _domain_matches(field, domain: str, listed: set[str]) -> bool:
+    if domain in listed:
+        return True
+    # A URL rule for "example.com" also covers "www.example.com"; email domains stay exact.
+    return field.type == FieldType.URL and any(domain.endswith("." + d) for d in listed)
+
+
 @_register("allowedDomains")
 def _allowed_domains(field, value, rv, rules):
     if not rv:
         return None
     allow = {str(d).strip().lower().lstrip("@") for d in rv}
-    for dom in _domains(value):
-        if dom not in allow:
+    found = _domains(field, value)
+    if not found and field.type == FieldType.URL:
+        return _err(field, codes.EMAIL_DOMAIN_NOT_ALLOWED,
+                    f"Link must be on one of: {', '.join(sorted(allow))}.",
+                    "allowedDomains", allowed=sorted(allow))
+    for dom in found:
+        if not _domain_matches(field, dom, allow):
+            what = "Link" if field.type == FieldType.URL else "Email"
             return _err(field, codes.EMAIL_DOMAIN_NOT_ALLOWED,
-                        f"Email must be on one of: {', '.join(sorted(allow))}.",
+                        f"{what} must be on one of: {', '.join(sorted(allow))}.",
                         "allowedDomains", allowed=sorted(allow))
 
 
@@ -387,10 +434,11 @@ def _blocked_domains(field, value, rv, rules):
     if not rv:
         return None
     block = {str(d).strip().lower().lstrip("@") for d in rv}
-    for dom in _domains(value):
-        if dom in block:
+    for dom in _domains(field, value):
+        if _domain_matches(field, dom, block):
             return _err(field, codes.EMAIL_DOMAIN_BLOCKED,
-                        f"Emails from '{dom}' are not accepted.", "blockedDomains")
+                        f"{'Links' if field.type == FieldType.URL else 'Emails'} from '{dom}' are not accepted.",
+                        "blockedDomains")
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +511,7 @@ def _as_time(value):
 
 def _bound_date(rv):
     if str(rv).strip().lower() == "today":
-        return _dt.date.today()
+        return timezone.localdate()
     return _as_date(rv)
 
 
@@ -496,7 +544,7 @@ def _past_only(field, value, rv, rules):
     if not rv:
         return None
     d = _as_date(value)
-    if d and d >= _dt.date.today():
+    if d and d >= timezone.localdate():
         return _err(field, codes.DATE_MUST_BE_PAST, "Date must be in the past.", "pastOnly")
 
 
@@ -505,7 +553,7 @@ def _future_only(field, value, rv, rules):
     if not rv:
         return None
     d = _as_date(value)
-    if d and d <= _dt.date.today():
+    if d and d <= timezone.localdate():
         return _err(field, codes.DATE_MUST_BE_FUTURE, "Date must be in the future.", "futureOnly")
 
 
@@ -514,7 +562,7 @@ def _allow_today(field, value, rv, rules):
     if rv:
         return None
     d = _as_date(value)
-    if d and d == _dt.date.today():
+    if d and d == timezone.localdate():
         return _err(field, codes.DATE_TODAY_NOT_ALLOWED, "Today's date is not allowed.", "allowToday")
 
 
@@ -718,7 +766,13 @@ def apply_rules(field, value: Any) -> list[FieldError]:
         try:
             err = fn(field, value, rule_value, rules)
         except Exception:
-            err = None
+            # Fail closed: a rule that cannot be evaluated must not silently pass the value.
+            logger.exception("Validation rule %r crashed for field %s", key, getattr(field, "id", None))
+            err = FieldError(
+                code=codes.RULE_EVALUATION_FAILED,
+                message="This answer could not be validated. Please check it and try again.",
+                field_id=field.id, label=field.label, rule=key,
+            )
         if err is not None:
             out.append(err)
     return out

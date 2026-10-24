@@ -23,7 +23,8 @@ import re
 from decimal import Decimal
 from typing import Any
 
-from .schema import normalize_conditional_logic
+from apps.forms.models import FieldType
+from .schema import ROUTING_ACTIONS, normalize_conditional_logic
 from .values import is_empty, parse_date, parse_number, CoercionError
 
 
@@ -183,13 +184,20 @@ def _evaluate_node(node: dict[str, Any], values: dict[int, Any]) -> bool | None:
         return None  # broken {"if": "parent"} placeholder - ignore
     left = values.get(int(field_ref))
     operator = node.get("operator", "equals")
+    right = node.get("value")
+    value_field = node.get("value_field")
+    if value_field is not None:
+        # Compare against another answer; dormant until that one is answered too.
+        right = values.get(int(value_field))
+        if operator not in _EMPTY_OK_OPERATORS and is_empty(right):
+            return False
     # A rule whose trigger field is still blank stays dormant - a `show` /
     # `require` condition should only fire once the user has actually answered
     # that field, not on first render. `is_empty` / `is_not_empty` are the
     # exceptions: they are explicitly about the blank state.
     if operator not in _EMPTY_OK_OPERATORS and is_empty(left):
         return False
-    return evaluate_operator(operator, left, node.get("value"))
+    return evaluate_operator(operator, left, right)
 
 
 def evaluate_tree(normalized: dict[str, Any], values: dict[int, Any]) -> bool:
@@ -209,11 +217,26 @@ def evaluate_tree(normalized: dict[str, Any], values: dict[int, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 class Layout:
-    __slots__ = ("visible_ids", "required_overrides")
+    """What the answers so far imply: which questions show, which are forced required / optional,
+    which have a value set for them, which have their options limited, which show a message."""
 
-    def __init__(self, visible_ids: set[int], required_overrides: dict[int, bool]):
+    __slots__ = ("visible_ids", "required_overrides", "set_values", "allowed_options", "messages",
+                 "pages", "skipped_pages")
+
+    def __init__(self, visible_ids: set[int], required_overrides: dict[int, bool],
+                 set_values: dict[int, Any] | None = None,
+                 allowed_options: dict[int, list] | None = None,
+                 messages: dict[int, str] | None = None,
+                 pages: list[list[int]] | None = None,
+                 skipped_pages: set[int] | None = None):
         self.visible_ids = visible_ids
         self.required_overrides = required_overrides
+        self.set_values = set_values or {}
+        self.allowed_options = allowed_options or {}
+        self.messages = messages or {}
+        # Question ids per page (a PAGE_BREAK heads the page it starts) and the pages routing skips.
+        self.pages = pages or []
+        self.skipped_pages = skipped_pages or set()
 
     def is_visible(self, field_id: int) -> bool:
         return field_id in self.visible_ids
@@ -222,13 +245,57 @@ class Layout:
         return self.required_overrides.get(field.id, field.is_required)
 
 
+def split_pages(active_fields) -> list[list[int]]:
+    """Question ids per page, in order. A PAGE_BREAK starts a new page and heads it; page 0 has no break."""
+    pages: list[list[int]] = [[]]
+    for f in active_fields:
+        if getattr(f, "type", None) == FieldType.PAGE_BREAK:
+            pages.append([f.id])
+        else:
+            pages[-1].append(f.id)
+    return pages
+
+
+def _skipped_pages(pages, normalized, visible, values) -> set[int]:
+    """
+    Walk the pages from the start. Leaving a page, the PAGE_BREAK that starts the next one may route:
+    ``skip_to_section`` jumps ahead to a later PAGE_BREAK, ``end_form`` ends the form there. A rule that
+    cannot be evaluated never routes. Only answers on reachable pages count.
+    """
+    break_page = {page[0]: index for index, page in enumerate(pages) if index > 0}
+    effective = {fid: v for fid, v in values.items() if fid in visible}
+    skipped: set[int] = set()
+    current = 0
+    while current < len(pages) - 1:
+        following = current + 1
+        norm = normalized.get(pages[following][0])
+        if norm and norm.get("action") in ROUTING_ACTIONS and _evaluate_node(norm, effective) is True:
+            if norm["action"] == "end_form":
+                skipped.update(range(following, len(pages)))
+                break
+            target = break_page.get(_as_int(norm.get("action_value")))
+            if target is not None and target > following:
+                skipped.update(range(following, target))
+                following = target
+        current = following
+    return skipped
+
+
+def _as_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def compute_layout(active_fields, values: dict[int, Any]) -> Layout:
     """
-    ``active_fields`` - the form's non-deleted FormField rows.
+    ``active_fields`` - the form's non-deleted FormField rows, in display order.
     ``values``        - {field_id: submitted value} (coerced where possible).
 
     Bounded fixpoint: at most ``len(fields) + 1`` passes so a cyclic dependency
-    (A shows if B, B shows if A) terminates.
+    (A shows if B, B shows if A) terminates. Page routing wraps it: pages the route skips are
+    hidden, which changes what the remaining conditions can see, so the two settle together.
     """
     normalized: dict[int, dict[str, Any]] = {}
     for f in active_fields:
@@ -236,58 +303,90 @@ def compute_layout(active_fields, values: dict[int, Any]) -> Layout:
         if norm:
             normalized[f.id] = norm
 
-    visible: set[int] = {f.id for f in active_fields}
+    pages = split_pages(active_fields)
+    skipped_pages: set[int] = set()
+    visible: set[int] = set()
     overrides: dict[int, bool] = {}
 
-    max_passes = len(active_fields) + 1
-    for _ in range(max_passes):
-        changed = False
-        # Only fields the user can currently see contribute to condition inputs.
-        effective_values = {fid: v for fid, v in values.items() if fid in visible}
+    for _route_pass in range(len(pages) + 1):
+        forced_hidden = {fid for index in skipped_pages for fid in pages[index]}
+        visible = {f.id for f in active_fields} - forced_hidden
+        overrides = {}
 
-        for f in active_fields:
-            norm = normalized.get(f.id)
-            if not norm:
-                continue
-            satisfied = evaluate_tree(norm, effective_values)
-            action = norm.get("action", "show")
+        max_passes = len(active_fields) + 1
+        for _ in range(max_passes):
+            changed = False
+            # Only fields the user can currently see contribute to condition inputs.
+            effective_values = {fid: v for fid, v in values.items() if fid in visible}
 
-            if action == "show":
-                want_visible = satisfied
-                if want_visible and f.id not in visible:
-                    visible.add(f.id)
-                    changed = True
-                elif not want_visible and f.id in visible:
-                    visible.discard(f.id)
-                    changed = True
-            elif action == "hide":
-                if satisfied and f.id in visible:
-                    visible.discard(f.id)
-                    changed = True
-                elif not satisfied and f.id not in visible and not _has_show_rule(norm):
-                    visible.add(f.id)
-                    changed = True
-            elif action == "require":
-                new_val = True if satisfied else None
-                if overrides.get(f.id) != new_val:
-                    if new_val is None:
-                        overrides.pop(f.id, None)
-                    else:
-                        overrides[f.id] = True
-                    changed = True
-            elif action == "optional":
-                new_val = False if satisfied else None
-                if (f.id in overrides) != (new_val is not None) or overrides.get(f.id) != new_val:
-                    if new_val is None:
-                        overrides.pop(f.id, None)
-                    else:
-                        overrides[f.id] = False
-                    changed = True
+            for f in active_fields:
+                norm = normalized.get(f.id)
+                if not norm or f.id in forced_hidden:
+                    continue
+                satisfied = evaluate_tree(norm, effective_values)
+                action = norm.get("action", "show")
 
-        if not changed:
+                if action == "show":
+                    want_visible = satisfied
+                    if want_visible and f.id not in visible:
+                        visible.add(f.id)
+                        changed = True
+                    elif not want_visible and f.id in visible:
+                        visible.discard(f.id)
+                        changed = True
+                elif action == "hide":
+                    if satisfied and f.id in visible:
+                        visible.discard(f.id)
+                        changed = True
+                    elif not satisfied and f.id not in visible and not _has_show_rule(norm):
+                        visible.add(f.id)
+                        changed = True
+                elif action == "require":
+                    new_val = True if satisfied else None
+                    if overrides.get(f.id) != new_val:
+                        if new_val is None:
+                            overrides.pop(f.id, None)
+                        else:
+                            overrides[f.id] = True
+                        changed = True
+                elif action == "optional":
+                    new_val = False if satisfied else None
+                    if (f.id in overrides) != (new_val is not None) or overrides.get(f.id) != new_val:
+                        if new_val is None:
+                            overrides.pop(f.id, None)
+                        else:
+                            overrides[f.id] = False
+                        changed = True
+
+            if not changed:
+                break
+
+        routed = _skipped_pages(pages, normalized, visible, values)
+        if routed == skipped_pages:
             break
+        skipped_pages = routed
 
-    return Layout(visible, overrides)
+    # Value-style actions read the settled visibility, so they run once, after the fixpoint.
+    set_values: dict[int, Any] = {}
+    allowed_options: dict[int, list] = {}
+    messages: dict[int, str] = {}
+    final_values = {fid: v for fid, v in values.items() if fid in visible}
+    for f in active_fields:
+        norm = normalized.get(f.id)
+        action = norm.get("action") if norm else None
+        if action not in ("set_value", "restrict_options", "display_message") or f.id not in visible:
+            continue
+        payload = norm.get("action_value")
+        if payload is None or not evaluate_tree(norm, final_values):
+            continue
+        if action == "set_value":
+            set_values[f.id] = payload
+        elif action == "restrict_options":
+            allowed_options[f.id] = payload if isinstance(payload, list) else [payload]
+        else:
+            messages[f.id] = str(payload)
+
+    return Layout(visible, overrides, set_values, allowed_options, messages, pages, skipped_pages)
 
 
 def _has_show_rule(norm: dict[str, Any]) -> bool:
