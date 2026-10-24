@@ -3,11 +3,13 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from apps.forms.models import ProfileField
-from . import config_validation as config
+from . import config_validation as config, idea_files
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, HackathonStage, InviteStatus,
     ProblemStatement, Round, RoundEntry, Submission, Team, TeamInvite, TeamMember, TeamStatus,
 )
+
+MAX_IDEA_FEE = 100000
 
 
 class HackathonSerializer(serializers.ModelSerializer):
@@ -39,6 +41,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'features', 'max_teams', 'max_participants', 'waitlist_enabled', 'eligibility', 'rules',
             'require_rules_acceptance', 'registration_questions', 'problem_statements_reveal_at',
             'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'idea_review_required',
+            'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
             'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
             'certificate_config', 'mentors', 'judges', 'sponsors', 'contacts', 'community_links', 'venue_map_url',
             'waitlisted_team_count', 'is_full', 'submissions_open', 'results_published', 'problems_revealed',
@@ -273,8 +276,29 @@ class HackathonSerializer(serializers.ModelSerializer):
         sub_deadline = attrs.get('submission_deadline', getattr(self.instance, 'submission_deadline', None))
         if sub_opens and sub_deadline and sub_deadline <= sub_opens:
             raise serializers.ValidationError({'submission_deadline': 'Must be after the time submissions open.'})
+        self._check_idea_settings(attrs)
         self._check_capacity(attrs)
         return attrs
+
+    def _check_idea_settings(self, attrs):
+        """The payment, slides and edit-window choices must make sense together."""
+        def value(name, default):
+            return attrs.get(name, getattr(self.instance, name, default))
+
+        fee = value('idea_fee_amount', 0) or 0
+        if fee > MAX_IDEA_FEE:
+            raise serializers.ValidationError({'idea_fee_amount': f'The fee can be at most \u20b9{MAX_IDEA_FEE}.'})
+        if len(value('idea_payment_note', '') or '') > 1000:
+            raise serializers.ValidationError({'idea_payment_note': 'Keep the payment note under 1000 characters.'})
+        needs_files = ('idea_fee_amount', 'idea_deck_required')
+        if any(name in attrs for name in needs_files) and (fee or value('idea_deck_required', False)) and not idea_files.available():
+            raise serializers.ValidationError({
+                'idea_fee_amount' if fee else 'idea_deck_required':
+                    'Uploading files is switched off on this server (FORM_UPLOADS_BACKEND is not s3), so a payment screenshot or slides file cannot be required.',
+            })
+        until, opens = value('idea_edits_until', None), value('idea_opens_at', None)
+        if until and opens and until <= opens:
+            raise serializers.ValidationError({'idea_edits_until': 'Must be after the time idea submission opens.'})
 
     def _check_capacity(self, attrs):
         """A cap below what is already placed would silently orphan existing teams."""

@@ -257,6 +257,29 @@ Staff also see their hackathon while it is a draft or hidden. `GET /{slug}/my-pe
 `features.ideas` switches **phase 1 (plan)** on; `features.submissions` is **phase 2 (implement)**. Each has its own window (`idea_opens_at`/`idea_deadline`, `submission_opens_at`/`submission_deadline`; the idea deadline must not be after the project deadline). `IdeaSubmission` (one per team: title, problem, solution, plan, tech stack, optional slides link) is written by the team leader of a registered team inside the window. With `idea_review_required` an organizer holding `ideas` approves it, asks for changes (the team edits and resubmits) or rejects it, with a note the team is notified of; approved and rejected ideas are locked. Without review, ideas are approved on submission. `project_requires_approved_idea` makes the project phase available only to teams with an accepted idea (`IDEA_REQUIRED` otherwise; `my-submission` reports the `gate`). Endpoints: `GET/PUT /{slug}/my-idea/`, `GET /{slug}/ideas/`, `POST /{slug}/ideas/{id}/review/`, `POST /{slug}/ideas/remind/`. Cloning copies the phase settings with shifted dates.
 
 
+## Idea submission: slides, LinkedIn post, payment and editing
+
+On top of the written idea, organizers can ask for more (all set on the **Ideas** tab; every setting is optional and defaults to the old behaviour):
+
+| Setting | Meaning |
+|---|---|
+| `idea_deck_required` | The leader uploads a `.ppt` / `.pptx` (up to 25 MB). |
+| `idea_linkedin_required` | The link of the team's LinkedIn post (`linkedin.com` / `lnkd.in` only). |
+| `idea_fee_amount` | Rupees to pay (0 = none, max 100000). Above 0 a **payment screenshot** (png/jpg/webp, up to 5 MB) is required; `transaction_id` stays optional. |
+| `idea_payment_note` | How to pay (UPI id, QR instructions), shown with the form. |
+| `idea_edits_enabled` | On (default): the leader can keep editing a submitted idea. Off: locked after the first submission; changes the organizers ask for are still allowed. |
+| `idea_edits_until` | Optional. Editing closes at this time instead of at the deadline, and may be **later than the deadline** to reopen editing. Ignored while editing is off. It never lets a team that has not submitted start late. |
+
+Accepted and rejected ideas stay locked whatever these say. Requiring a fee or a slides file needs file uploads switched on (`FORM_UPLOADS_BACKEND=s3`); the settings are refused otherwise.
+
+**Files.** The slides and the screenshot are `IdeaFile` rows uploaded straight to the bucket like form uploads (presigned POST, size/type pinned, content checked on completion, copied out of the expiring `tmp/` area when the idea is saved, removed when replaced or when the team or hackathon is deleted; covered by the Maintenance sweep and scan tasks). Endpoints: `POST /{slug}/my-idea/files/ {kind: DECK|PAYMENT, name, size, type}`, `POST /{slug}/my-idea/files/{id}/` (confirm), `DELETE /{slug}/my-idea/files/{id}/`, and `GET /{slug}/ideas/{id}/files/{deck|payment}/link/?inline=1` (a 60-second link). `PUT /my-idea/` takes `deck_file_id` / `payment_file_id`: left out keeps the saved file, `null` removes it (refused if required), an id uses that upload (it must be the team's own, of the right kind).
+
+**Payment QR code.** Organizers with the `settings` permission upload one image (png/jpg/webp, up to 5 MB) that teams scan to pay: `POST /{slug}/idea-qr/ {name, size, type}` (signed upload form), `POST /{slug}/idea-qr/{id}/` (the upload arrived: it is checked and becomes the hackathon's QR code, replacing and releasing the old one; saved at once, not with the settings Save button), `DELETE /{slug}/idea-qr/`. `GET /{slug}/idea-qr/link/` gives a 60-second link to the image to organizers and to members of a registered, non-waitlisted team of this hackathon only (judges, volunteers, outsiders and signed-out visitors get 404/401). The idea form's `config.payment_qr` says whether one exists (never its storage key). Set/remove are audit-logged; a cloned hackathon does not inherit the QR; it follows the same scanning and cleanup rules as other idea files (stored as an `IdeaFile` of kind `QR` with no team).
+
+**Who sees what.** The payment screenshot and the transaction id are visible to organizers holding the `ideas` permission (site admins and club leads included) and to the team itself, **never to judges**; they are not in the judging lists. Judges can open the slides and the LinkedIn link. Opening a payment screenshot is audit-logged ("Viewed Idea Payment Proof"). Storage keys are never returned.
+
+**Editing rules (`ideas.can_team_edit`).** First submission: window open. After that: locked ideas never; "changes requested" ideas while the window or the edit time is open; otherwise editing must be on, and then it lasts until `idea_edits_until` if set, else the deadline. `my-idea` reports `can_edit`, `edit_blocked_reason` and the `config` the form needs.
+
 ## Rounds: kinds, targets and rule-based shortlisting
 
 - **Kind and target.** A round has a `kind` (General, Screening, Idea review, Project review, Pitch, Final) and an optional `shortlist_limit` (how many teams should go through). Shortlisting more than the target answers 409 `SHORTLIST_LIMIT` (with `limit` and `would_be`) until the caller repeats the request with `confirm_over_limit`.

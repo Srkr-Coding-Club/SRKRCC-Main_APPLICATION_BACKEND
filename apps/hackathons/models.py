@@ -4,7 +4,9 @@ from django.db.models.functions import Lower
 from django.conf import settings
 from django.utils import timezone
 from apps.core.models import TimeStampedModel
-from apps.forms.models import Form, Response as FormResponse
+import uuid
+
+from apps.forms.models import Form, Response as FormResponse, ScanStatus, UploadState
 from apps.announcements.models import AnnouncementType
 
 
@@ -107,6 +109,13 @@ class Hackathon(TimeStampedModel):
     idea_opens_at = models.DateTimeField(blank=True, null=True, help_text='Phase 1 (plan): when teams may start submitting ideas.')
     idea_deadline = models.DateTimeField(blank=True, null=True, help_text='Phase 1 (plan): ideas cannot be submitted or edited after this.')
     idea_review_required = models.BooleanField(default=True, help_text='Organizers must approve an idea before it counts as accepted.')
+    idea_fee_amount = models.PositiveIntegerField(default=0, help_text='Rupees a team pays with its idea (0 = no payment). The payment screenshot is then required.')
+    idea_payment_qr = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='QR code teams scan to pay (image uploaded by the organizers).')
+    idea_payment_note = models.TextField(blank=True, help_text='How to pay (UPI id, QR instructions...), shown to teams with the idea form.')
+    idea_deck_required = models.BooleanField(default=False, help_text='Teams must upload a .ppt / .pptx with their idea.')
+    idea_linkedin_required = models.BooleanField(default=False, help_text='Teams must share the link of their LinkedIn post about the hackathon.')
+    idea_edits_enabled = models.BooleanField(default=True, help_text='Teams may edit an idea they already submitted. Off = locked after the first submission (changes the organizers ask for are still allowed).')
+    idea_edits_until = models.DateTimeField(blank=True, null=True, help_text='Edits close at this time instead of at the idea deadline (it can be later than the deadline).')
     project_requires_approved_idea = models.BooleanField(
         default=False, help_text='Phase 2 (implement): only teams whose idea is accepted may submit a project.',
     )
@@ -594,6 +603,36 @@ class IdeaStatus(models.TextChoices):
     REJECTED = 'REJECTED', 'Rejected'
 
 
+class IdeaFileKind(models.TextChoices):
+    DECK = 'DECK', 'Slides (.ppt / .pptx)'
+    PAYMENT = 'PAYMENT', 'Payment screenshot'
+    QR = 'QR', 'Payment QR code (set by the organizers)'
+
+
+class IdeaFile(TimeStampedModel):
+    """A file a team uploaded straight to storage for its idea. The payment screenshot is visible to organizers only."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='idea_files')
+    team = models.ForeignKey('Team', on_delete=models.CASCADE, null=True, blank=True, related_name='idea_files', help_text='Empty for the hackathon-wide payment QR code.')
+    kind = models.CharField(max_length=8, choices=IdeaFileKind.choices)
+    uploader = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    key = models.CharField(max_length=255, unique=True)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=255, blank=True)
+    declared_size = models.BigIntegerField(default=0)
+    size = models.BigIntegerField(default=0)
+    state = models.CharField(max_length=10, choices=UploadState.choices, default=UploadState.PENDING)
+    scan_status = models.CharField(max_length=12, choices=ScanStatus.choices, default=ScanStatus.NOT_SCANNED)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['team', 'kind', 'state']), models.Index(fields=['state', 'expires_at'])]
+
+    def __str__(self):
+        return f"{self.get_kind_display()}: {self.original_name} ({self.state})"
+
+
 class IdeaSubmission(TimeStampedModel):
     """Phase 1 (plan): a team's idea, reviewed by organizers before (optionally) unlocking the project phase."""
     team = models.OneToOneField(Team, on_delete=models.CASCADE, related_name='idea')
@@ -603,6 +642,10 @@ class IdeaSubmission(TimeStampedModel):
     plan = models.TextField(blank=True, help_text='Milestones, who does what, how the time will be used.')
     tech_stack = models.JSONField(default=list, blank=True)
     deck_url = models.URLField(blank=True, null=True)
+    linkedin_url = models.URLField(blank=True, null=True, help_text='The team\'s LinkedIn post about the hackathon.')
+    transaction_id = models.CharField(max_length=60, blank=True, help_text='Payment reference (organizers only).')
+    deck_file = models.ForeignKey(IdeaFile, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    payment_proof = models.ForeignKey(IdeaFile, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     status = models.CharField(max_length=20, choices=IdeaStatus.choices, default=IdeaStatus.SUBMITTED)
     score = models.FloatField(default=0.0, help_text='Average judge score out of 100 against the idea rubric.')
