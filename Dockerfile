@@ -6,7 +6,13 @@
 FROM rust:1-bookworm AS adapter
 RUN apt-get update && apt-get install -y --no-install-recommends musl-tools \
     && rm -rf /var/lib/apt/lists/* \
-    && rustup target add x86_64-unknown-linux-musl
+    && rustup target add x86_64-unknown-linux-musl \
+    && linker="$(command -v x86_64-linux-musl-gcc || command -v musl-gcc)" \
+    && ln -sf "$linker" /usr/local/bin/x86_64-unknown-linux-musl-gcc
+# The adapter's Cargo config calls the linker x86_64-unknown-linux-musl-gcc.
+# Debian installs it as musl-gcc / x86_64-linux-musl-gcc. The symlink above
+# is what the config looks up.
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-unknown-linux-musl-gcc
 WORKDIR /src
 ADD https://github.com/aws/aws-lambda-web-adapter/archive/refs/tags/v1.1.0.tar.gz /tmp/adapter.tar.gz
 RUN tar -xzf /tmp/adapter.tar.gz -C /src --strip-components=1 \
