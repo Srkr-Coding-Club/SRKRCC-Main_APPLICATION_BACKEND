@@ -224,7 +224,8 @@ class RemainingFieldTypeTests(TestCase):
     def test_signature_accepts_non_empty_scalar_and_rejects_object(self):
         form = make_form()
         field = add_field(form, FieldType.SIGNATURE, label="Signature", required=True, order=1)
-        self.assertTrue(validate_submission(form, answers((field, "data:image/png;base64,abc"))).ok)
+        png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        self.assertTrue(validate_submission(form, answers((field, png))).ok)
         self.assertIn(codes.EXPECTED_SCALAR, _codes(validate_submission(form, answers((field, {"drawn": True})))))
 
 

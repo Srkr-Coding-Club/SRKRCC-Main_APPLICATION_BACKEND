@@ -17,6 +17,7 @@ class NotificationListView(APIView):
     Supports ?unread_only=true and ?limit=50.
     """
     permission_classes = [permissions.IsAuthenticated]
+    verification_exempt = True  # the notification bell polls this; it must not fail for someone who still has to verify
 
     def get(self, request):
         qs = Notification.objects.filter(recipient=request.user)
@@ -43,6 +44,7 @@ class NotificationMarkAllReadView(APIView):
     POST /api/notifications/mark-all-read/ - Mark all caller's notifications as read.
     """
     permission_classes = [permissions.IsAuthenticated]
+    verification_exempt = True  # reading and clearing your own notifications is not a gated feature
 
     def post(self, request):
         count = Notification.objects.filter(
@@ -62,6 +64,7 @@ class NotificationDetailView(APIView):
     DELETE /api/notifications/<id>/ - Dismiss / delete a notification.
     """
     permission_classes = [permissions.IsAuthenticated]
+    verification_exempt = True  # reading and clearing your own notifications is not a gated feature
 
     def post(self, request, pk):
         notif = get_object_or_404(Notification, id=pk, recipient=request.user)
@@ -92,6 +95,7 @@ class NotificationUnreadCountView(APIView):
     GET /api/notifications/unread-count/ - Lightweight counter for navbar bell polling.
     """
     permission_classes = [permissions.IsAuthenticated]
+    verification_exempt = True  # reading and clearing your own notifications is not a gated feature
 
     def get(self, request):
         count = Notification.objects.filter(recipient=request.user, is_read=False).count()

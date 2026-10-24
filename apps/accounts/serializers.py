@@ -292,12 +292,17 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
     registered_events = serializers.SerializerMethodField()
     badges = serializers.SerializerMethodField()
     referred_by_display = serializers.SerializerMethodField()
+    email_verification = serializers.SerializerMethodField()
     college = CollegeSerializer(read_only=True)
     college_id = serializers.PrimaryKeyRelatedField(
         source='college', queryset=College.objects.all(), write_only=True, required=False, allow_null=True,
         error_messages={'does_not_exist': 'Select a college from the list.', 'incorrect_type': 'Select a college from the list.'},
     )
     other_college_name = serializers.CharField(required=False, allow_blank=True)
+
+    def get_email_verification(self, obj):
+        from apps.accounts.services import email_verification
+        return email_verification.state(obj)
 
     def validate_other_college_name(self, value):
         return validate_other_college_name(value)
@@ -313,7 +318,7 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
             'github_profile', 'linkedin_profile', 'registered_at', 'referred_by_raw', 'referred_by_display', 'created_at',
             'streak', 'problems_solved', 'events_count', 'events_registered_count',
             'events_attended_count', 'hackathon_teams_count',
-            'registered_events', 'badges'
+            'registered_events', 'badges', 'email_verification'
         ]
         # `email` is the account's identity (USERNAME_FIELD, login identifier,
         # and what every notification is addressed to) - it must never change

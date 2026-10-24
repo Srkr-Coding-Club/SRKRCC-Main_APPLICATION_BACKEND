@@ -28,7 +28,7 @@ class FormSubmissionImporter(BaseBackupImporter):
         return False, Decimal('0.00'), {h: "" for h in headers}, headers
 
     def calculate_form_confidence(self, form: Form, headers: list[str]) -> tuple[bool, Decimal, dict[str, str], list[str]]:
-        form_fields = list(form.fields.filter(is_deleted=False).exclude(type='SECTION'))
+        form_fields = list(form.fields.filter(is_deleted=False).exclude(type__in=['SECTION', 'PAGE_BREAK']))
         if not form_fields:
             return True, Decimal('100.00'), {}, headers
 

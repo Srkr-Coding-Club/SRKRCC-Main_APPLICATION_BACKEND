@@ -26,6 +26,11 @@ output "media_bucket_name" {
   value = aws_s3_bucket.media.id
 }
 
+output "form_uploads_bucket_name" {
+  description = "Bucket for dynamic-form file uploads. Browsers post to it directly, so the site origin is in its CORS rule."
+  value       = aws_s3_bucket.form_uploads.id
+}
+
 output "ssm_secret_key_name" {
   description = "Write SECRET_KEY here with the AWS CLI. Not created by Terraform."
   value       = local.ssm_secret_key_name

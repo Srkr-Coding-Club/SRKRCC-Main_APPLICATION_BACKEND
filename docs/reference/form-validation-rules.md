@@ -19,9 +19,9 @@ An unknown key for a field type, or a self-contradicting value
 |---|---|---|
 | `minLength` / `maxLength` / `exactLength` | int | character-count bounds |
 | `minWords` / `maxWords` | int | *(PARAGRAPH only)* word-count bounds |
-| `pattern` | string (regex) | value must match (`re.search`) |
-| `patternError` | string | custom message shown for **any** failed rule on this field |
-| `format` | enum | `alpha` (letters + spaces), `alphabetic`, `alphanumeric`, `numeric`, `integer`, `decimal`, `email`, `phone`, `url`, `username`, `slug`, `date`, `time` |
+| `pattern` | string (regex) | the **whole** value must match (`re.fullmatch`); max 500 chars, nested unbounded repeats such as `(a+)+` are rejected at publish |
+| `patternError` | string | custom message for a failed `pattern` / `format` only (other rules keep their own messages) |
+| `format` | enum | `alpha` (letters of any script + spaces), `alphabetic`, `alphanumeric` (letters/digits of any script), `numeric`, `integer`, `decimal`, `email`, `phone`, `url`, `username`, `slug`, `date`, `time` |
 | `allowedChars` / `disallowedChars` | string | whitelist / blacklist of characters (whitespace always allowed) |
 | `startsWith` / `endsWith` | string | prefix / suffix requirement |
 | `contains` / `notContains` | string | substring must / must not appear |
@@ -70,7 +70,7 @@ Default (no rule): `+?[0-9][0-9\s\-().]{5,}`.
 |---|---|---|
 | `pattern` | string (regex) | custom format |
 | `requireHttps` | bool | must start with `https://` |
-| `allowedDomains` / `blockedDomains` | list | host allow / block list |
+| `allowedDomains` / `blockedDomains` | list | host allow / block list; matched on the URL host and includes subdomains (`github.com` covers `gist.github.com`) |
 
 ### DATE
 
@@ -139,6 +139,19 @@ Row keys must be in `FormField.rows`; cell values must be in `FormField.options`
 
 ---
 
+## Per-question controls (any question that supports them)
+
+| Key | Applies to | Meaning |
+|---|---|---|
+| `messages` | every question | `{key: text}` (200 characters at most each) replaces the built-in error for that failure. Keys: any rule name (`minLength`, `pattern`, ...), plus `required`, `type` (not a valid email / number / date ...), `options` (not one of the options), `unique`, `optionLimits`. Beats `patternError`, which still works for `pattern` / `format` |
+| `unique` | TEXT, EMAIL, PHONE, NUMBER, URL | bool; no other (non-test) response may give the same answer, compared case-insensitively. `DUPLICATE_VALUE`. A warning instead of an error in admin manual entry / imports |
+| `optionLimits` | RADIO, DROPDOWN, CHECKBOX | `{option: n}`; once `n` responses (not counting the one being edited) chose it, the option is full: `OPTION_FULL`. `GET /api/forms/{slug}/availability/` lists places left |
+| `defaultValue` | text, number, date, time, choice and scale questions | pre-filled on the form page; the server never invents it. Must fit the question and be one of the options for choices |
+| `queryParam` | HIDDEN | the link parameter (`?ref=poster`, letters/digits/`-`/`_`, starts with a letter) that fills the answer; `defaultValue` is the fallback |
+| `formula`, `decimals` | CALCULATED | arithmetic over `{question id}` references with `+ - * /` and brackets; `decimals` 0-6 (default 2) |
+
+Cross-field rules take an optional `message` each, and a question can have several of them.
+
 ## Cross-field rules
 
 Stored on the field that owns the comparison, as
@@ -187,7 +200,14 @@ and normalized on save.
 | `hide` | yes | field hidden while the condition is true |
 | `require` | yes | field becomes required while the condition is true |
 | `optional` | yes | field becomes optional while the condition is true |
-| `skip`, `skip_to_section`, `end_form`, `set_value`, `restrict_options`, `display_message` | **stored, not yet enforced** | reserved for the frontend flow rebuild |
+| `set_value` | yes | the server stores `action_value` as the answer while the condition is true |
+| `restrict_options` | yes | a choice question may only be answered with the options in `action_value` while the condition is true |
+| `display_message` | form page only | shows `action_value` as a note while the condition is true |
+| `skip_to_section` | yes, on a `PAGE_BREAK` | after the page before this break, jump to the later page break whose id is `action_value`; the pages in between are skipped |
+| `end_form` | yes, on a `PAGE_BREAK` | the form ends after the page before this break; every later page is skipped |
+| `skip` | **stored, does nothing** | legacy; publishing warns |
+
+A rule can compare with another question's answer instead of a fixed value: `{"field": 7, "operator": "before", "value_field": 6}`.
 
 ### Multiple / nested conditions
 

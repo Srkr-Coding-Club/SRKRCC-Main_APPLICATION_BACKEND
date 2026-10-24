@@ -1,6 +1,6 @@
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, pre_delete
 from django.dispatch import receiver
-from .models import Response
+from .models import Form, Response
 from apps.audit.models import AuditLog
 
 @receiver(post_save, sender=Response)
@@ -19,3 +19,15 @@ def on_response_created(sender, instance, created, **kwargs):
                 "is_manual_entry": instance.is_manual_entry,
             }
         )
+
+
+@receiver(pre_delete, sender=Response)
+def release_response_uploads(sender, instance, **kwargs):
+    from .upload_attach import release
+    release(instance.uploads.all())
+
+
+@receiver(pre_delete, sender=Form)
+def release_form_uploads(sender, instance, **kwargs):
+    from .upload_attach import release
+    release(instance.uploads.all())

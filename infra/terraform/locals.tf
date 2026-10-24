@@ -14,6 +14,8 @@ locals {
   # Globally unique unless the operator supplies a reserved name.
   media_bucket_name = var.s3_bucket_name != "" ? var.s3_bucket_name : "${local.name_prefix}-media-${data.aws_caller_identity.current.account_id}"
 
+  form_uploads_bucket_name = var.form_uploads_bucket_name != "" ? var.form_uploads_bucket_name : "${local.name_prefix}-form-uploads-${data.aws_caller_identity.current.account_id}"
+
   # /srkrcc/dev/backend/...
   ssm_prefix            = "/${var.project_name}/${var.environment}/backend"
   ssm_secret_key_name   = "${local.ssm_prefix}/secret_key"
@@ -37,6 +39,9 @@ locals {
     for origin in split(",", var.cors_allowed_origins) : trimspace(origin) if trimspace(origin) != ""
   ]
 
+  # Browsers that may post files straight to the form-uploads bucket: the site itself.
+  site_origins = distinct(concat(local.cors_origins, [for origin in split(",", var.csrf_trusted_origins) : trimspace(origin) if trimspace(origin) != ""]))
+
   lambda_environment = {
     DEBUG                   = "False"
     SERVERLESS              = "1"
@@ -49,6 +54,9 @@ locals {
     FRONTEND_URL            = var.frontend_url
     EMAIL_PROVIDER          = "console"
     SECURE_SSL_REDIRECT     = "False"
+    FORM_UPLOADS_BACKEND    = var.enable_form_uploads ? "s3" : "inline"
+    FORM_UPLOAD_BUCKET      = aws_s3_bucket.form_uploads.id
+    FORM_UPLOAD_REGION      = var.aws_region
     # Names only. Django reads the values from SSM when serverless.
     # RUN_STARTUP_TASKS is omitted so entrypoint.sh does not migrate on cold start.
     SSM_SECRET_KEY_NAME   = local.ssm_secret_key_name
