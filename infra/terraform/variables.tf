@@ -128,6 +128,36 @@ variable "frontend_url" {
   default     = "http://localhost:3000"
 }
 
+variable "email_provider" {
+  description = "Django EMAIL_PROVIDER on Lambda. gmail sends through the club mailbox."
+  type        = string
+  default     = "gmail"
+
+  validation {
+    condition     = contains(["console", "resend", "gmail"], var.email_provider)
+    error_message = "email_provider must be console, resend, or gmail."
+  }
+}
+
+variable "email_host_user" {
+  description = "Gmail address Lambda uses as EMAIL_HOST_USER."
+  type        = string
+  default     = ""
+}
+
+variable "email_host_password" {
+  description = "Google app password. Set only in terraform.tfvars, which is gitignored. The value is stored in Terraform state."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "default_from_email" {
+  description = "From header for mail sent by Lambda. Use the same Gmail address unless it is a verified Send mail as alias."
+  type        = string
+  default     = ""
+}
+
 variable "log_retention_days" {
   description = "CloudWatch Logs retention. Shorter retention limits cost in development."
   type        = number
