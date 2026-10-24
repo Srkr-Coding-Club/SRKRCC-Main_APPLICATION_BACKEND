@@ -52,7 +52,10 @@ locals {
     CORS_ALLOWED_ORIGINS    = var.cors_allowed_origins
     CSRF_TRUSTED_ORIGINS    = var.csrf_trusted_origins
     FRONTEND_URL            = var.frontend_url
-    EMAIL_PROVIDER          = "console"
+    EMAIL_PROVIDER          = var.email_provider
+    EMAIL_HOST_USER         = var.email_host_user
+    EMAIL_HOST_PASSWORD     = var.email_host_password
+    DEFAULT_FROM_EMAIL      = var.default_from_email
     SECURE_SSL_REDIRECT     = "False"
     FORM_UPLOADS_BACKEND    = var.enable_form_uploads ? "s3" : "inline"
     FORM_UPLOAD_BUCKET      = aws_s3_bucket.form_uploads.id
