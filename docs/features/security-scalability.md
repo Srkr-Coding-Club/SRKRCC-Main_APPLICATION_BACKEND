@@ -14,6 +14,7 @@ Not a single button or page — this is a design principle behind the platform: 
 - **JWT Authentication** — verified identity on every request.
 - **Role Based Access Control** — every action is permission-checked. See [role-based-access.md](role-based-access.md).
 - **Data Encryption** — sensitive data protected at rest.
+- **Email Verification** — private features need a verified email, with a deadline for everyone. See [email-verification.md](email-verification.md).
 - **Rate Limiting** — protects against abuse (spam registrations, brute-force login attempts).
 - **Audit Logs** — every sensitive admin action is traceable. See [audit-logs.md](audit-logs.md).
 - **Regular, redundant backups** — daily database backups, weekly file backups, copied to a second provider. See [../architecture/backup-security.md](../architecture/backup-security.md).

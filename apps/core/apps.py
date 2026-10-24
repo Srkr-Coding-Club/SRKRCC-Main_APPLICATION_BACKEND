@@ -6,3 +6,5 @@ class CoreConfig(AppConfig):
 
     def ready(self):
         from . import checks  # noqa: F401  (registers the system checks)
+        from . import verification_gate
+        verification_gate.install()

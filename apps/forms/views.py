@@ -14,6 +14,7 @@ from django.db.models.functions import Cast
 from django.db.models import TextField
 
 from .models import Form, FormField, FormStatus, Response, ResponseDraft, Answer, BulkIngestSession, MemberNote, sync_all_scheduled_form_statuses
+from apps.core import verification_gate
 from . import capacity, definition_io, drafts as form_drafts, spam, versions as form_versions
 from .analytics import form_analytics
 from django.core.cache import cache
@@ -1289,6 +1290,9 @@ class ResponseViewSet(viewsets.ModelViewSet):
 
         if not hasattr(request.data, 'get'):
             return DRFResponse({"error": "The request body must be a JSON object.", "code": "BAD_REQUEST"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Anyone may open a form, but sending an answer is a private feature: a signed-in, verified account (when enforced).
+        verification_gate.require_verified(request)
 
         is_test = request.query_params.get('test') == 'true'
         if is_test:

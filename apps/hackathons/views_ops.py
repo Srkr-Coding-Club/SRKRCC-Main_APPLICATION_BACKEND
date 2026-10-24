@@ -131,6 +131,7 @@ class MyCheckInView(APIView):
 class MyCertificateView(APIView):
     """GET /api/hackathons/{slug}/my-certificate/"""
     permission_classes = [permissions.IsAuthenticated]
+    verification_reads_need_verified = True  # a private feature even though it only reads
 
     def get(self, request, slug):
         return DRFResponse(certificates.certificate_for(_get_hackathon(request, slug), request.user))

@@ -462,3 +462,16 @@ EMAIL_HOST_PASSWORD = _email['EMAIL_HOST_PASSWORD']
 EMAIL_TIMEOUT = _email['EMAIL_TIMEOUT']
 RESEND_API_KEY = _email['RESEND_API_KEY']
 DEFAULT_FROM_EMAIL = _email['DEFAULT_FROM_EMAIL']
+
+# Email verification (apps/accounts/services/email_verification.py).
+# EMAIL_VERIFICATION_MODE: off = nothing happens; banner = people see their status; features = private features
+# need a verified address; block = an account still unverified after its deadline is locked out of the private app.
+EMAIL_VERIFICATION_MODE = os.getenv('EMAIL_VERIFICATION_MODE', 'off').strip().lower()
+EMAIL_VERIFY_GRACE_DAYS = int(os.getenv('EMAIL_VERIFY_GRACE_DAYS', '7'))
+EMAIL_VERIFY_LINK_HOURS = int(os.getenv('EMAIL_VERIFY_LINK_HOURS', '24'))
+EMAIL_VERIFY_DISPUTE_DAYS = int(os.getenv('EMAIL_VERIFY_DISPUTE_DAYS', '14'))
+EMAIL_VERIFY_SUPPRESS_DAYS = int(os.getenv('EMAIL_VERIFY_SUPPRESS_DAYS', '30'))
+# Members who already exist when this ships get their deadlines in daily waves, so a whole membership does not ask
+# Gmail for mail on the same day: the first wave ends EXISTING_START_DAYS after the rollout, then BATCH members per day.
+EMAIL_VERIFY_EXISTING_START_DAYS = int(os.getenv('EMAIL_VERIFY_EXISTING_START_DAYS', '7'))
+EMAIL_VERIFY_EXISTING_BATCH = int(os.getenv('EMAIL_VERIFY_EXISTING_BATCH', '100'))

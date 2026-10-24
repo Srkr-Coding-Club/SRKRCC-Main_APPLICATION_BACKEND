@@ -24,6 +24,8 @@ DEFAULT_RATES = {
     # Form submission: per account when signed in, per address when not.
     'form_submit': '30/minute',
     'form_submit_anon': '120/minute',
+    # "Verify email" button and email changes (per account; the service adds a cooldown and per-address caps).
+    'email_verify': '30/hour',
     # Autosave while someone fills a form in: one write every few seconds.
     'form_draft': '90/minute',
     # Hackathon teammate lookup by exact email: limited so it cannot enumerate accounts.

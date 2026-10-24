@@ -1,4 +1,5 @@
 from django.db.models import BooleanField, Count, Exists, OuterRef, Prefetch, Q, Value
+from apps.accounts.services import email_verification
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -652,6 +653,8 @@ class UserLookupView(APIView):
             if '@' not in email:
                 raise HackathonError('Enter a full email address.', 'EMAIL_REQUIRED', field='email')
             user = User.objects.filter(email__iexact=email).first()
+            if user is not None and email_verification.needs_verified_account(user):
+                user = None  # an unproven address is not matched: anyone could have signed up with someone else's
             if user is None:
                 return DRFResponse({
                     'found': False,
@@ -678,7 +681,10 @@ class UserLookupView(APIView):
                 Q(first_name__icontains=q) |
                 Q(last_name__icontains=q) |
                 Q(club_id__icontains=q)
-            ).distinct()[:LOOKUP_MAX_RESULTS]
+            ).distinct()
+            if email_verification.mode_at_least('features'):
+                users = users.filter(email_verified_at__isnull=False)
+            users = users[:LOOKUP_MAX_RESULTS]
 
             results = [_evaluate(u) for u in users]
             top = dict(results[0]) if results else {

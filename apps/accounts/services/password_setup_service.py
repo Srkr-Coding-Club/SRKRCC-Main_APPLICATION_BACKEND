@@ -277,6 +277,10 @@ class PasswordSetupService:
         if was_reset:
             cls._revoke_sessions(user)
 
+        # The link only ever went to this account's own address, so using it proves the address is theirs.
+        from apps.accounts.services import email_verification
+        email_verification.mark_verified(user, via='password_setup')
+
         # Audit log (ZERO raw token / credential logging invariant)
         logger.info(
             "PASSWORD_SETUP_COMPLETED: user_id=%s token_id=%s",
