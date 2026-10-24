@@ -1,0 +1,1660 @@
+{
+  "_comment": "Shared by the Python engine (apps/forms/validation/conditional.py) and the TypeScript engine (src/lib/formConditional.ts). Keep this file byte-identical to src/lib/__tests__/fixtures/conditional-vectors.json in the frontend repo; both test suites must pass on the same cases. \"formulas\" are checked against validation/formula.py and src/lib/formula.ts.",
+  "operators": [
+    {
+      "name": "equals ignores case",
+      "op": "equals",
+      "left": "Python",
+      "right": "python",
+      "expect": true
+    },
+    {
+      "name": "equals number vs numeric string",
+      "op": "equals",
+      "left": 5,
+      "right": "5",
+      "expect": true
+    },
+    {
+      "name": "equals 5.0 vs 5",
+      "op": "equals",
+      "left": "5.0",
+      "right": "5",
+      "expect": true
+    },
+    {
+      "name": "equals different",
+      "op": "equals",
+      "left": "a",
+      "right": "b",
+      "expect": false
+    },
+    {
+      "name": "not_equals different",
+      "op": "not_equals",
+      "left": "a",
+      "right": "b",
+      "expect": true
+    },
+    {
+      "name": "not_equals same",
+      "op": "not_equals",
+      "left": "A",
+      "right": "a",
+      "expect": false
+    },
+    {
+      "name": "gt numeric strings compare as numbers",
+      "op": "gt",
+      "left": "10",
+      "right": "9",
+      "expect": true
+    },
+    {
+      "name": "gt text compares alphabetically",
+      "op": "gt",
+      "left": "b",
+      "right": "a",
+      "expect": true
+    },
+    {
+      "name": "gte equal",
+      "op": "gte",
+      "left": 3,
+      "right": 3,
+      "expect": true
+    },
+    {
+      "name": "lt",
+      "op": "lt",
+      "left": 2,
+      "right": "10",
+      "expect": true
+    },
+    {
+      "name": "lte false",
+      "op": "lte",
+      "left": 11,
+      "right": 10,
+      "expect": false
+    },
+    {
+      "name": "hex is not a number",
+      "op": "equals",
+      "left": "0x10",
+      "right": "16",
+      "expect": false
+    },
+    {
+      "name": "between inside list",
+      "op": "between",
+      "left": 5,
+      "right": [
+        1,
+        10
+      ],
+      "expect": true
+    },
+    {
+      "name": "between inside comma string",
+      "op": "between",
+      "left": "5",
+      "right": "1,10",
+      "expect": true
+    },
+    {
+      "name": "between outside",
+      "op": "between",
+      "left": 11,
+      "right": [
+        1,
+        10
+      ],
+      "expect": false
+    },
+    {
+      "name": "between needs two bounds",
+      "op": "between",
+      "left": 5,
+      "right": "1",
+      "expect": false
+    },
+    {
+      "name": "not_between outside",
+      "op": "not_between",
+      "left": 11,
+      "right": "1,10",
+      "expect": true
+    },
+    {
+      "name": "date_between inside",
+      "op": "date_between",
+      "left": "2024-05-02",
+      "right": "2024-05-01,2024-05-31",
+      "expect": true
+    },
+    {
+      "name": "contains ignores case",
+      "op": "contains",
+      "left": "Hello World",
+      "right": "world",
+      "expect": true
+    },
+    {
+      "name": "not_contains",
+      "op": "not_contains",
+      "left": "Hello",
+      "right": "xyz",
+      "expect": true
+    },
+    {
+      "name": "starts_with",
+      "op": "starts_with",
+      "left": "Hello",
+      "right": "he",
+      "expect": true
+    },
+    {
+      "name": "ends_with",
+      "op": "ends_with",
+      "left": "Hello",
+      "right": "LO",
+      "expect": true
+    },
+    {
+      "name": "matches_regex finds a match",
+      "op": "matches_regex",
+      "left": "abc123",
+      "right": "[0-9]+",
+      "expect": true
+    },
+    {
+      "name": "matches_regex anchored miss",
+      "op": "matches_regex",
+      "left": "abc",
+      "right": "^[0-9]+$",
+      "expect": false
+    },
+    {
+      "name": "invalid regex is simply false",
+      "op": "matches_regex",
+      "left": "abc",
+      "right": "(",
+      "expect": false
+    },
+    {
+      "name": "not_matches_regex",
+      "op": "not_matches_regex",
+      "left": "abc",
+      "right": "^[0-9]+$",
+      "expect": true
+    },
+    {
+      "name": "is_empty blank string",
+      "op": "is_empty",
+      "left": "  ",
+      "right": null,
+      "expect": true
+    },
+    {
+      "name": "is_empty empty list",
+      "op": "is_empty",
+      "left": [],
+      "right": null,
+      "expect": true
+    },
+    {
+      "name": "is_empty has value",
+      "op": "is_empty",
+      "left": "x",
+      "right": null,
+      "expect": false
+    },
+    {
+      "name": "is_not_empty",
+      "op": "is_not_empty",
+      "left": [
+        "a"
+      ],
+      "right": null,
+      "expect": true
+    },
+    {
+      "name": "includes in list ignores case",
+      "op": "includes",
+      "left": [
+        "A",
+        "B"
+      ],
+      "right": "a",
+      "expect": true
+    },
+    {
+      "name": "includes on a single value",
+      "op": "includes",
+      "left": "A",
+      "right": "a",
+      "expect": true
+    },
+    {
+      "name": "selected alias",
+      "op": "selected",
+      "left": [
+        "A"
+      ],
+      "right": "A",
+      "expect": true
+    },
+    {
+      "name": "not_includes",
+      "op": "not_includes",
+      "left": [
+        "A"
+      ],
+      "right": "B",
+      "expect": true
+    },
+    {
+      "name": "not_selected miss",
+      "op": "not_selected",
+      "left": [
+        "A"
+      ],
+      "right": "a",
+      "expect": false
+    },
+    {
+      "name": "includes_any hit",
+      "op": "includes_any",
+      "left": [
+        "a",
+        "b"
+      ],
+      "right": [
+        "b",
+        "c"
+      ],
+      "expect": true
+    },
+    {
+      "name": "includes_any miss",
+      "op": "includes_any",
+      "left": [
+        "a"
+      ],
+      "right": [
+        "b",
+        "c"
+      ],
+      "expect": false
+    },
+    {
+      "name": "includes_all hit",
+      "op": "includes_all",
+      "left": [
+        "a",
+        "b"
+      ],
+      "right": [
+        "a"
+      ],
+      "expect": true
+    },
+    {
+      "name": "includes_all miss",
+      "op": "includes_all",
+      "left": [
+        "a"
+      ],
+      "right": [
+        "a",
+        "b"
+      ],
+      "expect": false
+    },
+    {
+      "name": "before",
+      "op": "before",
+      "left": "2024-01-01",
+      "right": "2024-02-01",
+      "expect": true
+    },
+    {
+      "name": "after",
+      "op": "after",
+      "left": "2024-03-01",
+      "right": "2024-02-01",
+      "expect": true
+    },
+    {
+      "name": "on same day ignores time of day",
+      "op": "on",
+      "left": "2024-01-01T23:30:00",
+      "right": "2024-01-01",
+      "expect": true
+    },
+    {
+      "name": "before_or_equal",
+      "op": "before_or_equal",
+      "left": "2024-01-01",
+      "right": "2024-01-01",
+      "expect": true
+    },
+    {
+      "name": "after_or_equal miss",
+      "op": "after_or_equal",
+      "left": "2023-12-31",
+      "right": "2024-01-01",
+      "expect": false
+    },
+    {
+      "name": "date op on junk is false",
+      "op": "before",
+      "left": "soon",
+      "right": "2024-01-01",
+      "expect": false
+    },
+    {
+      "name": "non-padded dates are not dates",
+      "op": "equals",
+      "left": "2024-1-1",
+      "right": "2024-01-01",
+      "expect": false
+    },
+    {
+      "name": "impossible date is not a date",
+      "op": "before",
+      "left": "2024-02-30",
+      "right": "2024-03-01",
+      "expect": false
+    },
+    {
+      "name": "unknown operator is false",
+      "op": "wibble",
+      "left": "a",
+      "right": "a",
+      "expect": false
+    }
+  ],
+  "layouts": [
+    {
+      "name": "show stays hidden until the trigger is answered",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO",
+          "options": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "show",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "yes"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1
+          ]
+        },
+        {
+          "values": {
+            "1": "no"
+          },
+          "visible": [
+            1
+          ]
+        },
+        {
+          "values": {
+            "1": "Yes"
+          },
+          "visible": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hide action",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO"
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "hide",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "skip"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1,
+            2
+          ]
+        },
+        {
+          "values": {
+            "1": "skip"
+          },
+          "visible": [
+            1
+          ]
+        },
+        {
+          "values": {
+            "1": "other"
+          },
+          "visible": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "name": "require and optional overrides",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO"
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "is_required": false,
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "require",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "a"
+              }
+            ]
+          }
+        },
+        {
+          "id": 3,
+          "type": "TEXT",
+          "is_required": true,
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "optional",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "a"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1,
+            2,
+            3
+          ],
+          "required": {}
+        },
+        {
+          "values": {
+            "1": "a"
+          },
+          "visible": [
+            1,
+            2,
+            3
+          ],
+          "required": {
+            "2": true,
+            "3": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "OR group and nested group",
+      "fields": [
+        {
+          "id": 1,
+          "type": "TEXT"
+        },
+        {
+          "id": 2,
+          "type": "TEXT"
+        },
+        {
+          "id": 3,
+          "type": "TEXT"
+        },
+        {
+          "id": 4,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "OR",
+            "action": "show",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "x"
+              },
+              {
+                "logic": "AND",
+                "rules": [
+                  {
+                    "field": 2,
+                    "operator": "equals",
+                    "value": "y"
+                  },
+                  {
+                    "field": 3,
+                    "operator": "equals",
+                    "value": "z"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "1": "x"
+          },
+          "visible": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "values": {
+            "2": "y"
+          },
+          "visible": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "values": {
+            "2": "y",
+            "3": "z"
+          },
+          "visible": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "values": {},
+          "visible": [
+            1,
+            2,
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "name": "is_empty works on a blank trigger",
+      "fields": [
+        {
+          "id": 1,
+          "type": "TEXT"
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "show",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "is_empty"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1,
+            2
+          ]
+        },
+        {
+          "values": {
+            "1": "hi"
+          },
+          "visible": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compare with another question",
+      "fields": [
+        {
+          "id": 1,
+          "type": "DATE"
+        },
+        {
+          "id": 2,
+          "type": "DATE"
+        },
+        {
+          "id": 3,
+          "type": "PARAGRAPH",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "show",
+            "rules": [
+              {
+                "field": 2,
+                "operator": "before",
+                "value_field": 1
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1,
+            2
+          ]
+        },
+        {
+          "values": {
+            "2": "2024-01-01"
+          },
+          "visible": [
+            1,
+            2
+          ]
+        },
+        {
+          "values": {
+            "1": "2024-02-01",
+            "2": "2024-01-01"
+          },
+          "visible": [
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "values": {
+            "1": "2024-01-01",
+            "2": "2024-02-01"
+          },
+          "visible": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a hidden question does not feed other conditions",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO"
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "show",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "go"
+              }
+            ]
+          }
+        },
+        {
+          "id": 3,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "show",
+            "rules": [
+              {
+                "field": 2,
+                "operator": "equals",
+                "value": "deep"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "2": "deep"
+          },
+          "visible": [
+            1
+          ]
+        },
+        {
+          "values": {
+            "1": "go",
+            "2": "deep"
+          },
+          "visible": [
+            1,
+            2,
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unfinished placeholder rules never hide a question",
+      "fields": [
+        {
+          "id": 1,
+          "type": "TEXT"
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "conditional_logic": {
+            "if": "parent",
+            "equals": "x"
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy single-rule shape",
+      "fields": [
+        {
+          "id": 1,
+          "type": "TEXT"
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "conditional_logic": {
+            "if": 1,
+            "equals": "x"
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1
+          ]
+        },
+        {
+          "values": {
+            "1": "x"
+          },
+          "visible": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_value assigns an answer when the rule holds",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO",
+          "options": [
+            "student",
+            "staff"
+          ]
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "set_value",
+            "action_value": "N/A",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "staff"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "1": "student"
+          },
+          "visible": [
+            1,
+            2
+          ],
+          "set_values": {}
+        },
+        {
+          "values": {
+            "1": "staff"
+          },
+          "visible": [
+            1,
+            2
+          ],
+          "set_values": {
+            "2": "N/A"
+          }
+        }
+      ]
+    },
+    {
+      "name": "restrict_options limits the choices",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO",
+          "options": [
+            "btech",
+            "mtech"
+          ]
+        },
+        {
+          "id": 2,
+          "type": "DROPDOWN",
+          "options": [
+            "CSE",
+            "ECE",
+            "VLSI"
+          ],
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "restrict_options",
+            "action_value": [
+              "CSE",
+              "ECE"
+            ],
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "btech"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1,
+            2
+          ],
+          "allowed_options": {}
+        },
+        {
+          "values": {
+            "1": "btech"
+          },
+          "visible": [
+            1,
+            2
+          ],
+          "allowed_options": {
+            "2": [
+              "CSE",
+              "ECE"
+            ]
+          }
+        },
+        {
+          "values": {
+            "1": "mtech"
+          },
+          "visible": [
+            1,
+            2
+          ],
+          "allowed_options": {}
+        }
+      ]
+    },
+    {
+      "name": "display_message shows a note",
+      "fields": [
+        {
+          "id": 1,
+          "type": "NUMBER"
+        },
+        {
+          "id": 2,
+          "type": "SECTION",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "display_message",
+            "action_value": "Under 18s need a guardian.",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "lt",
+                "value": 18
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "1": "17"
+          },
+          "visible": [
+            1,
+            2
+          ],
+          "messages": {
+            "2": "Under 18s need a guardian."
+          }
+        },
+        {
+          "values": {
+            "1": "30"
+          },
+          "visible": [
+            1,
+            2
+          ],
+          "messages": {}
+        }
+      ]
+    },
+    {
+      "name": "circular rules still settle",
+      "fields": [
+        {
+          "id": 1,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "show",
+            "rules": [
+              {
+                "field": 2,
+                "operator": "equals",
+                "value": "x"
+              }
+            ]
+          }
+        },
+        {
+          "id": 2,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "show",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "x"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "1": "x",
+            "2": "x"
+          },
+          "visible": [
+            1,
+            2
+          ]
+        },
+        {
+          "values": {},
+          "visible": []
+        }
+      ]
+    },
+    {
+      "name": "end_form on a page break skips every later page",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO",
+          "options": [
+            "done",
+            "more"
+          ]
+        },
+        {
+          "id": 2,
+          "type": "PAGE_BREAK",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "end_form",
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "done"
+              }
+            ]
+          }
+        },
+        {
+          "id": 3,
+          "type": "TEXT"
+        },
+        {
+          "id": 4,
+          "type": "PAGE_BREAK"
+        },
+        {
+          "id": 5,
+          "type": "TEXT"
+        }
+      ],
+      "cases": [
+        {
+          "values": {},
+          "visible": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "skipped_pages": []
+        },
+        {
+          "values": {
+            "1": "more"
+          },
+          "visible": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "skipped_pages": []
+        },
+        {
+          "values": {
+            "1": "done"
+          },
+          "visible": [
+            1
+          ],
+          "skipped_pages": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "name": "skip_to_section jumps to a later page break",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO",
+          "options": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "id": 2,
+          "type": "PAGE_BREAK",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "skip_to_section",
+            "action_value": 6,
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "b"
+              }
+            ]
+          }
+        },
+        {
+          "id": 3,
+          "type": "TEXT"
+        },
+        {
+          "id": 4,
+          "type": "PAGE_BREAK"
+        },
+        {
+          "id": 5,
+          "type": "TEXT"
+        },
+        {
+          "id": 6,
+          "type": "PAGE_BREAK"
+        },
+        {
+          "id": 7,
+          "type": "TEXT"
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "1": "a"
+          },
+          "visible": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "skipped_pages": []
+        },
+        {
+          "values": {
+            "1": "b"
+          },
+          "visible": [
+            1,
+            6,
+            7
+          ],
+          "skipped_pages": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a route that points backwards or at nothing is ignored",
+      "fields": [
+        {
+          "id": 1,
+          "type": "TEXT"
+        },
+        {
+          "id": 2,
+          "type": "PAGE_BREAK",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "skip_to_section",
+            "action_value": 2,
+            "rules": [
+              {
+                "field": 1,
+                "operator": "is_not_empty"
+              }
+            ]
+          }
+        },
+        {
+          "id": 3,
+          "type": "TEXT"
+        },
+        {
+          "id": 4,
+          "type": "PAGE_BREAK",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "skip_to_section",
+            "action_value": 99,
+            "rules": [
+              {
+                "field": 1,
+                "operator": "is_not_empty"
+              }
+            ]
+          }
+        },
+        {
+          "id": 5,
+          "type": "TEXT"
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "1": "x"
+          },
+          "visible": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "skipped_pages": []
+        }
+      ]
+    },
+    {
+      "name": "an unfinished routing rule never routes",
+      "fields": [
+        {
+          "id": 1,
+          "type": "TEXT"
+        },
+        {
+          "id": 2,
+          "type": "PAGE_BREAK",
+          "conditional_logic": {
+            "if": "parent",
+            "equals": "x"
+          }
+        },
+        {
+          "id": 3,
+          "type": "TEXT"
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "1": "x"
+          },
+          "visible": [
+            1,
+            2,
+            3
+          ],
+          "skipped_pages": []
+        }
+      ]
+    },
+    {
+      "name": "answers on skipped pages stop feeding other conditions",
+      "fields": [
+        {
+          "id": 1,
+          "type": "RADIO",
+          "options": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "id": 2,
+          "type": "PAGE_BREAK",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "skip_to_section",
+            "action_value": 4,
+            "rules": [
+              {
+                "field": 1,
+                "operator": "equals",
+                "value": "b"
+              }
+            ]
+          }
+        },
+        {
+          "id": 3,
+          "type": "TEXT"
+        },
+        {
+          "id": 4,
+          "type": "PAGE_BREAK"
+        },
+        {
+          "id": 5,
+          "type": "TEXT",
+          "conditional_logic": {
+            "logic": "AND",
+            "action": "show",
+            "rules": [
+              {
+                "field": 3,
+                "operator": "equals",
+                "value": "hello"
+              }
+            ]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "values": {
+            "1": "a",
+            "3": "hello"
+          },
+          "visible": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "skipped_pages": []
+        },
+        {
+          "values": {
+            "1": "b",
+            "3": "hello"
+          },
+          "visible": [
+            1,
+            4
+          ],
+          "skipped_pages": [
+            1
+          ]
+        }
+      ]
+    }
+  ],
+  "formulas": [
+    {
+      "name": "adds two answers",
+      "formula": "{1} + {2}",
+      "values": {
+        "1": 2,
+        "2": 3
+      },
+      "decimals": 2,
+      "expect": 5
+    },
+    {
+      "name": "multiplies with decimals",
+      "formula": "{1} * {2}",
+      "values": {
+        "1": "19.99",
+        "2": 3
+      },
+      "decimals": 2,
+      "expect": 59.97
+    },
+    {
+      "name": "multiplication binds tighter than addition",
+      "formula": "2 + 3 * 4",
+      "values": {},
+      "decimals": 2,
+      "expect": 14
+    },
+    {
+      "name": "brackets",
+      "formula": "(2 + 3) * 4",
+      "values": {},
+      "decimals": 2,
+      "expect": 20
+    },
+    {
+      "name": "unary minus",
+      "formula": "-{1} + 10",
+      "values": {
+        "1": 4
+      },
+      "decimals": 2,
+      "expect": 6
+    },
+    {
+      "name": "nested brackets",
+      "formula": "((1 + 2) * (3 + 4)) / 7",
+      "values": {},
+      "decimals": 2,
+      "expect": 3
+    },
+    {
+      "name": "a blank answer counts as zero",
+      "formula": "{1} + {2}",
+      "values": {
+        "1": 5,
+        "2": ""
+      },
+      "decimals": 2,
+      "expect": 5
+    },
+    {
+      "name": "an unanswered question counts as zero",
+      "formula": "{1} + {2}",
+      "values": {
+        "1": 5
+      },
+      "decimals": 2,
+      "expect": 5
+    },
+    {
+      "name": "numbers typed as text work",
+      "formula": "{1} * 2",
+      "values": {
+        "1": "7"
+      },
+      "decimals": 2,
+      "expect": 14
+    },
+    {
+      "name": "thousands separators are understood",
+      "formula": "{1} + 1",
+      "values": {
+        "1": "1,000"
+      },
+      "decimals": 2,
+      "expect": 1001
+    },
+    {
+      "name": "something that is not a number gives no result",
+      "formula": "{1} + {2}",
+      "values": {
+        "1": "abc",
+        "2": 1
+      },
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "a list answer gives no result",
+      "formula": "{1} + 1",
+      "values": {
+        "1": [
+          "a"
+        ]
+      },
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "dividing by zero gives no result",
+      "formula": "{1} / {2}",
+      "values": {
+        "1": 1,
+        "2": 0
+      },
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "a blank divisor is zero",
+      "formula": "{1} / {2}",
+      "values": {
+        "1": 1
+      },
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "rounds half up",
+      "formula": "2.675 * 1",
+      "values": {},
+      "decimals": 2,
+      "expect": 2.68
+    },
+    {
+      "name": "rounds half away from zero",
+      "formula": "-2.675 * 1",
+      "values": {},
+      "decimals": 2,
+      "expect": -2.68
+    },
+    {
+      "name": "no decimals",
+      "formula": "{1} / 3",
+      "values": {
+        "1": 10
+      },
+      "decimals": 0,
+      "expect": 3
+    },
+    {
+      "name": "two decimals",
+      "formula": "{1} / 3",
+      "values": {
+        "1": 10
+      },
+      "decimals": 2,
+      "expect": 3.33
+    },
+    {
+      "name": "six decimals",
+      "formula": "1 / 3",
+      "values": {},
+      "decimals": 6,
+      "expect": 0.333333
+    },
+    {
+      "name": "float noise is rounded away",
+      "formula": "0.1 + 0.2",
+      "values": {},
+      "decimals": 2,
+      "expect": 0.3
+    },
+    {
+      "name": "a huge result gives no result",
+      "formula": "{1} * {1}",
+      "values": {
+        "1": 100000000
+      },
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "an unfinished formula gives no result",
+      "formula": "2 +",
+      "values": {},
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "an empty formula gives no result",
+      "formula": "",
+      "values": {},
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "names are not allowed",
+      "formula": "abc + 1",
+      "values": {},
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "exponents are not allowed",
+      "formula": "2 ** 3",
+      "values": {},
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "an unclosed bracket gives no result",
+      "formula": "(1 + 2",
+      "values": {},
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "a stray closing bracket gives no result",
+      "formula": "1 + 2)",
+      "values": {},
+      "decimals": 2,
+      "expect": null
+    },
+    {
+      "name": "a reference needs digits",
+      "formula": "{a} + 1",
+      "values": {},
+      "decimals": 2,
+      "expect": null
+    }
+  ]
+}

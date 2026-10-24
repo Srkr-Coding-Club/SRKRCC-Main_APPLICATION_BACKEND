@@ -6,3 +6,5 @@ class FormsConfig(AppConfig):
 
     def ready(self):
         import apps.forms.signals
+        from .maintenance_tasks import register_tasks
+        register_tasks()

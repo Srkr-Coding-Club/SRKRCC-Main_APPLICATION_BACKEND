@@ -6,6 +6,14 @@ from .views_password_setup import (
     PasswordSetupVerifyView,
     PasswordSetupConfirmView,
 )
+from .views_email_verification import (
+    AdminMarkEmailVerifiedView,
+    EmailChangeRequestView,
+    EmailVerificationConfirmView,
+    EmailVerificationDisputeView,
+    EmailVerificationInspectView,
+    EmailVerificationRequestView,
+)
 from .views_import import (
     MemberImportPreviewView,
     MemberImportCommitView,
@@ -27,6 +35,14 @@ urlpatterns = [
     path('me/', ProfileView.as_view(), name='auth_me'),
     path('users/', UserListView.as_view(), name='auth_users_list'),
     path('users/<int:pk>/', UserDetailView.as_view(), name='auth_user_detail'),
+
+    # Email verification: anyone can sign up; private features need a verified address (see the service module)
+    path('email/verification/request/', EmailVerificationRequestView.as_view(), name='email_verification_request'),
+    path('email/verification/status/', EmailVerificationInspectView.as_view(), name='email_verification_status'),
+    path('email/verification/confirm/', EmailVerificationConfirmView.as_view(), name='email_verification_confirm'),
+    path('email/verification/dispute/', EmailVerificationDisputeView.as_view(), name='email_verification_dispute'),
+    path('email/change/', EmailChangeRequestView.as_view(), name='email_change_request'),
+    path('users/<int:pk>/verify-email/', AdminMarkEmailVerifiedView.as_view(), name='admin_mark_email_verified'),
 
     # One-Time Cryptographic Password Setup Lifecycle (For Backup Restored Members)
     path('setup-password/request/', PasswordSetupRequestView.as_view(), name='password_setup_request'),

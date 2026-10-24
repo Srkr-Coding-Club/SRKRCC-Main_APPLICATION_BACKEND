@@ -122,11 +122,34 @@ class User(AbstractUser, TimeStampedModel):
         help_text="Origin of account creation: LEGACY_IMPORT, FORM, ADMIN, SELF_REGISTRATION"
     )
 
+    # Email verification (see apps/accounts/services/email_verification.py). Anyone can sign up; a private feature needs a
+    # verified address, and an account still unverified at its deadline is blocked from the private app until it verifies.
+    email_verified_at = models.DateTimeField(
+        null=True, blank=True, db_index=True,
+        help_text="When the owner of this address proved they can read its mail. Empty = not verified.",
+    )
+    email_verify_deadline = models.DateTimeField(
+        null=True, blank=True, db_index=True,
+        help_text="Unverified accounts are blocked from private features after this moment. Admins can extend it.",
+    )
+    email_disputed_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Set when the address owner used \"This wasn't me\" in a verification email.",
+    )
+
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
 
     class Meta:
         ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.email_verify_deadline is None and self.email_verified_at is None:
+            from django.conf import settings
+            from django.utils import timezone
+            from datetime import timedelta
+            self.email_verify_deadline = timezone.now() + timedelta(days=getattr(settings, 'EMAIL_VERIFY_GRACE_DAYS', 7))
+        super().save(*args, **kwargs)
 
     @property
     def full_name(self) -> str:
@@ -214,3 +237,57 @@ class PasswordSetupToken(TimeStampedModel):
 
     def __str__(self):
         return f"PasswordSetupToken(user_id={self.user_id}, used={self.is_used}, expires={self.expires_at})"
+
+
+class VerificationPurpose(models.TextChoices):
+    VERIFY = 'VERIFY', 'Verify the current address'
+    CHANGE = 'CHANGE', 'Change to a new address'
+
+
+class VerificationStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Waiting for the link to be used'
+    USED = 'USED', 'Confirmed'
+    SUPERSEDED = 'SUPERSEDED', 'Replaced by a newer link'
+    DISPUTED = 'DISPUTED', 'The address owner said it was not them'
+
+
+class SendStatus(models.TextChoices):
+    SENT = 'SENT', 'Sent'
+    FAILED = 'FAILED', 'Could not be sent'
+
+
+class EmailVerificationToken(TimeStampedModel):
+    """
+    A single-use link that proves the owner of ``email`` can read its mail. Only SHA-256 hashes are stored.
+    The same email also carries a longer-lived "This wasn't me" link (``dispute_hash``).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_verification_tokens')
+    purpose = models.CharField(max_length=10, choices=VerificationPurpose.choices, default=VerificationPurpose.VERIFY)
+    email = models.EmailField(help_text="The address this link verifies (lower case).")
+    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    dispute_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+    dispute_expires_at = models.DateTimeField()
+    status = models.CharField(max_length=12, choices=VerificationStatus.choices, default=VerificationStatus.PENDING, db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+    send_status = models.CharField(max_length=8, choices=SendStatus.choices, default=SendStatus.SENT)
+    send_error = models.CharField(max_length=300, blank=True, default='')
+    created_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['user', 'purpose', 'status'])]
+
+    def __str__(self):
+        return f"EmailVerificationToken(user_id={self.user_id}, {self.purpose}, {self.status})"
+
+
+class EmailVerificationSuppression(TimeStampedModel):
+    """An address that said "This wasn't me": no verification mail is sent to it until ``until``."""
+    email = models.EmailField(unique=True, help_text="Lower case.")
+    until = models.DateTimeField(db_index=True)
+    reason = models.CharField(max_length=100, blank=True, default='')
+
+    def __str__(self):
+        return f"{self.email} suppressed until {self.until:%Y-%m-%d}"

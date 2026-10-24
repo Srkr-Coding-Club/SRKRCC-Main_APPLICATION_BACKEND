@@ -54,6 +54,15 @@ class FormAutomationService:
         if not email_value or not str(email_value).strip():
             return None
 
+        from apps.accounts.models import User
+        from apps.accounts.services import email_verification
+        existing = User.objects.filter(email__iexact=str(email_value).strip()).first()
+        if existing is not None and email_verification.needs_verified_account(existing):
+            # Anyone can sign up with anybody's address, so an unproven account is neither linked to this response
+            # nor updated from it.
+            logger.info('CLUB_MEMBER_SKIPPED_UNVERIFIED form=%s user_id=%s', form.pk, existing.pk)
+            return None
+
         payload = {'email': str(email_value).strip()}
         for key in ('full_name', 'phone_number', 'branch', 'roll_number'):
             field_id = _coerce_field_id(mapping.get(key))

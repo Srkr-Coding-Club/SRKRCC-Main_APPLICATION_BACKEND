@@ -38,6 +38,23 @@ data "aws_iam_policy_document" "lambda" {
   }
 
   statement {
+    sid = "FormUploadsBucket"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:GetObjectTagging",
+    ]
+    resources = ["${aws_s3_bucket.form_uploads.arn}/*"]
+  }
+
+  statement {
+    sid       = "FormUploadsBucketList"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.form_uploads.arn]
+  }
+
+  statement {
     sid       = "MediaBucketList"
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.media.arn]

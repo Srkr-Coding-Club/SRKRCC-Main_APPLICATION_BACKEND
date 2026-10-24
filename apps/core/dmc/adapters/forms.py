@@ -251,7 +251,7 @@ class FormIndividualAdapter(BaseDatasetAdapter):
         if self._form is None:
             try:
                 self._form = Form.objects.get(pk=self._form_id)
-                self._fields = list(FormField.all_objects.filter(form=self._form, is_deleted=False).order_by("order"))
+                self._fields = list(FormField.all_objects.filter(form=self._form, is_deleted=False).exclude(type__in=["SECTION", "PAGE_BREAK"]).order_by("order"))
             except Form.DoesNotExist:
                 return False
         return True

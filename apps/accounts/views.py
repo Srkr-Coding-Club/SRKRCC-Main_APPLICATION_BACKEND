@@ -12,7 +12,8 @@ from .serializers import (
     CustomTokenObtainPairSerializer,
 )
 from apps.core.permissions import IsAdminOrClubLead
-from apps.core.throttling import ScopedRateThrottle
+from apps.core import verification_gate
+from apps.core.throttling import LoginAttemptThrottle, ScopedRateThrottle
 from apps.audit.utils import log_audit_event
 
 User = get_user_model()
@@ -22,7 +23,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     Custom login view returning access token, refresh token, and user profile data.
     """
     serializer_class = CustomTokenObtainPairSerializer
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedRateThrottle, LoginAttemptThrottle]
     throttle_scope = 'login'
 
     def post(self, request, *args, **kwargs):
@@ -183,6 +184,13 @@ class RegisterView(generics.CreateAPIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'register'
 
+    def create(self, request, *args, **kwargs):
+        # Open to everyone for self sign-up, but the admin "Create New User" screen uses this same endpoint: a signed-in
+        # caller is acting as a member (or an admin) and needs a verified email like for any other private action.
+        if request.user.is_authenticated:
+            verification_gate.require_verified(request)
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         user = serializer.save()
         log_audit_event(
@@ -196,6 +204,9 @@ class RegisterView(generics.CreateAPIView):
 class ProfileView(generics.RetrieveUpdateAPIView):
     serializer_class = UserProfileDetailSerializer
     permission_classes = [permissions.IsAuthenticated]
+    # Reading it tells the website whether to show the verify screen; editing it stays a private feature.
+    verification_exempt = {'GET', 'HEAD', 'OPTIONS'}
+    verification_writes_ok_in_grace = True  # until the deadline, an unverified member can still fix their profile
 
     def get_object(self):
         return self.request.user
@@ -209,6 +220,7 @@ class LogoutView(generics.GenericAPIView):
     valid for its full 7-day lifetime with no way to revoke it).
     """
     permission_classes = [permissions.IsAuthenticated]
+    verification_exempt = True  # anyone, verified or not, may sign out
 
     def post(self, request, *args, **kwargs):
         from rest_framework_simplejwt.tokens import RefreshToken

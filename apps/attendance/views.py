@@ -45,6 +45,7 @@ class MyBadgeView(APIView):
     response, or attendance isn't enabled on this form.
     """
     permission_classes = [permissions.IsAuthenticated]
+    verification_reads_need_verified = True  # a private feature even though it only reads
 
     def get(self, request, form_id):
         form = get_object_or_404(Form, id=form_id)
@@ -82,6 +83,7 @@ class MyAttendanceRecordView(APIView):
     MyBadgeView (no response, or attendance isn't enabled on this form).
     """
     permission_classes = [permissions.IsAuthenticated]
+    verification_reads_need_verified = True  # a private feature even though it only reads
 
     def get(self, request, form_id):
         form = get_object_or_404(Form, id=form_id)

@@ -317,3 +317,29 @@ class RawBackupRow(TimeStampedModel):
 
 # Import DMC models so they are discovered by Django's migration framework
 from apps.core.dmc.models import ExportJob  # noqa: F401, E402
+
+
+class MaintenanceRunStatus(models.TextChoices):
+    RUNNING = 'RUNNING', 'Running'
+    SUCCESS = 'SUCCESS', 'Done'
+    FAILED = 'FAILED', 'Failed'
+
+
+class MaintenanceRun(models.Model):
+    """One run of a housekeeping task (from the admin page or the command line). See apps.core.maintenance."""
+
+    task = models.CharField(max_length=60, db_index=True)
+    status = models.CharField(max_length=10, choices=MaintenanceRunStatus.choices, default=MaintenanceRunStatus.RUNNING)
+    trigger = models.CharField(max_length=10, default='admin', help_text="admin | command")
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    summary = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    triggered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['-started_at']
+        indexes = [models.Index(fields=['task', '-started_at'])]
+
+    def __str__(self):
+        return f"{self.task} {self.status} @ {self.started_at:%Y-%m-%d %H:%M}"

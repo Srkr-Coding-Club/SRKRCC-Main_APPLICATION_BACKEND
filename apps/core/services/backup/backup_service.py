@@ -173,7 +173,7 @@ class UniversalBackupService:
             from apps.core.services.backup.form_importer import FormSubmissionImporter
             if isinstance(importer, FormSubmissionImporter):
                 req_sat, conf, mapping, unmapped = importer.calculate_form_confidence(form, headers)
-                form_fields = form.fields.filter(is_deleted=False).exclude(type='SECTION')
+                form_fields = form.fields.filter(is_deleted=False).exclude(type__in=['SECTION', 'PAGE_BREAK'])
                 expected_fields = {str(f.id): [f.label] for f in form_fields}
             else:
                 req_sat, conf, mapping, unmapped = False, Decimal('0.00'), {}, headers
