@@ -2,15 +2,23 @@
 # That registry rejects anonymous pulls from GitHub-hosted runners (429, data
 # quota). Pull-request jobs also cannot assume the deploy role. Compile the
 # pinned tag instead. Local Compose does not invoke the extension.
+#
+# Link with Rust's bundled musl so the binary is static. Pointing the linker
+# at musl-gcc produces a binary that needs /lib/ld-musl-x86_64.so.1, which
+# Lambda's Amazon Linux image does not have. The extension then fails to
+# start and the function URL returns 502.
 FROM rust:1-bookworm AS adapter
-RUN apt-get update && apt-get install -y --no-install-recommends musl-tools \
-    && rm -rf /var/lib/apt/lists/* \
-    && rustup target add x86_64-unknown-linux-musl
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc
+RUN rustup target add x86_64-unknown-linux-musl
 WORKDIR /src
 ADD https://github.com/aws/aws-lambda-web-adapter/archive/refs/tags/v1.1.0.tar.gz /tmp/adapter.tar.gz
 RUN tar -xzf /tmp/adapter.tar.gz -C /src --strip-components=1 \
-    && cargo build --release --locked --target x86_64-unknown-linux-musl --bin lambda-adapter
+    && RUSTFLAGS="-C target-feature=+crt-static" \
+       cargo build --release --locked --target x86_64-unknown-linux-musl --bin lambda-adapter \
+    && if ! ldd target/x86_64-unknown-linux-musl/release/lambda-adapter 2>&1 | grep -q 'not a dynamic executable'; then \
+         echo "lambda-adapter must be statically linked for Lambda" >&2; \
+         ldd target/x86_64-unknown-linux-musl/release/lambda-adapter; \
+         exit 1; \
+       fi
 
 FROM python:3.12-slim
 
