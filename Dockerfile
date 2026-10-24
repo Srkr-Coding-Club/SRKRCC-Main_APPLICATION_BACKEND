@@ -1,26 +1,12 @@
-# Lambda Web Adapter 1.1.0. GitHub runners cannot pull the public ECR image
-# (anonymous 429). The adapter's Cargo config uses musl-gcc; -static keeps
-# the binary from needing musl's dynamic loader, which Lambda does not have.
-# Without that, the function URL returns 502. Local Compose does not invoke
-# the extension.
-FROM rust:1-bookworm AS adapter
-RUN apt-get update && apt-get install -y --no-install-recommends musl-tools \
-    && rm -rf /var/lib/apt/lists/* \
-    && rustup target add x86_64-unknown-linux-musl
-WORKDIR /src
-ADD https://github.com/aws/aws-lambda-web-adapter/archive/refs/tags/v1.1.0.tar.gz /tmp/adapter.tar.gz
-RUN tar -xzf /tmp/adapter.tar.gz -C /src --strip-components=1 \
-    && RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static" \
-       cargo build --release --locked --target x86_64-unknown-linux-musl --bin lambda-adapter \
-    && if ! ldd target/x86_64-unknown-linux-musl/release/lambda-adapter 2>&1 | grep -q 'not a dynamic executable'; then \
-         echo "lambda-adapter must be statically linked for Lambda" >&2; \
-         ldd target/x86_64-unknown-linux-musl/release/lambda-adapter; \
-         exit 1; \
-       fi
+# AWS Lambda Web Adapter (multi-arch). Documented image:
+# public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0
+# Local Compose does not invoke the extension; Lambda's runtime does
+# and proxies HTTP to PORT.
+FROM public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 AS adapter
 
 FROM python:3.12-slim
 
-COPY --from=adapter /src/target/x86_64-unknown-linux-musl/release/lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=adapter /lambda-adapter /opt/extensions/lambda-adapter
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

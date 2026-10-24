@@ -58,8 +58,8 @@ Pull requests do not deploy. A manually pushed image will serve `/api/ping/` and
 
 ## Continuous Integration / Deployment
 
-- Pull requests into `main` run `.github/workflows/ci.yml`: Django tests against Postgres 15, a migration check, and a local image build. That workflow has no AWS credentials and does not touch Neon. The image builds Lambda Web Adapter 1.1.0 from its GitHub tag and links it statically, because anonymous pulls of `public.ecr.aws` fail from GitHub runners and a dynamically linked adapter makes the function URL return 502.
-- A push to `main` runs `.github/workflows/deploy-lambda.yml`: build, push to ECR, then one container runs migrate, `createcachetable`, seed flags, and admin setup. It then updates `srkrcc-dev-backend`. It does not ping the function afterwards.
+- Pull requests into `main` run `.github/workflows/ci.yml`: Django tests against Postgres 15, a migration check, and a local image build. That workflow has no AWS credentials and does not touch Neon.
+- A push to `main` runs `.github/workflows/deploy-lambda.yml`: build, push to ECR, migrate, seed flags, create the admin if missing, update `srkrcc-dev-backend`, then ping the function URL.
 - Render still deploys from its own git integration. That is separate from the Lambda workflow.
 
 ## Related Docs
