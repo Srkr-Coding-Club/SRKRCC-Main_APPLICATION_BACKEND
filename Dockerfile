@@ -1,12 +1,20 @@
-# AWS Lambda Web Adapter (multi-arch). Documented image:
-# public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0
-# Local Compose does not invoke the extension; Lambda's runtime does
-# and proxies HTTP to PORT.
-FROM public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 AS adapter
+# Lambda Web Adapter 1.1.0, same release as public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0.
+# That registry rejects anonymous pulls from GitHub-hosted runners (429, data
+# quota). Pull-request jobs also cannot assume the deploy role. Compile the
+# pinned tag instead. Local Compose does not invoke the extension.
+FROM rust:1-bookworm AS adapter
+RUN apt-get update && apt-get install -y --no-install-recommends musl-tools \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup target add x86_64-unknown-linux-musl
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc
+WORKDIR /src
+ADD https://github.com/aws/aws-lambda-web-adapter/archive/refs/tags/v1.1.0.tar.gz /tmp/adapter.tar.gz
+RUN tar -xzf /tmp/adapter.tar.gz -C /src --strip-components=1 \
+    && cargo build --release --locked --target x86_64-unknown-linux-musl --bin lambda-adapter
 
 FROM python:3.12-slim
 
-COPY --from=adapter /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=adapter /src/target/x86_64-unknown-linux-musl/release/lambda-adapter /opt/extensions/lambda-adapter
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
