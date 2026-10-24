@@ -67,8 +67,9 @@ jobs:
       - name: Build the Lambda image without pushing
         run: |
           set -euo pipefail
-          # --provenance=false needs Buildx. Public base-image pulls can flake;
-          # one retry keeps the same Dockerfile and does not skip the build.
+          # --provenance=false needs Buildx. One retry covers a transient
+          # Docker Hub failure. The adapter is compiled in the Dockerfile, so
+          # this build does not pull public.ecr.aws.
           if ! docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .; then
             echo "First image build failed; retrying once."
             docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .

@@ -131,7 +131,9 @@ class EventAndHackathonDeleteCascadeTests(_Fixture):
 
     def test_hackathon_delete_cascades_teams_and_submissions_but_keeps_form(self):
         self.client.force_authenticate(self.admin)
-        resp = self.client.delete(f'/api/hackathons/{self.hackathon.slug}/')
+        resp = self.client.delete(
+            f'/api/hackathons/{self.hackathon.slug}/?confirm_slug={self.hackathon.slug}'
+        )
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(Team.objects.filter(pk=self.team.pk).exists())
         self.assertFalse(HackSubmission.objects.filter(pk=self.hack_submission.pk).exists())
