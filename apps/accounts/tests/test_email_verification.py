@@ -510,8 +510,18 @@ class ThisWasntMe(_Case):
         self.assertEqual((reply.status_code, reply.data['code']), (400, 'ADDRESS_SUPPRESSED'))
         self.assertEqual(len(mail.outbox), 1)
 
-    def test_an_account_with_history_is_switched_off_not_deleted(self):
+    def give_history(self):
+        from apps.forms.models import FormStatus, Response
+        from apps.forms.tests.factories import make_form
+        Response.objects.create(form=make_form(status=FormStatus.PUBLISHED), user=self.squatter)
+
+    def test_only_signing_in_does_not_keep_an_account_the_address_owner_disowned(self):
         User.objects.filter(pk=self.squatter.pk).update(last_login=timezone.now())
+        self.assertEqual(self.press().data['removed'], True)
+        self.assertFalse(User.objects.filter(email='victim@example.org').exists())
+
+    def test_an_account_with_history_is_switched_off_not_deleted(self):
+        self.give_history()
         reply = self.press()
         self.assertEqual(reply.data['removed'], False)
         user = User.objects.get(pk=self.squatter.pk)
@@ -526,14 +536,14 @@ class ThisWasntMe(_Case):
         self.assertTrue(User.objects.filter(pk=self.squatter.pk).exists())
 
     def test_a_disputed_account_cannot_sign_in_or_verify_any_more(self):
-        User.objects.filter(pk=self.squatter.pk).update(last_login=timezone.now())
+        self.give_history()
         self.press()
         self.assertEqual(self.public.post('/api/auth/email/verification/confirm/', {'token': self.verify}, format='json').data['code'], 'INVALID_LINK')
         login = self.public.post('/api/auth/login/', {'email': 'victim@example.org', 'password': PASSWORD}, format='json')
         self.assertIn(login.status_code, (400, 401))
 
     def test_pressing_twice_is_harmless(self):
-        User.objects.filter(pk=self.squatter.pk).update(last_login=timezone.now())
+        self.give_history()
         self.press()
         self.assertEqual(self.press().data['already'], True)
 
@@ -560,7 +570,7 @@ class ThisWasntMe(_Case):
     def test_sessions_of_a_disabled_account_are_revoked(self):
         from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
         from rest_framework_simplejwt.tokens import RefreshToken
-        User.objects.filter(pk=self.squatter.pk).update(last_login=timezone.now())
+        self.give_history()
         RefreshToken.for_user(self.squatter)
         self.press()
         self.assertTrue(BlacklistedToken.objects.exists())

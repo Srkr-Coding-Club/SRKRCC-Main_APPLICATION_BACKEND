@@ -43,7 +43,7 @@ Roll out in that order. Going back is just changing the value; to give people mo
 
 ## "This wasn't me"
 Every verification email has a second link (valid 14 days, `POST /api/auth/email/verification/dispute/`). It is for someone whose address was used to sign up without them:
-- A sign-up with **no history** is removed and the address is free again. One **with history** (it signed in, answered a form, joined a team...) is switched off for an admin to review.
+- A sign-up with **no history** is removed and the address is free again. One **with history** (it answered a form, joined a team...; only signing in does not count, because the address owner disowned it) is switched off for an admin to review.
 - Disputing an **email change** only cancels that change.
 - Verification mail to the address stops for 30 days, so it cannot be used to flood their inbox.
 

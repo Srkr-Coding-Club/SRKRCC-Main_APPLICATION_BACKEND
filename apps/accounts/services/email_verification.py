@@ -376,9 +376,13 @@ _NOT_ACTIVITY = {
 }
 
 
-def has_activity(user) -> bool:
-    """True if the account has ever been used for anything: signed in, answered a form, joined a team, and so on."""
-    if user.last_login is not None:
+def has_activity(user, *, signing_in_counts: bool = True) -> bool:
+    """
+    True if the account has ever been used for anything: signed in, answered a form, joined a team, and so on.
+    A dispute passes signing_in_counts=False: someone who only signed in with an address that is not theirs has built
+    nothing worth keeping, and keeping the row would leave the real owner unable to register.
+    """
+    if signing_in_counts and user.last_login is not None:
         return True
     for relation in User._meta.related_objects:
         if relation.related_model._meta.model_name in _NOT_ACTIVITY:
@@ -439,7 +443,7 @@ def dispute(raw: str) -> dict:
         EmailVerificationToken.objects.filter(user=user, status=VerificationStatus.PENDING).update(status=VerificationStatus.SUPERSEDED)
         _revoke_sessions(user)
         log_audit_event(actor=None, action='Account Disabled: Email Owner Disputed', target_model='User', target_id=user.pk, details={'address_hash': _address_key(address)[:12]})
-        if not has_activity(user):
+        if not has_activity(user, signing_in_counts=False):
             user.delete()
             removed = True
     return {'done': True, 'already': False, 'removed': removed}
