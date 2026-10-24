@@ -107,7 +107,7 @@ jobs:
             -e SSM_SECRET_KEY_NAME \
             -e SSM_DATABASE_URL_NAME \
             "$IMMUTABLE_IMAGE" \
-            -c 'import subprocess; steps=[["manage.py","migrate","--noinput"],["manage.py","createcachetable"],["manage.py","seed_flags"],["manage.py","setup_admin"]]; [print("--> "+" ".join(step[1:]), flush=True) or subprocess.check_call(step) for step in steps]' \
+            -c 'import subprocess,sys; steps=[[sys.executable,"manage.py","migrate","--noinput"],[sys.executable,"manage.py","createcachetable"],[sys.executable,"manage.py","seed_flags"],[sys.executable,"manage.py","setup_admin"]]; [print("--> "+" ".join(step), flush=True) or subprocess.check_call(step) for step in steps]' \
             >"$RUNNER_TEMP/startup.txt" 2>&1; then
             echo "::error::Database startup failed. Migrations were not rolled back."
             sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/startup.txt" || true
