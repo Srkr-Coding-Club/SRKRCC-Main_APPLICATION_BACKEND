@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           # --provenance=false needs Buildx. One retry covers a transient
-          # Docker Hub failure. The adapter is compiled in the Dockerfile, so
+          # Docker Hub failure. The adapter binary is copied from the repo, so
           # this build does not pull public.ecr.aws.
           if ! docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .; then
             echo "First image build failed; retrying once."

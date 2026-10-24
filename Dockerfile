@@ -1,32 +1,13 @@
-# Lambda Web Adapter 1.1.0. GitHub runners cannot pull the public ECR image
-# (anonymous 429). The adapter's Cargo config uses musl-gcc; -static keeps
-# the binary from needing musl's dynamic loader, which Lambda does not have.
-# Without that, the function URL returns 502. Local Compose does not invoke
-# the extension.
-FROM rust:1-bookworm AS adapter
-RUN apt-get update && apt-get install -y --no-install-recommends musl-tools \
-    && rm -rf /var/lib/apt/lists/* \
-    && rustup target add x86_64-unknown-linux-musl \
-    && linker="$(command -v x86_64-linux-musl-gcc || command -v musl-gcc)" \
-    && ln -sf "$linker" /usr/local/bin/x86_64-unknown-linux-musl-gcc
-# The adapter's Cargo config calls the linker x86_64-unknown-linux-musl-gcc.
-# Debian installs it as musl-gcc / x86_64-linux-musl-gcc. The symlink above
-# is what the config looks up.
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-unknown-linux-musl-gcc
-WORKDIR /src
-ADD https://github.com/aws/aws-lambda-web-adapter/archive/refs/tags/v1.1.0.tar.gz /tmp/adapter.tar.gz
-RUN tar -xzf /tmp/adapter.tar.gz -C /src --strip-components=1 \
-    && RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static" \
-       cargo build --release --locked --target x86_64-unknown-linux-musl --bin lambda-adapter \
-    && if ! ldd target/x86_64-unknown-linux-musl/release/lambda-adapter 2>&1 | grep -q 'not a dynamic executable'; then \
-         echo "lambda-adapter must be statically linked for Lambda" >&2; \
-         ldd target/x86_64-unknown-linux-musl/release/lambda-adapter; \
-         exit 1; \
-       fi
-
+# Official Lambda Web Adapter 1.1.0 (linux/amd64), taken from
+# public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0. GitHub runners cannot pull
+# that registry (anonymous 429). A binary compiled in this image crashed on
+# Lambda before Django started, so the function URL returned 502. This copy is
+# the static release binary (sha256 358b36689e564ba479aba244916ba5226e18d7d01f4bf6bf164088552a71c40d).
+# Local Compose does not invoke the extension.
 FROM python:3.12-slim
 
-COPY --from=adapter /src/target/x86_64-unknown-linux-musl/release/lambda-adapter /opt/extensions/lambda-adapter
+COPY docker/lambda-adapter /opt/extensions/lambda-adapter
+RUN chmod 755 /opt/extensions/lambda-adapter
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
