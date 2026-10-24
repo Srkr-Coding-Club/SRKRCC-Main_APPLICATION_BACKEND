@@ -15,6 +15,8 @@ unverifiable file payloads are rejected here, before any rule runs.
 
 from __future__ import annotations
 
+import uuid
+
 import datetime as _dt
 import re
 from decimal import Decimal, InvalidOperation
@@ -165,6 +167,14 @@ def _coerce_files(field, raw: Any) -> list[dict[str, Any]]:
         entry: dict[str, Any] = {"name": name, "size": size}
         if item.get("type"):
             entry["type"] = clean_text(field.label, str(item["type"]).strip(), 255)
+        if item.get("upload_id") is not None:
+            # A file already sent to S3. Its link is never taken from the client; it is looked up from the upload.
+            try:
+                entry["upload_id"] = str(uuid.UUID(str(item["upload_id"])))
+            except ValueError:
+                raise CoercionError(codes.INVALID_FILE_PAYLOAD, f"'{name}' refers to an upload that does not exist.")
+            cleaned.append(entry)
+            continue
         url = item.get("url")
         if url:
             url = str(url).strip()

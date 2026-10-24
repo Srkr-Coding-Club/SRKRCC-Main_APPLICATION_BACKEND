@@ -360,6 +360,30 @@ FORM_UPLOAD_MAX_TOTAL_BYTES = int(os.getenv(
     FORM_UPLOAD_MAX_FILE_BYTES if _is_serverless() else 25 * 1024 * 1024,
 ))
 
+# Direct-to-S3 uploads for dynamic-form FILE / MULTI_FILE answers. "inline" keeps the legacy base64-in-JSON
+# capture; "s3" lets the browser upload straight to the bucket with a presigned POST (the file never passes
+# through Django, so the Lambda request cap does not apply).
+FORM_UPLOADS_BACKEND = os.getenv('FORM_UPLOADS_BACKEND', 'inline').strip().lower()
+if FORM_UPLOADS_BACKEND not in ('inline', 's3'):
+    raise ImproperlyConfigured("FORM_UPLOADS_BACKEND must be 'inline' or 's3'.")
+FORM_UPLOAD_BUCKET = os.getenv('FORM_UPLOAD_BUCKET', os.getenv('AWS_STORAGE_BUCKET_NAME', '')).strip()
+if FORM_UPLOADS_BACKEND == 's3' and not FORM_UPLOAD_BUCKET:
+    raise ImproperlyConfigured('FORM_UPLOADS_BACKEND=s3 requires FORM_UPLOAD_BUCKET (or AWS_STORAGE_BUCKET_NAME).')
+FORM_UPLOAD_REGION = os.getenv('FORM_UPLOAD_REGION', os.getenv('AWS_S3_REGION_NAME', os.getenv('AWS_REGION', 'ap-south-1'))).strip() or 'ap-south-1'
+# What a file field allows when its admin sets no limit, and the most any admin may set.
+FORM_UPLOAD_DEFAULT_MB = float(os.getenv('FORM_UPLOAD_DEFAULT_MB', '2'))
+FORM_UPLOAD_CEILING_MB = float(os.getenv('FORM_UPLOAD_CEILING_MB', '25'))
+# Only for local testing against LocalStack / MinIO; leave empty for real AWS.
+FORM_UPLOAD_ENDPOINT_URL = os.getenv('FORM_UPLOAD_ENDPOINT_URL', '').strip()
+# off = no malware check; guardduty = read the result GuardDuty Malware Protection for S3 writes on each object.
+FORM_UPLOAD_SCAN = os.getenv('FORM_UPLOAD_SCAN', 'off').strip().lower()
+if FORM_UPLOAD_SCAN not in ('off', 'guardduty'):
+    raise ImproperlyConfigured("FORM_UPLOAD_SCAN must be 'off' or 'guardduty'.")
+FORM_UPLOAD_PRESIGN_SECONDS = int(os.getenv('FORM_UPLOAD_PRESIGN_SECONDS', '900'))
+# An upload nobody attached to a submission is abandoned after this long (drafts need days, not minutes).
+FORM_UPLOAD_PENDING_HOURS = int(os.getenv('FORM_UPLOAD_PENDING_HOURS', '168'))
+FORM_UPLOAD_MAX_PENDING_PER_FORM = int(os.getenv('FORM_UPLOAD_MAX_PENDING_PER_FORM', '50'))
+
 # Dynamic-form FILE / MULTI_FILE answers are captured inline as base64 data URLs
 # (there is no binary-upload endpoint), so a submission body can carry a few MB
 # of image data. Raise the form-post ceiling from Django's 2.5 MB default.

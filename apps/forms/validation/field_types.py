@@ -254,8 +254,13 @@ def _validate_files(field, value: list[dict]) -> list[FieldError]:
     if sum(int(item.get("size", 0) or 0) for item in value) > limits.MAX_TOTAL_FILE_BYTES:
         out.append(_err(field, codes.FILE_TOO_LARGE, "The attached files are too large in total."))
 
+    default_cap = limits.file_limit_bytes(rules) if limits.uploads_enabled() and rules.get("maxFileSizeMB") is None else None
+
     for item in value:
         name = item.get("name", "")
+        if default_cap is not None and int(item.get("size", 0) or 0) > default_cap:
+            out.append(_err(field, codes.FILE_TOO_LARGE,
+                            f"'{name}' exceeds the {default_cap / (1024 * 1024):g} MB limit.", rule="maxFileSizeMB"))
         if not name or "\x00" in name or "/" in name or "\\" in name:
             out.append(_err(field, codes.INVALID_FILE_PAYLOAD,
                             f"'{name}' is not a valid file name."))

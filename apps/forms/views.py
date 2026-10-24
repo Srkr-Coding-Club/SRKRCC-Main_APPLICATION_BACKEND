@@ -15,7 +15,7 @@ from django.db.models import TextField
 
 from .models import Form, FormField, FormStatus, Response, ResponseDraft, Answer, BulkIngestSession, MemberNote, sync_all_scheduled_form_statuses
 from apps.core import verification_gate
-from . import capacity, definition_io, drafts as form_drafts, spam, versions as form_versions
+from . import capacity, definition_io, drafts as form_drafts, spam, upload_admin, upload_service, versions as form_versions
 from .analytics import form_analytics
 from django.core.cache import cache
 from .serializers import (
@@ -28,6 +28,8 @@ from .serializers import (
     evaluate_visible_fields,
 )
 from .validation import validate_submission, validate_form_definition, PARTIAL
+from .validation import limits
+from django.conf import settings
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead, _is_admin_or_club_lead
 from apps.accounts.services.user_account_service import ClubIdImmutableError, ClubIdConflictError, RollNumberConflictError
@@ -127,6 +129,9 @@ class FormViewSet(viewsets.ModelViewSet):
         # Autosave writes every few seconds while someone fills a form in.
         if self.action == 'draft':
             self.throttle_scope = 'form_draft'
+            return [ScopedRateThrottle()]
+        if self.action in ('upload_request', 'upload_complete', 'upload_discard', 'file_link'):
+            self.throttle_scope = 'form_upload'
             return [ScopedRateThrottle()]
         return super().get_throttles()
 
@@ -521,12 +526,12 @@ class FormViewSet(viewsets.ModelViewSet):
 
         if request.method == 'GET':
             found = form_drafts.fresh_draft(form, request.user)
-            return DRFResponse({"draft": form_drafts.serialize_draft(found, form) if found else None})
+            return DRFResponse({"draft": form_drafts.serialize_draft(found, form, request.user) if found else None})
 
         if not form_drafts.form_is_open(form):
             return DRFResponse({"error": "This form is not taking responses.", "code": "FORM_NOT_OPEN"},
                                status=status.HTTP_409_CONFLICT)
-        answers, dropped = form_drafts.sanitize_answers(form, request.data.get('answers'))
+        answers, dropped = form_drafts.sanitize_answers(form, request.data.get('answers'), request.user)
         if not form_drafts.fits(answers):
             return DRFResponse({"error": "That draft is too large to save.", "code": "DRAFT_TOO_LARGE"},
                                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
@@ -539,6 +544,103 @@ class FormViewSet(viewsets.ModelViewSet):
             defaults={'answers': answers, 'current_page': page, 'form_version': form.version},
         )
         return DRFResponse({"saved_at": saved.updated_at, "dropped": dropped})
+
+    @action(detail=False, methods=['get'], url_path='upload-config', permission_classes=[permissions.AllowAny])
+    def upload_config(self, request):
+        """GET /api/forms/upload-config/ - whether files go straight to S3, and the default / maximum size in MB."""
+        return DRFResponse({
+            "direct_upload": upload_service.uploads_enabled(),
+            "default_mb": settings.FORM_UPLOAD_DEFAULT_MB if upload_service.uploads_enabled() else limits.MAX_INLINE_FILE_BYTES / (1024 * 1024),
+            "max_mb": limits.platform_file_limit_bytes() / (1024 * 1024),
+        })
+
+    @action(detail=True, methods=['post'], url_path='uploads', permission_classes=[permissions.IsAuthenticated])
+    def upload_request(self, request, slug=None):
+        """
+        POST /api/forms/{slug}/uploads/  {"field_id", "name", "size", "type"}
+        Checks the question's rules and returns a signed form the browser posts the file to (straight to S3).
+        """
+        form = self.get_object()
+        try:
+            granted = upload_service.request_upload(
+                form=form, user=request.user, field_id=request.data.get('field_id'),
+                name=request.data.get('name'), size=request.data.get('size'), content_type=request.data.get('type'),
+            )
+        except upload_service.UploadRefused as refused:
+            return DRFResponse({"error": refused.message, "code": refused.code}, status=refused.status)
+        return DRFResponse({
+            "upload": upload_service.serialize(granted['upload']), "post": granted['post'],
+            "max_bytes": granted['max_bytes'], "expires_in": granted['expires_in'],
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path=r'uploads/(?P<upload_id>[0-9a-fA-F-]{32,36})/complete',
+            permission_classes=[permissions.IsAuthenticated])
+    def upload_complete(self, request, slug=None, upload_id=None):
+        """POST /api/forms/{slug}/uploads/{id}/complete/ - the browser finished sending; the server checks what arrived."""
+        form = self.get_object()
+        try:
+            upload = upload_service.complete_upload(form=form, user=request.user, upload_id=upload_id)
+        except upload_service.UploadRefused as refused:
+            return DRFResponse({"error": refused.message, "code": refused.code}, status=refused.status)
+        return DRFResponse({"upload": upload_service.serialize(upload)})
+
+    @action(detail=True, methods=['delete'], url_path=r'uploads/(?P<upload_id>[0-9a-fA-F-]{32,36})',
+            permission_classes=[permissions.IsAuthenticated])
+    def upload_discard(self, request, slug=None, upload_id=None):
+        """DELETE /api/forms/{slug}/uploads/{id}/ - remove a file picked but not yet submitted."""
+        form = self.get_object()
+        try:
+            upload_service.discard_upload(form=form, user=request.user, upload_id=upload_id)
+        except upload_service.UploadRefused as refused:
+            return DRFResponse({"error": refused.message, "code": refused.code}, status=refused.status)
+        return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+    # --- uploaded files: viewing and managing -------------------------------------------------------
+
+    @action(detail=True, methods=['get'], url_path='files', permission_classes=[IsAdminOrClubLead])
+    def files(self, request, slug=None):
+        """GET /api/forms/{slug}/files/ - attached files of this form. Params: field, kind (images|documents), search, date_from, date_to, page, page_size."""
+        form = self.get_object()
+        queryset, totals = upload_admin.list_files(form, request.query_params)
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        reply = paginator.get_paginated_response([upload_admin.serialize_file(u) for u in page])
+        reply.data['total_bytes'] = totals['bytes']
+        return reply
+
+    @action(detail=True, methods=['post'], url_path='files/delete', permission_classes=[IsAdminOrClubLead])
+    def files_delete(self, request, slug=None):
+        """POST /api/forms/{slug}/files/delete/ {"ids": [...]} - delete up to 100 files."""
+        form = self.get_object()
+        ids = request.data.get('ids')
+        if not isinstance(ids, list) or not ids:
+            return DRFResponse({"error": "ids must be a list of file ids.", "code": "BAD_REQUEST"}, status=status.HTTP_400_BAD_REQUEST)
+        return DRFResponse(upload_admin.remove_files(form, ids, by=request.user))
+
+    @action(detail=True, methods=['post'], url_path=r'files/(?P<upload_id>[0-9a-fA-F-]{32,36})/replace',
+            permission_classes=[IsAdminOrClubLead])
+    def files_replace(self, request, slug=None, upload_id=None):
+        """POST /api/forms/{slug}/files/{id}/replace/ {"upload_id": new} - swap in a file the admin has just uploaded (same question)."""
+        form = self.get_object()
+        try:
+            new = upload_admin.replace_file(form, upload_id, request.data.get('upload_id'), by=request.user)
+        except upload_service.UploadRefused as refused:
+            return DRFResponse({"error": refused.message, "code": refused.code}, status=refused.status)
+        return DRFResponse({"file": upload_admin.serialize_file(new)})
+
+    @action(detail=True, methods=['get'], url_path=r'files/(?P<upload_id>[0-9a-fA-F-]{32,36})/link',
+            permission_classes=[permissions.IsAuthenticated])
+    def file_link(self, request, slug=None, upload_id=None):
+        """GET /api/forms/{slug}/files/{id}/link/?inline=1 - a 60-second link to view or download. Admins: any file; others: their own."""
+        form = self.get_object()
+        try:
+            upload = upload_admin.get_visible(form, upload_id, request.user, admin=_is_admin_or_club_lead(request.user))
+        except upload_service.UploadRefused as refused:
+            return DRFResponse({"error": refused.message, "code": refused.code}, status=refused.status)
+        try:
+            return DRFResponse(upload_admin.make_link(upload, inline=request.query_params.get('inline') == '1'))
+        except upload_service.UploadRefused as refused:
+            return DRFResponse({"error": refused.message, "code": refused.code}, status=refused.status)
 
     @action(detail=True, methods=['get'], url_path='my-response')
     def my_response(self, request, slug=None):

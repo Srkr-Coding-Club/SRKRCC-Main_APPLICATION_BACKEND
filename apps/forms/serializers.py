@@ -25,7 +25,7 @@ from .validation import (
     PARTIAL,
 )
 from .validation import codes
-from . import capacity, spam
+from . import capacity, spam, upload_attach
 from .validation import limits
 from .validation.schema import condition_depth
 from . import versions as form_versions
@@ -73,6 +73,17 @@ PROFILE_FIELD_GETTERS = {
     'year': lambda u: u.year,
     'club_id': lambda u: u.club_id,
 }
+
+
+class _SimpleReport:
+    """The 400 body for failures found after validation (a file that vanished, storage trouble)."""
+
+    def __init__(self, errors):
+        self.errors = errors
+
+    def as_dict(self):
+        return {'detail': self.errors[0].message, 'code': self.errors[0].code,
+                'errors': [e.as_dict() for e in self.errors], 'warnings': []}
 
 
 class FormValidationError(APIException):
@@ -815,10 +826,13 @@ class ResponseSerializer(serializers.ModelSerializer):
 
         managed_ids, overrides, profile_errors = self._resolve_profile_autofill(form, mode)
         raw_answers = self._merge_answer_overrides(raw_answers, managed_ids, overrides)
+        raw_answers, upload_errors = upload_attach.resolve_references(form, self._caller(), raw_answers, response=self.instance)
 
         report = validate_submission(
             form, raw_answers, mode=mode, is_edit=is_edit, existing_answers=existing,
         )
+
+        report.errors.extend(upload_errors)
 
         if profile_errors:
             # Replace the engine's generic REQUIRED/etc. error for these same
@@ -852,6 +866,11 @@ class ResponseSerializer(serializers.ModelSerializer):
 
     # -- persistence ----------------------------------------------------
 
+    def _caller(self):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        return user if user is not None and user.is_authenticated else None
+
     def _write_answers(self, response):
         cleaned = getattr(self, '_report', None)
         cleaned = cleaned.cleaned_answers if cleaned else {}
@@ -863,6 +882,9 @@ class ResponseSerializer(serializers.ModelSerializer):
             Answer.objects.update_or_create(
                 response=response, field_id=field_id, defaults={'value': value},
             )
+        problems = upload_attach.attach(response, self._caller(), cleaned)
+        if problems:
+            raise FormValidationError(_SimpleReport(problems).as_dict())
 
     def create(self, validated_data):
         validated_data.pop('answers', None)
@@ -882,8 +904,9 @@ class ResponseSerializer(serializers.ModelSerializer):
         if not validated_data.get('user') and request and request.user and request.user.is_authenticated:
             validated_data['user'] = request.user
 
-        response = Response.objects.create(**validated_data)
-        self._write_answers(response)
+        with transaction.atomic():
+            response = Response.objects.create(**validated_data)
+            self._write_answers(response)
         return response
 
     def update(self, instance, validated_data):
@@ -892,8 +915,9 @@ class ResponseSerializer(serializers.ModelSerializer):
         if form:
             instance.form_version = form.version
         instance.submitted_at = timezone.now()
-        instance.save()
-        self._write_answers(instance)
+        with transaction.atomic():
+            instance.save()
+            self._write_answers(instance)
         return instance
 
 

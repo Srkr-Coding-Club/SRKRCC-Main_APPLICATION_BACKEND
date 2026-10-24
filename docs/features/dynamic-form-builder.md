@@ -60,6 +60,7 @@ mapping controls until then.
 
 ## Supported Field Types
 Text · Email · Phone · Number · Club ID · Dropdown · Radio Button · Checkbox · Date · Time · File Upload · Multi File Upload · Paragraph · URL · Section (visual grouping) · Page Break (starts a new page) · Rating · Linear Scale · Matrix · Signature · Conditional Logic (show/hide/require a field based on a previous answer)
+nFile questions can send files straight to cloud storage with a per-question size limit (default 2 MB); see [form-file-uploads.md](form-file-uploads.md).
 
 ## Validation & Rules (backend-enforced)
 
@@ -142,7 +143,7 @@ signatures are never saved, since they are too big to rewrite every few seconds;
 | `DELETE /api/forms/{slug}/draft/` | discards it |
 
 A draft is deleted when its respondent submits, ignored after 30 days, and removed by
-`python manage.py purge_form_drafts` (run it daily). Editing an already-submitted response does not use drafts.
+`python manage.py purge_form_drafts`, or the Run now button on Admin -> Maintenance. Editing an already-submitted response does not use drafts.
 
 ## Editing a Form Safely
 

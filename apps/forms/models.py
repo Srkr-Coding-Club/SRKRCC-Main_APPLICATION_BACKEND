@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.db.models import Q
 from django.conf import settings
@@ -385,6 +387,55 @@ class Answer(TimeStampedModel):
 
     def __str__(self):
         return f"Answer to {self.field.label}: {self.value}"
+
+
+class UploadState(models.TextChoices):
+    PENDING = 'PENDING', 'Waiting for the file'
+    UPLOADED = 'UPLOADED', 'Uploaded, not yet submitted'
+    ATTACHED = 'ATTACHED', 'Part of a response'
+    REJECTED = 'REJECTED', 'Refused'
+    DELETED = 'DELETED', 'Deleted'
+
+
+class ScanStatus(models.TextChoices):
+    NOT_SCANNED = 'NOT_SCANNED', 'Not scanned'
+    CLEAN = 'CLEAN', 'Clean'
+    INFECTED = 'INFECTED', 'Infected'
+
+
+class FormUpload(TimeStampedModel):
+    """
+    One file a person sent straight to S3 for a file question. The browser asks for permission first
+    (a row in PENDING), uploads, then confirms (UPLOADED); submitting the form attaches it to the response.
+    The object key is generated here and never taken from the client.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    form = models.ForeignKey(Form, on_delete=models.CASCADE, related_name='uploads')
+    field = models.ForeignKey(FormField, on_delete=models.SET_NULL, null=True, blank=True, related_name='uploads')
+    uploader = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='form_uploads')
+    response = models.ForeignKey(Response, on_delete=models.SET_NULL, null=True, blank=True, related_name='uploads')
+    key = models.CharField(max_length=255, unique=True)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=255, blank=True)
+    declared_size = models.BigIntegerField(default=0, help_text="Size the browser announced; the real size replaces it once checked.")
+    size = models.BigIntegerField(default=0)
+    state = models.CharField(max_length=10, choices=UploadState.choices, default=UploadState.PENDING)
+    scan_status = models.CharField(max_length=12, choices=ScanStatus.choices, default=ScanStatus.NOT_SCANNED)
+    expires_at = models.DateTimeField(null=True, blank=True, help_text="When an unattached upload is abandoned.")
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    replaces = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='replaced_by', help_text="The file an admin swapped out for this one.")
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['form', 'state']),
+            models.Index(fields=['uploader', 'form', 'state']),
+            models.Index(fields=['state', 'expires_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.original_name} ({self.state})"
 
 
 class BulkIngestSession(models.Model):

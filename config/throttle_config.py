@@ -28,6 +28,8 @@ DEFAULT_RATES = {
     'email_verify': '30/hour',
     # Autosave while someone fills a form in: one write every few seconds.
     'form_draft': '90/minute',
+    # Asking for / finishing a direct-to-S3 file upload (per account; several files per form are normal).
+    'form_upload': '120/minute',
     # Hackathon teammate lookup by exact email: limited so it cannot enumerate accounts.
     'hackathon_lookup': '60/minute',
     # Team leaders emailing people with no account yet: it sends mail to arbitrary addresses.

@@ -456,9 +456,9 @@ def _check_satisfiable(report: DefinitionReport, f: _FieldView, rules: dict) -> 
         min_kb, max_mb = num("minFileSizeKB"), num("maxFileSizeMB")
         if min_kb is not None and max_mb is not None and min_kb > max_mb * 1024:
             bad("minFileSizeKB is larger than maxFileSizeMB.", "minFileSizeKB")
-        if max_mb is not None and max_mb * 1024 * 1024 > limits.MAX_INLINE_FILE_BYTES:
-            bad(f"maxFileSizeMB exceeds the platform limit of {limits.MAX_INLINE_FILE_BYTES // (1024 * 1024)} MB per file.",
-                "maxFileSizeMB")
+        platform_mb = limits.platform_file_limit_bytes() / (1024 * 1024)
+        if max_mb is not None and max_mb > platform_mb:
+            bad(f"maxFileSizeMB exceeds the platform limit of {platform_mb:g} MB per file.", "maxFileSizeMB")
 
 
 def _check_profile_field(report: DefinitionReport, f: _FieldView) -> None:

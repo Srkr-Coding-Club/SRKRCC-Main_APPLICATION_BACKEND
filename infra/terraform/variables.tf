@@ -133,3 +133,32 @@ variable "log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "enable_form_uploads" {
+  description = "Let dynamic-form file questions upload straight to the form-uploads bucket (FORM_UPLOADS_BACKEND=s3). Apply with false first, check the bucket, then switch on."
+  type        = bool
+  default     = false
+}
+
+variable "form_uploads_bucket_name" {
+  description = "Optional fixed name for the form-uploads bucket. Empty uses <prefix>-form-uploads-<account id>."
+  type        = string
+  default     = ""
+}
+
+variable "form_upload_tmp_retention_days" {
+  description = "Days before an upload nobody attached to a submission is removed by S3 (the app sweeps sooner). Keep above FORM_UPLOAD_PENDING_HOURS / 24."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.form_upload_tmp_retention_days >= 2
+    error_message = "Keep at least 2 days so drafts holding an upload are not broken."
+  }
+}
+
+variable "form_upload_noncurrent_days" {
+  description = "Days an old version of a deleted or replaced form file is kept before it is erased for good."
+  type        = number
+  default     = 7
+}

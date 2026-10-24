@@ -16,6 +16,7 @@ from typing import Any
 from django.utils import timezone
 
 from .models import FieldType, FormField, FormStatus, NON_ANSWER_FIELD_TYPES, ResponseDraft
+from .validation import limits
 from .validation.values import CoercionError, coerce_value, is_empty
 
 DRAFT_TTL_DAYS = 30
@@ -42,7 +43,7 @@ def answerable_fields(form) -> dict[int, FormField]:
     }
 
 
-def sanitize_answers(form, raw_answers: Any) -> tuple[dict[str, Any], list[int]]:
+def sanitize_answers(form, raw_answers: Any, user=None) -> tuple[dict[str, Any], list[int]]:
     """Keep the answers that are safe to store. Returns ``(kept, dropped_field_ids)``."""
     if not isinstance(raw_answers, dict):
         return {}, []
@@ -57,7 +58,11 @@ def sanitize_answers(form, raw_answers: Any) -> tuple[dict[str, Any], list[int]]
         if field is None or is_empty(value):
             continue
         if field.type in UNSUPPORTED_TYPES:
-            dropped.append(field.id)
+            references = _file_references(form, user, field, value)
+            if references is None:
+                dropped.append(field.id)
+            else:
+                kept[str(field.id)] = references
             continue
         try:
             coerce_value(field, value)
@@ -66,6 +71,14 @@ def sanitize_answers(form, raw_answers: Any) -> tuple[dict[str, Any], list[int]]
             continue
         kept[str(field.id)] = value
     return kept, dropped
+
+
+def _file_references(form, user, field, value):
+    """Files are never stored in a draft, but a file already uploaded to S3 can be remembered by reference."""
+    from . import upload_attach
+    if field.type not in upload_attach.FILE_TYPES or not limits.uploads_enabled():
+        return None
+    return upload_attach.live_references(form, user, field, value)
 
 
 def fits(answers: dict) -> bool:
@@ -77,12 +90,32 @@ def fresh_draft(form, user) -> ResponseDraft | None:
     return ResponseDraft.objects.filter(form=form, user=user, updated_at__gte=cutoff).first()
 
 
-def serialize_draft(draft: ResponseDraft, form) -> dict[str, Any]:
+def serialize_draft(draft: ResponseDraft, form, user=None) -> dict[str, Any]:
     """The draft as the form page should see it: only answers to questions that still exist."""
-    live = {str(fid) for fid in answerable_fields(form)}
+    fields = answerable_fields(form)
+    answers = {}
+    for key, value in (draft.answers or {}).items():
+        field = fields.get(int(key)) if key.isdigit() else None
+        if field is None:
+            continue
+        if field.type in UNSUPPORTED_TYPES:
+            value = _file_references(form, user, field, value)  # an upload may have expired since it was saved
+            if value is None:
+                continue
+        answers[key] = value
     return {
-        'answers': {k: v for k, v in (draft.answers or {}).items() if k in live},
+        'answers': answers,
         'current_page': draft.current_page,
         'updated_at': draft.updated_at,
         'form_changed': draft.form_version != form.version,
     }
+
+
+def stale_drafts(days: int = DRAFT_TTL_DAYS):
+    return ResponseDraft.objects.filter(updated_at__lt=timezone.now() - timedelta(days=days))
+
+
+def purge_stale(days: int = DRAFT_TTL_DAYS) -> int:
+    """Delete drafts nobody has touched for ``days`` days. Returns how many."""
+    removed, _ = stale_drafts(days).delete()
+    return removed

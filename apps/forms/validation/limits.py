@@ -39,6 +39,31 @@ DATE_MAX_YEARS_AHEAD = 50
 # Env-tunable (settings.FORM_UPLOAD_MAX_*): 4 MB on Lambda, 10 MB / 25 MB elsewhere.
 MAX_INLINE_FILE_BYTES = getattr(settings, "FORM_UPLOAD_MAX_FILE_BYTES", 10 * 1024 * 1024)
 MAX_TOTAL_FILE_BYTES = getattr(settings, "FORM_UPLOAD_MAX_TOTAL_BYTES", 25 * 1024 * 1024)  # all files in one answer
+_BYTES_PER_MB = 1024 * 1024
+
+
+def uploads_enabled() -> bool:
+    """True when file questions send their files straight to S3 (settings.FORM_UPLOADS_BACKEND == 's3')."""
+    return getattr(settings, "FORM_UPLOADS_BACKEND", "inline") == "s3"
+
+
+def platform_file_limit_bytes() -> int:
+    """The most one file may be on this platform: the S3 ceiling, or the inline (base64) limit."""
+    if uploads_enabled():
+        return int(settings.FORM_UPLOAD_CEILING_MB * _BYTES_PER_MB)
+    return MAX_INLINE_FILE_BYTES
+
+
+def file_limit_bytes(rules: dict | None) -> int:
+    """One file's limit for a question: the admin's maxFileSizeMB, else the default; never above the platform limit."""
+    try:
+        chosen = float((rules or {}).get("maxFileSizeMB"))
+    except (TypeError, ValueError):
+        chosen = 0
+    default = settings.FORM_UPLOAD_DEFAULT_MB if uploads_enabled() else MAX_INLINE_FILE_BYTES / _BYTES_PER_MB
+    return int(min((chosen if chosen > 0 else default) * _BYTES_PER_MB, platform_file_limit_bytes()))
+
+
 MAX_FILE_NAME_LENGTH = 255
 MAX_FILE_URL_LENGTH = 2048
 DEFAULT_MAX_FILES = 10

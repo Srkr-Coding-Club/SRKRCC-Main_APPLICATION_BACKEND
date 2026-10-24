@@ -86,6 +86,7 @@ docs/
 | Analytics & Insights | Dashboards on registrations, engagement, growth | [features/analytics-insights.md](features/analytics-insights.md) |
 | Scalable & Secure | The design principles keeping the platform fast and safe | [features/security-scalability.md](features/security-scalability.md) |
 | Email Verification | How a member proves their email, what it unlocks, the 7-day deadline and the maintenance commands | [features/email-verification.md](features/email-verification.md) |
+| Form File Uploads | Direct-to-S3 uploads for file questions: limits, flow, settings | [features/form-file-uploads.md](features/form-file-uploads.md) |
 
 ## Visibility, in One Picture
 
