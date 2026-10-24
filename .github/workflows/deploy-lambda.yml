@@ -62,6 +62,19 @@ jobs:
       - name: Log in to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Log in to Amazon ECR Public
+        run: |
+          set -euo pipefail
+          # The Dockerfile pulls public.ecr.aws/awsguru/aws-lambda-adapter.
+          # Anonymous pulls from GitHub runners fail with 429 Data limit
+          # exceeded. ECR Public's API is only in us-east-1. The role needs
+          # ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken.
+          if ! aws ecr-public get-login-password --region us-east-1 \
+            | docker login --username AWS --password-stdin public.ecr.aws; then
+            echo "::error::ECR Public login failed. Grant the GitHub Actions role ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken."
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

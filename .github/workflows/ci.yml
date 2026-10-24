@@ -1,7 +1,8 @@
 name: CI
 
 # Pull requests into main only. This workflow does not deploy and does not
-# receive AWS credentials or production secrets.
+# read production secrets. The image job assumes the deploy role only to log
+# in to ECR Public before the Lambda adapter pull.
 on:
   pull_request:
     branches:
@@ -58,8 +59,40 @@ jobs:
 
   image:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Require the GitHub Actions deploy role
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$AWS_DEPLOY_ROLE_ARN" ]; then
+            echo "::error::Set the repository variable AWS_DEPLOY_ROLE_ARN. The image build logs in to ECR Public so the Lambda adapter pull is not anonymous."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Log in to Amazon ECR Public
+        run: |
+          set -euo pipefail
+          # Anonymous pulls of public.ecr.aws/awsguru/aws-lambda-adapter share
+          # GitHub runner addresses and fail with 429 Data limit exceeded.
+          # Authenticated pulls use this account's quota. ECR Public's API
+          # is only in us-east-1. The role needs ecr-public:GetAuthorizationToken
+          # and sts:GetServiceBearerToken.
+          if ! aws ecr-public get-login-password --region us-east-1 \
+            | docker login --username AWS --password-stdin public.ecr.aws; then
+            echo "::error::ECR Public login failed. Grant the GitHub Actions role ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken."
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -67,8 +100,9 @@ jobs:
       - name: Build the Lambda image without pushing
         run: |
           set -euo pipefail
-          # --provenance=false needs Buildx. Public base-image pulls can flake;
-          # one retry keeps the same Dockerfile and does not skip the build.
+          # --provenance=false needs Buildx. One retry covers a transient
+          # Docker Hub failure. It does not help an anonymous ECR Public 429;
+          # the login step above is what avoids that.
           if ! docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .; then
             echo "First image build failed; retrying once."
             docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .
