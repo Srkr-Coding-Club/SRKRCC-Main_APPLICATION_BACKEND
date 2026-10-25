@@ -14,7 +14,10 @@ lambda_image_uri = ""
 lambda_memory  = 1024
 lambda_timeout = 60
 
-enable_s3_storage = false
+# Django default storage (USE_S3) and direct form-file uploads (FORM_UPLOADS_BACKEND=s3).
+# Local and Render stay on disk until their own env sets the same flags.
+enable_s3_storage   = true
+enable_form_uploads = true
 
 # NONE = anyone who knows the URL can hit Django. Django JWT still applies
 # to protected routes. Review ALLOWED_HOSTS / CORS / CSRF before sharing the URL.
