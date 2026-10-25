@@ -284,6 +284,35 @@ class TeamInvite(models.Model):
         return f"Invite {self.invited_user} → {self.team.name} ({self.status})"
 
 
+class JoinRequestStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Waiting for the leader'
+    ACCEPTED = 'ACCEPTED', 'Accepted'
+    DECLINED = 'DECLINED', 'Declined'
+    CANCELLED = 'CANCELLED', 'Cancelled'
+
+
+class TeamJoinRequest(TimeStampedModel):
+    """A solo participant asking a recruiting team to take them in (the other direction from TeamInvite)."""
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='join_requests')
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='join_requests')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hackathon_join_requests')
+    message = models.CharField(max_length=300, blank=True)
+    registration_data = models.JSONField(default=dict, blank=True, help_text='The rules acceptance and answers to the registration questions, given with the request.')
+    status = models.CharField(max_length=10, choices=JoinRequestStatus.choices, default=JoinRequestStatus.PENDING)
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    decided_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['team', 'user'], condition=Q(status='PENDING'), name='uniq_pending_join_request_per_team_user'),
+        ]
+        indexes = [models.Index(fields=['hackathon', 'user', 'status']), models.Index(fields=['team', 'status'])]
+
+    def __str__(self):
+        return f"{self.user} -> {self.team.name} ({self.status})"
+
+
 class EmailInviteStatus(models.TextChoices):
     PENDING = 'PENDING', 'Pending'
     CLAIMED = 'CLAIMED', 'Claimed'

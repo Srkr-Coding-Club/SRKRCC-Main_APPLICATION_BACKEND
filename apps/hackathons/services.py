@@ -259,7 +259,7 @@ def send_invite_email(invite_id: int) -> bool:
     return EmailNotificationService.send_email(user.email, subject, text, html)
 
 
-def _notify_users(users, title: str, message: str, hackathon: Hackathon, actor=None) -> None:
+def _notify_users(users, title: str, message: str, hackathon: Hackathon, actor=None, *, action_kind: str = '', action_ref: str = '') -> None:
     """In-app notification that can never fail its caller (own savepoint, errors logged)."""
     users = [u for u in users if u is not None]
     if not users:
@@ -272,7 +272,7 @@ def _notify_users(users, title: str, message: str, hackathon: Hackathon, actor=N
             NotificationService.create_bulk_notifications(
                 users, title=title, message=message, type=NotificationType.INFO,
                 category=NotificationCategory.HACKATHON, link_url=f'/hackathons/{hackathon.slug}/dashboard',
-                created_by=actor,
+                created_by=actor, action_kind=action_kind, action_ref=action_ref,
             )
     except Exception:
         logger.exception('Could not create hackathon notification %r', title)
@@ -368,6 +368,44 @@ def _audit(actor, action, team: Team, **details):
 # ---------------------------------------------------------------------------
 # Team formation
 # ---------------------------------------------------------------------------
+
+def _admit(team: Team, user, registration_data: dict | None) -> bool:
+    """
+    Put ``user`` on ``team`` after every check that applies to somebody joining (the same whether they accepted an invite
+    or the leader accepted their request). Call with the team locked. Returns True when the team just became registered.
+    Everything else the person was waiting on (other invites, other join requests) is cancelled.
+    """
+    hackathon = team.hackathon
+    if team.status not in ACTIVE_TEAM_STATUSES:
+        raise HackathonError('This team is no longer active.', 'TEAM_INACTIVE')
+    if hackathon.team_edits_locked:
+        raise HackathonError('Team changes are locked for this hackathon.', 'TEAM_EDITS_LOCKED')
+    _require_registration_open(hackathon)
+    if TeamMember.objects.filter(hackathon=hackathon, user=user).exists():
+        raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
+    _require_profile_complete(hackathon, user)
+    registration.check_eligibility(hackathon, user)
+    accepted_at, answers = registration.registration_inputs(hackathon, registration_data)
+    if team.memberships.count() >= hackathon.max_team_size:
+        raise HackathonError('This team is already full.', 'TEAM_FULL')
+    if not team.is_waitlisted and registration.participants_would_exceed(hackathon):
+        raise HackathonError('This hackathon has reached its participant limit.', 'HACKATHON_FULL')
+
+    try:
+        with transaction.atomic():
+            TeamMember.objects.create(
+                team=team, hackathon=hackathon, user=user, role=TeamRole.MEMBER,
+                rules_accepted_at=accepted_at, answers=answers,
+            )
+    except IntegrityError:
+        raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
+
+    now = timezone.now()
+    TeamInvite.objects.filter(hackathon=hackathon, invited_user=user, status=InviteStatus.PENDING).update(status=InviteStatus.CANCELLED, responded_at=now)
+    from .finder import withdraw_pending_requests
+    withdraw_pending_requests(hackathon, user, now)
+    return _recompute_status(team)
+
 
 class TeamService:
 
@@ -642,39 +680,11 @@ class TeamService:
         if invite.status != InviteStatus.PENDING:
             raise HackathonError('This invite is no longer pending.', 'INVITE_NOT_PENDING')
         hackathon = team.hackathon
-        if team.status not in ACTIVE_TEAM_STATUSES:
-            raise HackathonError('This team is no longer active.', 'TEAM_INACTIVE')
-        if hackathon.team_edits_locked:
-            raise HackathonError('Team changes are locked for this hackathon.', 'TEAM_EDITS_LOCKED')
-        _require_registration_open(hackathon)
-        if TeamMember.objects.filter(hackathon=hackathon, user=user).exists():
-            raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
-        _require_profile_complete(hackathon, user)
-        registration.check_eligibility(hackathon, user)
-        accepted_at, answers = registration.registration_inputs(hackathon, registration_data)
-        if team.memberships.count() >= hackathon.max_team_size:
-            raise HackathonError('This team is already full.', 'TEAM_FULL')
-        if not team.is_waitlisted and registration.participants_would_exceed(hackathon):
-            raise HackathonError('This hackathon has reached its participant limit.', 'HACKATHON_FULL')
-
-        try:
-            with transaction.atomic():
-                TeamMember.objects.create(
-                    team=team, hackathon=hackathon, user=user, role=TeamRole.MEMBER,
-                    rules_accepted_at=accepted_at, answers=answers,
-                )
-        except IntegrityError:
-            raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
-
+        newly_registered = _admit(team, user, registration_data)
         now = timezone.now()
         invite.status = InviteStatus.ACCEPTED
         invite.responded_at = now
         invite.save(update_fields=['status', 'responded_at'])
-        TeamInvite.objects.filter(
-            hackathon=hackathon, invited_user=user, status=InviteStatus.PENDING,
-        ).exclude(pk=invite.pk).update(status=InviteStatus.CANCELLED, responded_at=now)
-
-        newly_registered = _recompute_status(team)
         _audit(user, 'Joined Hackathon Team', team)
         _notify_member_joined(team, user, newly_registered)
         if team.leader_id and team.leader_id != user.id:

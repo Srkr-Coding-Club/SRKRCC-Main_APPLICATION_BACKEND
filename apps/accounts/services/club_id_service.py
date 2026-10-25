@@ -4,7 +4,11 @@ from django.db import transaction
 from django.utils import timezone
 from apps.accounts.models import ClubIDSequence
 
-CLUB_ID_REGEX = re.compile(r"^(\d{2})([A-Za-z]{3})(\d{3,})$")
+# Accepted shapes: <YY>SCC<NNN+> (the club's own IDs, e.g. 25SCC277) and <Y|YY>CCA<NNN+> (e.g. 21CCA041, 1CCA041).
+# Only SCC IDs are ever allocated by the system; CCA IDs are accepted as given.
+CLUB_ID_REGEX = re.compile(r"^(\d{1,2})([A-Za-z]{3})(\d{3,})$")
+ALLOWED_PREFIXES = ("SCC", "CCA")
+EXPECTED_FORMATS = "'25SCC277' or '21CCA041'"
 
 class ClubIdError(Exception):
     """Base exception for Club ID operations."""
@@ -26,6 +30,7 @@ class ClubIDService:
     """
 
     DEFAULT_PREFIX = "SCC"
+    ALLOWED_PREFIXES = ALLOWED_PREFIXES
 
     @classmethod
     def get_current_two_digit_year(cls, dt: datetime | None = None) -> int:
@@ -39,7 +44,7 @@ class ClubIDService:
         return 2000 + two_digit_year
 
     @classmethod
-    def parse_club_id(cls, club_id: str, expected_prefix: str = DEFAULT_PREFIX) -> dict:
+    def parse_club_id(cls, club_id: str, expected_prefix: str | None = None) -> dict:
         """
         Parses and validates a Club ID string.
         Returns dict with:
@@ -48,6 +53,7 @@ class ClubIDService:
           - prefix: str (e.g. 'SCC')
           - sequence: int (e.g. 277)
           - canonical_id: str (e.g. '25SCC277')
+        Without ``expected_prefix`` any allowed prefix (SCC, CCA) is accepted; with it, only that one.
         Raises InvalidClubIdError if invalid format or unexpected prefix.
         """
         if not club_id or not isinstance(club_id, str):
@@ -57,7 +63,7 @@ class ClubIDService:
         match = CLUB_ID_REGEX.match(clean_id)
         if not match:
             raise InvalidClubIdError(
-                f"Invalid Club ID format '{club_id}'. Expected format '<YY><PREFIX><SEQUENCE>', e.g. '25SCC277'."
+                f"Invalid Club ID format '{club_id}'. Expected a format like {EXPECTED_FORMATS}."
             )
 
         two_digit_year = int(match.group(1))
@@ -68,6 +74,10 @@ class ClubIDService:
             raise InvalidClubIdError(
                 f"Club ID prefix mismatch: expected '{expected_prefix.upper()}', got '{prefix}' in '{club_id}'."
             )
+        if not expected_prefix and prefix not in ALLOWED_PREFIXES:
+            raise InvalidClubIdError(f"Unknown Club ID prefix '{prefix}' in '{club_id}'. Expected a format like {EXPECTED_FORMATS}.")
+        if prefix == "SCC" and len(match.group(1)) != 2:
+            raise InvalidClubIdError(f"Club ID '{club_id}' needs a two-digit year, like '25SCC277'.")
 
         return {
             "year_2digit": two_digit_year,
@@ -78,7 +88,7 @@ class ClubIDService:
         }
 
     @classmethod
-    def validate_club_id_format(cls, club_id: str, expected_prefix: str = DEFAULT_PREFIX) -> bool:
+    def validate_club_id_format(cls, club_id: str, expected_prefix: str | None = None) -> bool:
         """Returns True if club_id conforms to the expected format and prefix, False otherwise."""
         try:
             cls.parse_club_id(club_id, expected_prefix)
@@ -124,8 +134,10 @@ class ClubIDService:
         Used when importing legacy backup datasets (e.g. importing '25SCC277' fast-forwards next_sequence to 278)
         so that subsequent automatic allocations will never collide with legacy IDs.
         """
-        target_year = year if year > 100 else cls.get_full_year_from_two_digit(year)
         clean_prefix = prefix.strip().upper()
+        if clean_prefix != cls.DEFAULT_PREFIX:
+            return 0  # only the club's own IDs are allocated from a counter; others are accepted as given
+        target_year = year if year > 100 else cls.get_full_year_from_two_digit(year)
         required_next = max_seen_sequence + 1
 
         with transaction.atomic():

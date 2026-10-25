@@ -14,12 +14,15 @@ class NotificationSerializer(serializers.ModelSerializer):
             'type',
             'category',
             'link_url',
+            'action_kind',
+            'action_ref',
+            'action_outcome',
             'is_read',
             'read_at',
             'created_at',
             'created_by_name',
         ]
-        read_only_fields = ['id', 'created_at', 'created_by_name']
+        read_only_fields = ['id', 'created_at', 'created_by_name', 'action_kind', 'action_ref', 'action_outcome']
 
     def get_created_by_name(self, obj):
         if obj.created_by:

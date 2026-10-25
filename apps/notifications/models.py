@@ -44,6 +44,9 @@ class Notification(TimeStampedModel):
         default='',
         help_text='Optional in-app URL or external link for user action',
     )
+    action_kind = models.CharField(max_length=30, blank=True, default='', help_text='What the person can do from the notification itself, e.g. JOIN_REQUEST.')
+    action_ref = models.CharField(max_length=120, blank=True, default='', db_index=True, help_text='What the action is about, e.g. "<hackathon slug>:<request id>".')
+    action_outcome = models.CharField(max_length=30, blank=True, default='', help_text='Set once the action was taken (by anyone), so the buttons give way to the result.')
     is_read = models.BooleanField(default=False, db_index=True)
     read_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(

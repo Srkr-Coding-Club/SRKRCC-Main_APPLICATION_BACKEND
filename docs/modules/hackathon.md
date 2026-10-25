@@ -225,7 +225,7 @@ Everything below is switched and configured by organizers per hackathon (create 
 | Results | `judging.ResultsService` | `HackathonWinner` rows; `POST /{slug}/results/publish|unpublish/` sets `results_published_at`. Public `GET /{slug}/results/` shows winners (and every score only if `show_leaderboard`); `GET /{slug}/showcase/` lists public submissions once results are out and the `showcase` module is on. |
 | Check-in | `checkin.py` | Each participant has a signed QR token (`/my-check-in/`); organizers and VOLUNTEER staff scan it or check people in by id (`POST /{slug}/check-in/`, idempotent). Only members of REGISTERED, non-waitlisted teams qualify. |
 | Certificates | `certificates.py` | Wording and eligibility (`REGISTERED`, `SUBMITTED`, `CHECKED_IN`) are `certificate_config`; releasing it notifies participants. Winners get an award certificate. Every certificate carries a signed code checked by the public `GET /certificates/verify/{code}/`. |
-| Team finder | `finder.py` | `TeamSeeker` listings and teams with `looking_for_members`. Emails are never exposed: leaders invite a listed person through the existing invite flow; seekers can ask a recruiting leader to add them. |
+| Team finder | `finder.py` | `TeamSeeker` listings and teams with `looking_for_members`. Emails are never exposed: leaders invite a listed person through the existing invite flow; seekers can ask a recruiting leader to add them (see **Join requests** below). |
 | Insight, export, clone | `analytics.py`, `cloning.py` | `GET /{slug}/analytics/` (funnel, branch/year/college, per-day joins), `GET /{slug}/participants/` (rows incl. answers). `POST /{slug}/clone/` copies setup, stages, rounds (no teams), rubric and people to a new DRAFT with every date shifted. |
 
 Public page content (`mentors`, `judges`, `sponsors`, `contacts`, `community_links`, `venue_map_url`) is admin-written JSON validated by `config_validation.py`.
@@ -287,6 +287,16 @@ Accepted and rejected ideas stay locked whatever these say. Requiring a fee or a
 - **Pick teams by rule** (`POST /{slug}/rounds/{id}/auto-shortlist/ {rule, value?, reject_rest?, apply?}`, `rounds` permission). Rules live in `round_rules.py`: `PROJECT_SCORE_TOP|MIN`, `IDEA_SCORE_TOP|MIN`, `IDEA_APPROVED`, `HAS_PROJECT`, `CHECKED_IN`. With `apply` false it only previews (ties at a "top N" cut-off are all kept); with `apply` true it records the decisions through the normal `decide` path, so the published-results and target confirmations still apply. `reject_rest` marks only still-pending teams as not shortlisted.
 - **Order.** `POST /{slug}/rounds/reorder/ {ids}` renumbers rounds, but only while no team has been decided in any round (`ROUNDS_IN_USE`), because later rounds depend on earlier shortlists.
 - **Evidence for decisions.** Round entries now carry the team's idea status and score, whether it submitted a project and its score, and how many members checked in.
+
+## Team finder: join requests
+
+A solo participant can ask a recruiting team to take them in (the other direction from an invite). `POST /{slug}/finder/teams/{id}/request/ {message, accept_rules, answers}` stores a `TeamJoinRequest` (PENDING) and notifies the team's leader. Everything accepting will need is checked at request time: registration open, finder on, team recruiting and not full, the person not already on a team, their profile complete, eligibility, and the rules acceptance / registration answers (stored with the request). Limits: one pending request per team, at most 5 pending per person (`429 TOO_MANY_REQUESTS`), and a declined request cannot be repeated to the same team for 24 hours (`409 DECLINED_RECENTLY`).
+
+- **Answering.** `POST /{slug}/finder/requests/{id}/accept|decline/` by the team leader (or an organizer with the `teams` permission). Accepting runs the same checks as accepting an invite (`services._admit`: team active and not full, edits not locked, registration open, participant limit, not in another team) and adds the person with the stored answers; if any fails the request stays pending and the leader sees why (`blocked_reason`). Joining a team cancels the person's other open requests and invites. Declining tells the person. A request answered twice returns `409 REQUEST_NOT_PENDING` with the `outcome`.
+- **Withdrawing.** The sender cancels with `.../cancel/`.
+- **Lists.** `GET /{slug}/finder/requests/` returns `incoming` (pending requests to teams you lead: name, branch/year, skills, message, never an email) and `mine`. `GET /{slug}/finder/` also returns `my_requests`.
+- **Notifications can carry an action.** `Notification` has `action_kind` (`JOIN_REQUEST`), `action_ref` (`<hackathon slug>:<request id>`) and `action_outcome`. The bell shows Accept / Decline buttons for an unanswered request; once it is answered anywhere (bell, dashboard card, cancelled by the sender) every notification about it shows the outcome instead (`NotificationService.resolve_action`).
+- **UI.** The dashboard has a "Teams and people" card (teams that need people, people available, and the leader's pending requests); `/hackathons/{slug}/finder` shows everything with search.
 
 ## Idea scoring
 

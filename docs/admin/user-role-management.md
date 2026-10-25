@@ -10,6 +10,12 @@ Read [../features/role-based-access.md](../features/role-based-access.md) first 
 2. Change their role: `NON_AFFILIATE`, `AFFILIATE`, `VOLUNTEER`, `JUDGE`, `CLUB_LEAD`, or `ADMIN`.
 3. **Promoting to `AFFILIATE`**:
    - Promoting any user to `AFFILIATE` strictly requires an official Club ID (e.g. `25SCC001`).
+   - **Club ID formats** (`ClubIDService.parse_club_id`, mirrored by `validateAffiliateId` in the frontend): `<2-digit year>SCC<3+ digits>` (`25SCC123`, `26SCC123`) and `<1-2 digit year>CCA<3+ digits>` (`21CCA041`, `1CCA041`). Letters are case-insensitive and stored in capitals. Only `SCC` IDs are ever allocated by the system (and move the sequence counter); `CCA` IDs are accepted as given.
+
+### Creating and editing a member as an admin
+
+   - **Create New User** (`POST /api/auth/register/` called by an admin) takes everything the signup form does: name, email, optional roll number and phone, **college** (`college_id` from the catalogue, or `other_college_name` typed; left out = the club's home college), branch, **year of study (1 to 4, required)**, role (`AFFILIATE`, `NON_AFFILIATE`, `VOLUNTEER`), the Club ID for an affiliate, and a password. Every error comes back under its own field and is shown under that input. The response includes the new `id`.
+   - **Edit** (`PATCH /api/auth/users/{id}/`) can also change the college (`college_id`, or `other_college_name`; clearing the college without giving a name is refused). College changes are audit-logged with the college names.
    - The admin can choose between **Manual Entry** (typing a verified Club ID with live format validation) or **Auto-Generation** (suggesting the next sequential ID via `GET /api/auth/club-ids/next/`).
    - The backend validates uniqueness and canonical format (`\d{2}[A-Z]{3}\d{3}`) before granting the promotion.
 4. Save. The change takes effect immediately and is recorded in the [Audit Log](audit-logs-monitoring.md).

@@ -161,14 +161,29 @@ class UserRoleUpdateSerializer(serializers.ModelSerializer):
     their own roll number once, but only an admin can add/correct/clear it
     after that.
     """
+    # The admin can correct a member's college like any other detail: a catalogue row, or a typed name.
+    college = CollegeSerializer(read_only=True)
+    college_id = serializers.PrimaryKeyRelatedField(
+        source='college', queryset=College.objects.all(), write_only=True, required=False, allow_null=True,
+        error_messages={'does_not_exist': 'Select a college from the list.', 'incorrect_type': 'Select a college from the list.'},
+    )
+    other_college_name = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = User
         fields = [
             'id', 'email', 'first_name', 'last_name', 'role',
             'membership_status', 'roll_number', 'club_id',
+            'college', 'college_id', 'other_college_name',
             'branch', 'year', 'phone_number', 'github_profile', 'linkedin_profile',
         ]
         read_only_fields = ['id', 'email']
+
+    def validate_other_college_name(self, value):
+        return validate_other_college_name(value)
+
+    def validate(self, attrs):
+        return reconcile_college_choice(attrs, current_other_name=self.instance.other_college_name if self.instance else '')
 
     def validate_first_name(self, value):
         if not value:
@@ -584,9 +599,10 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'username', 'email', 'password', 'first_name', 'last_name',
+            'id', 'username', 'email', 'password', 'first_name', 'last_name',
             'role', 'roll_number', 'college_id', 'other_college_name', 'branch', 'year', 'club_id', 'phone_number',
         ]
+        read_only_fields = ['id']
 
     def _is_admin_caller(self):
         requester = getattr(self.context.get('request'), 'user', None)

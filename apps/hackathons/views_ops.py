@@ -238,11 +238,42 @@ class FinderInviteView(APIView):
 
 
 class FinderRequestView(APIView):
+    """POST /api/hackathons/{slug}/finder/teams/{id}/request/ {message, accept_rules, answers} - ask a recruiting team to take you in."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, slug, pk):
-        FinderService.request_to_join(_get_hackathon(request, slug), request.user, pk, request.data.get('message', ''))
-        return DRFResponse({'requested': True})
+        hackathon = _get_hackathon(request, slug)
+        data = request.data
+        join = FinderService.request_to_join(
+            hackathon, request.user, pk, data.get('message', ''),
+            {'accept_rules': data.get('accept_rules'), 'answers': data.get('answers')},
+        )
+        return DRFResponse({'requested': True, 'request': FinderService.serialize_request(join)})
+
+
+class FinderRequestsView(APIView):
+    """GET /api/hackathons/{slug}/finder/requests/ - requests waiting for you to answer (as a leader), and the ones you sent."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        return DRFResponse({
+            'incoming': [FinderService.serialize_request(r, incoming=True) for r in FinderService.incoming_requests(hackathon, request.user)],
+            'mine': [FinderService.serialize_request(r) for r in FinderService.my_requests(hackathon, request.user)],
+        })
+
+
+class FinderRequestDecisionView(APIView):
+    """POST /api/hackathons/{slug}/finder/requests/{id}/{accept|decline|cancel}/ - the leader answers, or the sender takes it back."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, slug, pk, action):
+        hackathon = _get_hackathon(request, slug)
+        if action == 'cancel':
+            joined = FinderService.cancel_request(hackathon, pk, request.user)
+        else:
+            joined = FinderService.decide_request(hackathon, pk, request.user, action)
+        return DRFResponse({'request': FinderService.serialize_request(joined)})
 
 
 # ---------------------------------------------------------------------------
