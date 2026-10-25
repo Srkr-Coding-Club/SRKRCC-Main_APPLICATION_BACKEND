@@ -88,9 +88,9 @@ variable "lambda_timeout" {
 }
 
 variable "enable_s3_storage" {
-  description = "Set Django USE_S3. The bucket is still created; this only toggles the application flag."
+  description = "Set Django USE_S3 so FileField and default_storage use the media bucket. The bucket is created either way. Backups still write to local disk."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "function_url_authorization_type" {
@@ -165,9 +165,9 @@ variable "log_retention_days" {
 }
 
 variable "enable_form_uploads" {
-  description = "Let dynamic-form file questions upload straight to the form-uploads bucket (FORM_UPLOADS_BACKEND=s3). Apply with false first, check the bucket, then switch on."
+  description = "Let dynamic-form file questions, hackathon slides, and payment screenshots upload straight to the form-uploads bucket (FORM_UPLOADS_BACKEND=s3). Set false to keep base64 answers."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "form_uploads_bucket_name" {
