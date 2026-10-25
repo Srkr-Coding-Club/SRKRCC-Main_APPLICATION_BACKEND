@@ -183,7 +183,7 @@ class MemberImportService:
 
                 # Check Club ID format
                 if not ClubIDService.validate_club_id_format(incoming_cid):
-                    row_errors.append(f"Malformed Club ID '{incoming_cid}'. Expected format like '25SCC277'.")
+                    row_errors.append(f"Malformed Club ID '{incoming_cid}'. Expected a format like '25SCC277' or '21CCA041'.")
 
             # Check against Database
             if email and not row_errors:

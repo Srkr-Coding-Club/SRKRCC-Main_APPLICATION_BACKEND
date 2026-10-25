@@ -145,7 +145,7 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
             for field in [
                 'role', 'membership_status', 'roll_number', 'club_id',
                 'first_name', 'last_name', 'branch', 'year', 'phone_number',
-                'github_profile', 'linkedin_profile'
+                'github_profile', 'linkedin_profile', 'college', 'other_college_name',
             ]
         }
 
@@ -154,8 +154,9 @@ class UserDetailView(generics.RetrieveUpdateAPIView):
         details = {}
         for field, prev_val in previous_snapshots.items():
             if field in serializer.validated_data:
-                details[f"previous_{field}"] = prev_val
-                details[f"new_{field}"] = getattr(user, field, None)
+                details[f"previous_{field}"] = str(prev_val) if field == 'college' and prev_val is not None else prev_val
+                new_val = getattr(user, field, None)
+                details[f"new_{field}"] = str(new_val) if field == 'college' and new_val is not None else new_val
 
         if details:
             if 'role' in serializer.validated_data:

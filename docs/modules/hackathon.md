@@ -225,7 +225,7 @@ Everything below is switched and configured by organizers per hackathon (create 
 | Results | `judging.ResultsService` | `HackathonWinner` rows; `POST /{slug}/results/publish|unpublish/` sets `results_published_at`. Public `GET /{slug}/results/` shows winners (and every score only if `show_leaderboard`); `GET /{slug}/showcase/` lists public submissions once results are out and the `showcase` module is on. |
 | Check-in | `checkin.py` | Each participant has a signed QR token (`/my-check-in/`); organizers and VOLUNTEER staff scan it or check people in by id (`POST /{slug}/check-in/`, idempotent). Only members of REGISTERED, non-waitlisted teams qualify. |
 | Certificates | `certificates.py` | Wording and eligibility (`REGISTERED`, `SUBMITTED`, `CHECKED_IN`) are `certificate_config`; releasing it notifies participants. Winners get an award certificate. Every certificate carries a signed code checked by the public `GET /certificates/verify/{code}/`. |
-| Team finder | `finder.py` | `TeamSeeker` listings and teams with `looking_for_members`. Emails are never exposed: leaders invite a listed person through the existing invite flow; seekers can ask a recruiting leader to add them. |
+| Team finder | `finder.py` | `TeamSeeker` listings and teams with `looking_for_members`. Emails are never exposed: leaders invite a listed person through the existing invite flow; seekers can ask a recruiting leader to add them (see **Join requests** below). |
 | Insight, export, clone | `analytics.py`, `cloning.py` | `GET /{slug}/analytics/` (funnel, branch/year/college, per-day joins), `GET /{slug}/participants/` (rows incl. answers). `POST /{slug}/clone/` copies setup, stages, rounds (no teams), rubric and people to a new DRAFT with every date shifted. |
 
 Public page content (`mentors`, `judges`, `sponsors`, `contacts`, `community_links`, `venue_map_url`) is admin-written JSON validated by `config_validation.py`.
@@ -257,6 +257,29 @@ Staff also see their hackathon while it is a draft or hidden. `GET /{slug}/my-pe
 `features.ideas` switches **phase 1 (plan)** on; `features.submissions` is **phase 2 (implement)**. Each has its own window (`idea_opens_at`/`idea_deadline`, `submission_opens_at`/`submission_deadline`; the idea deadline must not be after the project deadline). `IdeaSubmission` (one per team: title, problem, solution, plan, tech stack, optional slides link) is written by the team leader of a registered team inside the window. With `idea_review_required` an organizer holding `ideas` approves it, asks for changes (the team edits and resubmits) or rejects it, with a note the team is notified of; approved and rejected ideas are locked. Without review, ideas are approved on submission. `project_requires_approved_idea` makes the project phase available only to teams with an accepted idea (`IDEA_REQUIRED` otherwise; `my-submission` reports the `gate`). Endpoints: `GET/PUT /{slug}/my-idea/`, `GET /{slug}/ideas/`, `POST /{slug}/ideas/{id}/review/`, `POST /{slug}/ideas/remind/`. Cloning copies the phase settings with shifted dates.
 
 
+## Idea submission: slides, LinkedIn post, payment and editing
+
+On top of the written idea, organizers can ask for more (all set on the **Ideas** tab; every setting is optional and defaults to the old behaviour):
+
+| Setting | Meaning |
+|---|---|
+| `idea_deck_required` | The leader uploads a `.ppt` / `.pptx` (up to 25 MB). |
+| `idea_linkedin_required` | The link of the team's LinkedIn post (`linkedin.com` / `lnkd.in` only). |
+| `idea_fee_amount` | Rupees to pay (0 = none, max 100000). Above 0 a **payment screenshot** (png/jpg/webp, up to 5 MB) is required; `transaction_id` stays optional. |
+| `idea_payment_note` | How to pay (UPI id, QR instructions), shown with the form. |
+| `idea_edits_enabled` | On (default): the leader can keep editing a submitted idea. Off: locked after the first submission; changes the organizers ask for are still allowed. |
+| `idea_edits_until` | Optional. Editing closes at this time instead of at the deadline, and may be **later than the deadline** to reopen editing. Ignored while editing is off. It never lets a team that has not submitted start late. |
+
+Accepted and rejected ideas stay locked whatever these say. Requiring a fee or a slides file needs file uploads switched on (`FORM_UPLOADS_BACKEND=s3`); the settings are refused otherwise.
+
+**Files.** The slides and the screenshot are `IdeaFile` rows uploaded straight to the bucket like form uploads (presigned POST, size/type pinned, content checked on completion, copied out of the expiring `tmp/` area when the idea is saved, removed when replaced or when the team or hackathon is deleted; covered by the Maintenance sweep and scan tasks). Endpoints: `POST /{slug}/my-idea/files/ {kind: DECK|PAYMENT, name, size, type}`, `POST /{slug}/my-idea/files/{id}/` (confirm), `DELETE /{slug}/my-idea/files/{id}/`, and `GET /{slug}/ideas/{id}/files/{deck|payment}/link/?inline=1` (a 60-second link). `PUT /my-idea/` takes `deck_file_id` / `payment_file_id`: left out keeps the saved file, `null` removes it (refused if required), an id uses that upload (it must be the team's own, of the right kind).
+
+**Payment QR code.** Organizers with the `settings` permission upload one image (png/jpg/webp, up to 5 MB) that teams scan to pay: `POST /{slug}/idea-qr/ {name, size, type}` (signed upload form), `POST /{slug}/idea-qr/{id}/` (the upload arrived: it is checked and becomes the hackathon's QR code, replacing and releasing the old one; saved at once, not with the settings Save button), `DELETE /{slug}/idea-qr/`. `GET /{slug}/idea-qr/link/` gives a 60-second link to the image to organizers and to members of a registered, non-waitlisted team of this hackathon only (judges, volunteers, outsiders and signed-out visitors get 404/401). The idea form's `config.payment_qr` says whether one exists (never its storage key). Set/remove are audit-logged; a cloned hackathon does not inherit the QR; it follows the same scanning and cleanup rules as other idea files (stored as an `IdeaFile` of kind `QR` with no team).
+
+**Who sees what.** The payment screenshot and the transaction id are visible to organizers holding the `ideas` permission (site admins and club leads included) and to the team itself, **never to judges**; they are not in the judging lists. Judges can open the slides and the LinkedIn link. Opening a payment screenshot is audit-logged ("Viewed Idea Payment Proof"). Storage keys are never returned.
+
+**Editing rules (`ideas.can_team_edit`).** First submission: window open. After that: locked ideas never; "changes requested" ideas while the window or the edit time is open; otherwise editing must be on, and then it lasts until `idea_edits_until` if set, else the deadline. `my-idea` reports `can_edit`, `edit_blocked_reason` and the `config` the form needs.
+
 ## Rounds: kinds, targets and rule-based shortlisting
 
 - **Kind and target.** A round has a `kind` (General, Screening, Idea review, Project review, Pitch, Final) and an optional `shortlist_limit` (how many teams should go through). Shortlisting more than the target answers 409 `SHORTLIST_LIMIT` (with `limit` and `would_be`) until the caller repeats the request with `confirm_over_limit`.
@@ -264,6 +287,16 @@ Staff also see their hackathon while it is a draft or hidden. `GET /{slug}/my-pe
 - **Pick teams by rule** (`POST /{slug}/rounds/{id}/auto-shortlist/ {rule, value?, reject_rest?, apply?}`, `rounds` permission). Rules live in `round_rules.py`: `PROJECT_SCORE_TOP|MIN`, `IDEA_SCORE_TOP|MIN`, `IDEA_APPROVED`, `HAS_PROJECT`, `CHECKED_IN`. With `apply` false it only previews (ties at a "top N" cut-off are all kept); with `apply` true it records the decisions through the normal `decide` path, so the published-results and target confirmations still apply. `reject_rest` marks only still-pending teams as not shortlisted.
 - **Order.** `POST /{slug}/rounds/reorder/ {ids}` renumbers rounds, but only while no team has been decided in any round (`ROUNDS_IN_USE`), because later rounds depend on earlier shortlists.
 - **Evidence for decisions.** Round entries now carry the team's idea status and score, whether it submitted a project and its score, and how many members checked in.
+
+## Team finder: join requests
+
+A solo participant can ask a recruiting team to take them in (the other direction from an invite). `POST /{slug}/finder/teams/{id}/request/ {message, accept_rules, answers}` stores a `TeamJoinRequest` (PENDING) and notifies the team's leader. Everything accepting will need is checked at request time: registration open, finder on, team recruiting and not full, the person not already on a team, their profile complete, eligibility, and the rules acceptance / registration answers (stored with the request). Limits: one pending request per team, at most 5 pending per person (`429 TOO_MANY_REQUESTS`), and a declined request cannot be repeated to the same team for 24 hours (`409 DECLINED_RECENTLY`).
+
+- **Answering.** `POST /{slug}/finder/requests/{id}/accept|decline/` by the team leader (or an organizer with the `teams` permission). Accepting runs the same checks as accepting an invite (`services._admit`: team active and not full, edits not locked, registration open, participant limit, not in another team) and adds the person with the stored answers; if any fails the request stays pending and the leader sees why (`blocked_reason`). Joining a team cancels the person's other open requests and invites. Declining tells the person. A request answered twice returns `409 REQUEST_NOT_PENDING` with the `outcome`.
+- **Withdrawing.** The sender cancels with `.../cancel/`.
+- **Lists.** `GET /{slug}/finder/requests/` returns `incoming` (pending requests to teams you lead: name, branch/year, skills, message, never an email) and `mine`. `GET /{slug}/finder/` also returns `my_requests`.
+- **Notifications can carry an action.** `Notification` has `action_kind` (`JOIN_REQUEST`), `action_ref` (`<hackathon slug>:<request id>`) and `action_outcome`. The bell shows Accept / Decline buttons for an unanswered request; once it is answered anywhere (bell, dashboard card, cancelled by the sender) every notification about it shows the outcome instead (`NotificationService.resolve_action`).
+- **UI.** The dashboard has a "Teams and people" card (teams that need people, people available, and the leader's pending requests); `/hackathons/{slug}/finder` shows everything with search.
 
 ## Idea scoring
 

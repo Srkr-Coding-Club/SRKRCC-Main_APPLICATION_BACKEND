@@ -44,6 +44,8 @@ class NotificationService:
         category: str = NotificationCategory.GENERAL,
         link_url: str = '',
         created_by=None,
+        action_kind: str = '',
+        action_ref: str = '',
     ) -> int:
         """Bulk-create in-app notifications for multiple recipients."""
         records = [
@@ -55,11 +57,18 @@ class NotificationService:
                 category=category,
                 link_url=link_url or '',
                 created_by=created_by,
+                action_kind=action_kind,
+                action_ref=action_ref,
             )
             for user in recipients
         ]
         Notification.objects.bulk_create(records, batch_size=500)
         return len(records)
+
+    @staticmethod
+    def resolve_action(action_kind: str, action_ref: str, outcome: str) -> int:
+        """The action a notification offered was taken: every notification about it shows the outcome instead of buttons."""
+        return Notification.objects.filter(action_kind=action_kind, action_ref=action_ref).update(action_outcome=outcome, is_read=True)
 
     @staticmethod
     def resolve_audience(

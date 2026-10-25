@@ -4,15 +4,17 @@ organizers review it; the admin may require an approved idea before the project 
 """
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
 from apps.audit.utils import log_audit_event
 
-from . import access, config_validation as validate
+from . import access, config_validation as validate, idea_files
 from .errors import HackathonError
-from .models import Hackathon, IdeaStatus, IdeaSubmission, Team, TeamStatus
+from .models import Hackathon, IdeaFileKind, IdeaStatus, IdeaSubmission, Team, TeamStatus
 from .services import _notify_users, is_leader
 from .config_validation import guard_field as field_guard
 
@@ -36,6 +38,49 @@ def window_state(hackathon: Hackathon) -> str:
     return 'OPEN'
 
 
+def can_team_edit(hackathon: Hackathon, existing: IdeaSubmission | None) -> tuple[bool, str, str]:
+    """
+    Whether a team may save the idea now: ``(allowed, code, why_not)``.
+
+    A first submission needs the idea window to be open. After that the organizers decide: with editing switched on a
+    team may keep editing until the deadline, or until ``idea_edits_until`` when they set it (even past the deadline);
+    with it off the idea is locked, except when the organizers asked for changes. An accepted or rejected idea is final.
+    """
+    state = window_state(hackathon)
+    now = timezone.now()
+    if state == 'OFF':
+        return False, 'FEATURE_OFF', 'Idea submission is not enabled for this hackathon.'
+    if state == 'NOT_OPEN':
+        return False, 'IDEAS_NOT_OPEN', 'Idea submission has not opened yet.'
+    if existing is None:
+        return (True, '', '') if state == 'OPEN' else (False, 'IDEAS_CLOSED', 'The idea deadline has passed.')
+    if existing.status in LOCKED_STATUSES:
+        return False, 'IDEA_LOCKED', 'This idea has already been decided, so it can no longer be edited. Contact the organizers if something is wrong.'
+    extended = bool(hackathon.idea_edits_until and now < hackathon.idea_edits_until)
+    if existing.status == IdeaStatus.CHANGES_REQUESTED:
+        return (True, '', '') if state == 'OPEN' or extended else (False, 'IDEAS_CLOSED', 'The idea deadline has passed.')
+    if not hackathon.idea_edits_enabled:
+        return False, 'IDEA_EDITS_OFF', 'The organizers have switched off editing, so a submitted idea cannot be changed.'
+    open_now = now < hackathon.idea_edits_until if hackathon.idea_edits_until else state == 'OPEN'
+    return (True, '', '') if open_now else (False, 'IDEAS_CLOSED', 'The time for editing ideas is over.')
+
+
+def ensure_can_edit(team: Team, actor) -> IdeaSubmission | None:
+    """The checks every team-side change shares (saving the idea, adding or removing a file). Returns the idea, if any."""
+    hackathon = team.hackathon
+    if access.has_permission(hackathon, actor, 'ideas'):
+        return IdeaSubmission.objects.filter(team=team).first()
+    if not is_leader(team, actor):
+        raise PermissionDenied('Only the team leader can submit the idea.')
+    if team.status != TeamStatus.REGISTERED or team.is_waitlisted:
+        raise HackathonError('Only registered teams can submit an idea.', 'TEAM_NOT_REGISTERED')
+    existing = IdeaSubmission.objects.filter(team=team).first()
+    allowed, code, why = can_team_edit(hackathon, existing)
+    if not allowed:
+        raise HackathonError(why, code)
+    return existing
+
+
 def project_gate(hackathon: Hackathon, team: Team | None) -> dict:
     """Whether this team's idea lets it into the project phase. ``required`` is False when the admin did not ask for it."""
     required = hackathon.feature('ideas') and hackathon.project_requires_approved_idea
@@ -54,7 +99,29 @@ def project_gate(hackathon: Hackathon, team: Team | None) -> dict:
     return {'required': True, 'satisfied': True, 'reason': ''}
 
 
-def _clean(data: dict) -> dict:
+_LINKEDIN_HOSTS = ('linkedin.com', 'lnkd.in')
+MAX_TRANSACTION_ID = 60
+
+
+def _linkedin(data: dict, hackathon: Hackathon | None, by_organizer: bool) -> str | None:
+    required = bool(hackathon and hackathon.idea_linkedin_required and not by_organizer)
+    value = field_guard('linkedin_url', lambda: validate._url(data.get('linkedin_url'), 'LinkedIn post link', required=required))
+    if not value:
+        return None
+    host = (urlparse(value).hostname or '').lower()
+    if not any(host == name or host.endswith('.' + name) for name in _LINKEDIN_HOSTS):
+        raise HackathonError('Share the link of your LinkedIn post (linkedin.com).', 'INVALID', field='linkedin_url')
+    return value
+
+
+def _transaction_id(data: dict) -> str:
+    value = ' '.join(str(data.get('transaction_id') or '').split())
+    if len(value) > MAX_TRANSACTION_ID:
+        raise HackathonError(f'The transaction ID is limited to {MAX_TRANSACTION_ID} characters.', 'INVALID', field='transaction_id')
+    return value
+
+
+def _clean(data: dict, hackathon: Hackathon | None = None, *, by_organizer: bool = False) -> dict:
     data = data or {}
     stack = data.get('tech_stack') or []
     if not isinstance(stack, list) or len(stack) > MAX_TECH_STACK:
@@ -75,7 +142,28 @@ def _clean(data: dict) -> dict:
         'plan': long_text('plan', 'The plan', required=False),
         'tech_stack': [field_guard('tech_stack', lambda item=item: validate._text(item, 'Tech', 40)) for item in stack if str(item).strip()],
         'deck_url': field_guard('deck_url', lambda: validate._url(data.get('deck_url'), 'Slides link')) or None,
+        'linkedin_url': _linkedin(data, hackathon, by_organizer),
+        'transaction_id': _transaction_id(data),
     }
+
+
+def _chosen_files(team: Team, hackathon: Hackathon, data: dict, existing: IdeaSubmission | None, by_organizer: bool):
+    """The slides and payment screenshot this save should end with, and a check that the required ones are there."""
+    data = data or {}
+
+    def pick(kind: str, key: str, current):
+        # Left out = keep what is there; null = remove it; an id = use that upload.
+        chosen = idea_files.resolve(team, kind, data[key], current) if key in data else current
+        return chosen
+
+    deck = pick(IdeaFileKind.DECK, 'deck_file_id', existing.deck_file if existing else None)
+    payment = pick(IdeaFileKind.PAYMENT, 'payment_file_id', existing.payment_proof if existing else None)
+    if not by_organizer:
+        if hackathon.idea_deck_required and deck is None:
+            raise HackathonError('Upload your slides (.ppt or .pptx).', 'INVALID', field='deck_file_id')
+        if hackathon.idea_fee_amount and payment is None:
+            raise HackathonError(f'Upload the screenshot of your payment of \u20b9{hackathon.idea_fee_amount}.', 'INVALID', field='payment_file_id')
+    return deck, payment
 
 
 class IdeaService:
@@ -87,27 +175,15 @@ class IdeaService:
         by_organizer = access.has_permission(hackathon, actor, 'ideas')
         existing = IdeaSubmission.objects.select_for_update().filter(team=team).first()
         if not by_organizer:
-            state = window_state(hackathon)
-            if state == 'OFF':
-                raise HackathonError('Idea submission is not enabled for this hackathon.', 'FEATURE_OFF')
-            if not is_leader(team, actor):
-                raise PermissionDenied('Only the team leader can submit the idea.')
-            if team.status != TeamStatus.REGISTERED or team.is_waitlisted:
-                raise HackathonError('Only registered teams can submit an idea.', 'TEAM_NOT_REGISTERED')
-            if state == 'NOT_OPEN':
-                raise HackathonError('Idea submission has not opened yet.', 'IDEAS_NOT_OPEN')
-            if state == 'CLOSED':
-                raise HackathonError('The idea deadline has passed.', 'IDEAS_CLOSED')
-            if existing and existing.status in LOCKED_STATUSES:
-                raise HackathonError(
-                    'This idea has already been decided, so it can no longer be edited. Contact the organizers if something is wrong.',
-                    'IDEA_LOCKED',
-                )
-        cleaned = _clean(data)
+            ensure_can_edit(team, actor)
+        cleaned = _clean(data, hackathon, by_organizer=by_organizer)
+        deck, payment = _chosen_files(team, hackathon, data, existing, by_organizer)
         status = IdeaStatus.SUBMITTED if hackathon.idea_review_required else IdeaStatus.APPROVED
         idea, created = IdeaSubmission.objects.update_or_create(
-            team=team, defaults={**cleaned, 'submitted_by': actor, 'status': status},
+            team=team, defaults={**cleaned, 'submitted_by': actor, 'status': status, 'deck_file': deck, 'payment_proof': payment},
         )
+        idea_files.attach(deck, existing.deck_file if existing else None)
+        idea_files.attach(payment, existing.payment_proof if existing else None)
         log_audit_event(
             actor=actor, action='Submitted Hackathon Idea' if created else 'Updated Hackathon Idea',
             target_model='IdeaSubmission', target_id=idea.pk, details={'hackathon': hackathon.slug, 'team': team.name, 'title': idea.title},

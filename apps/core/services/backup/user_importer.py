@@ -205,7 +205,7 @@ class UserBackupImporter(BaseBackupImporter):
                     seen_club_ids[incoming_cid] = idx
 
                 if not ClubIDService.validate_club_id_format(incoming_cid):
-                    row_errors.append(f"Malformed Club ID '{incoming_cid}'. Expected format like '25SCC277'.")
+                    row_errors.append(f"Malformed Club ID '{incoming_cid}'. Expected a format like '25SCC277' or '21CCA041'.")
 
             is_valid = len(row_errors) == 0
             if is_valid:

@@ -31,6 +31,8 @@ _MAGIC: dict[str, tuple[bytes, ...]] = {
     ".docx": (b"PK\x03\x04",),
     ".xlsx": (b"PK\x03\x04",),
     ".pptx": (b"PK\x03\x04",),
+    ".ppt": (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",),
+    ".webp": (b"RIFF",),
 }
 
 

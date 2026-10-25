@@ -12,12 +12,13 @@ from rest_framework.response import Response as DRFResponse
 from rest_framework.views import APIView
 
 from apps.core.permissions import IsAdminOrClubLead
+from apps.core.throttling import ScopedRateThrottle
 
-from . import access, analytics, certificates, registration
+from . import access, analytics, certificates, idea_files, registration
 from .access import can_check_in, can_judge, scoped
 from .checkin import CheckInService, make_token
 from .cloning import CloneService
-from .ideas import IdeaService, project_gate, window_state as idea_window_state
+from .ideas import IdeaService, can_team_edit, project_gate, window_state as idea_window_state
 from .errors import HackathonError
 from .finder import FinderService
 from .judging import CriteriaService, JudgingService, ResultsService, StaffService, clean_target
@@ -237,11 +238,42 @@ class FinderInviteView(APIView):
 
 
 class FinderRequestView(APIView):
+    """POST /api/hackathons/{slug}/finder/teams/{id}/request/ {message, accept_rules, answers} - ask a recruiting team to take you in."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, slug, pk):
-        FinderService.request_to_join(_get_hackathon(request, slug), request.user, pk, request.data.get('message', ''))
-        return DRFResponse({'requested': True})
+        hackathon = _get_hackathon(request, slug)
+        data = request.data
+        join = FinderService.request_to_join(
+            hackathon, request.user, pk, data.get('message', ''),
+            {'accept_rules': data.get('accept_rules'), 'answers': data.get('answers')},
+        )
+        return DRFResponse({'requested': True, 'request': FinderService.serialize_request(join)})
+
+
+class FinderRequestsView(APIView):
+    """GET /api/hackathons/{slug}/finder/requests/ - requests waiting for you to answer (as a leader), and the ones you sent."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        return DRFResponse({
+            'incoming': [FinderService.serialize_request(r, incoming=True) for r in FinderService.incoming_requests(hackathon, request.user)],
+            'mine': [FinderService.serialize_request(r) for r in FinderService.my_requests(hackathon, request.user)],
+        })
+
+
+class FinderRequestDecisionView(APIView):
+    """POST /api/hackathons/{slug}/finder/requests/{id}/{accept|decline|cancel}/ - the leader answers, or the sender takes it back."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, slug, pk, action):
+        hackathon = _get_hackathon(request, slug)
+        if action == 'cancel':
+            joined = FinderService.cancel_request(hackathon, pk, request.user)
+        else:
+            joined = FinderService.decide_request(hackathon, pk, request.user, action)
+        return DRFResponse({'request': FinderService.serialize_request(joined)})
 
 
 # ---------------------------------------------------------------------------
@@ -549,14 +581,34 @@ class MyPermissionsView(APIView):
 # Phase 1: ideas (plan) - participants
 # ---------------------------------------------------------------------------
 
-def _idea_payload(idea: IdeaSubmission) -> dict:
-    return {
+def _idea_payload(idea: IdeaSubmission, *, payment: bool = False) -> dict:
+    """The idea as people see it. The payment screenshot and transaction id are added only when ``payment`` is set (the team, organizers)."""
+    data = {
         'id': idea.id, 'team_id': idea.team_id, 'team_name': idea.team.name, 'title': idea.title, 'problem': idea.problem,
         'solution': idea.solution, 'plan': idea.plan, 'tech_stack': idea.tech_stack, 'deck_url': idea.deck_url,
+        'linkedin_url': idea.linkedin_url, 'deck_file': idea_files.serialize(idea.deck_file),
         'status': idea.status, 'feedback': idea.feedback, 'reviewed_at': idea.reviewed_at,
         'score': idea.score, 'review_count': idea.review_count,
         'created_at': idea.created_at, 'updated_at': idea.updated_at,
     }
+    if payment:
+        data['payment_proof'] = idea_files.serialize(idea.payment_proof)
+        data['transaction_id'] = idea.transaction_id
+    return data
+
+
+def _idea_config(hackathon) -> dict:
+    """What the team's idea form needs to know about the organizers' choices."""
+    return {
+        'fee_amount': hackathon.idea_fee_amount, 'payment_note': hackathon.idea_payment_note,
+        'deck_required': hackathon.idea_deck_required, 'linkedin_required': hackathon.idea_linkedin_required,
+        'files_available': idea_files.available(), 'payment_qr': idea_files.serialize_qr(hackathon),
+        'edits_enabled': hackathon.idea_edits_enabled, 'edits_until': hackathon.idea_edits_until,
+    }
+
+
+def _idea_related(qs):
+    return qs.select_related('team', 'deck_file', 'payment_proof')
 
 
 class MyIdeaView(APIView):
@@ -564,15 +616,16 @@ class MyIdeaView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def _state(self, hackathon, team):
-        idea = IdeaSubmission.objects.select_related('team').filter(team=team).first() if team else None
+        idea = _idea_related(IdeaSubmission.objects).filter(team=team).first() if team else None
         state = idea_window_state(hackathon)
-        locked = bool(idea and idea.status in (IdeaStatus.APPROVED, IdeaStatus.REJECTED))
+        editable, _, why_not = can_team_edit(hackathon, idea)
         return {
             'state': state, 'opens_at': hackathon.idea_opens_at, 'deadline': hackathon.idea_deadline,
             'review_required': hackathon.idea_review_required, 'project_requires_idea': hackathon.project_requires_approved_idea,
-            'idea': _idea_payload(idea) if idea else None,
-            'can_edit': bool(team and team.leader_id == self.request.user.id and state == 'OPEN' and not locked
+            'idea': _idea_payload(idea, payment=True) if idea else None, 'config': _idea_config(hackathon),
+            'can_edit': bool(team and team.leader_id == self.request.user.id and editable
                              and team.status == TeamStatus.REGISTERED and not team.is_waitlisted),
+            'edit_blocked_reason': why_not if (team and team.leader_id == self.request.user.id and idea) else '',
         }
 
     def get(self, request, slug):
@@ -588,6 +641,105 @@ class MyIdeaView(APIView):
         return DRFResponse(self._state(hackathon, team))
 
 
+class MyIdeaFilesView(APIView):
+    """POST /api/hackathons/{slug}/my-idea/files/ {kind: DECK|PAYMENT, name, size, type} - ask for a signed upload form."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        team = _my_team(hackathon, request.user)
+        if team is None:
+            raise HackathonError('Join or create a team before submitting an idea.', 'NO_TEAM')
+        data = request.data
+        granted = idea_files.request_upload(team, request.user, data.get('kind'), data.get('name'), data.get('size'), data.get('type'))
+        return DRFResponse({
+            'file': idea_files.serialize(granted['file']), 'post': granted['post'],
+            'max_bytes': granted['max_bytes'], 'expires_in': granted['expires_in'],
+        }, status=status.HTTP_201_CREATED)
+
+
+class MyIdeaFileView(APIView):
+    """POST .../my-idea/files/{id}/complete/ confirms a finished upload; DELETE .../my-idea/files/{id}/ removes one not yet saved."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def _team(self, request, slug):
+        team = _my_team(_get_hackathon(request, slug), request.user)
+        if team is None:
+            raise HackathonError('Join or create a team before submitting an idea.', 'NO_TEAM')
+        return team
+
+    def post(self, request, slug, file_id):
+        file = idea_files.complete_upload(self._team(request, slug), request.user, file_id)
+        return DRFResponse({'file': idea_files.serialize(file)})
+
+    def delete(self, request, slug, file_id):
+        idea_files.discard_upload(self._team(request, slug), request.user, file_id)
+        return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+
+class IdeaQrView(APIView):
+    """
+    The QR code teams scan to pay (organizers with the settings permission).
+    POST /api/hackathons/{slug}/idea-qr/ {name, size, type} - ask for a signed upload form;
+    DELETE /api/hackathons/{slug}/idea-qr/ - remove the current one.
+    """
+    permission_classes = [scoped('settings')]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        granted = idea_files.request_qr_upload(hackathon, request.user, request.data.get('name'), request.data.get('size'))
+        return DRFResponse({
+            'file': idea_files.serialize(granted['file']), 'post': granted['post'],
+            'max_bytes': granted['max_bytes'], 'expires_in': granted['expires_in'],
+        }, status=status.HTTP_201_CREATED)
+
+    def delete(self, request, slug):
+        idea_files.remove_qr(_get_hackathon(request, slug), request.user)
+        return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+
+class IdeaQrFileView(APIView):
+    """POST /api/hackathons/{slug}/idea-qr/{id}/ - the upload arrived: check it and make it the payment QR code."""
+    permission_classes = [scoped('settings')]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug, file_id):
+        hackathon = _get_hackathon(request, slug)
+        file = idea_files.complete_qr_upload(hackathon, request.user, file_id)
+        return DRFResponse({'file': idea_files.serialize(file), 'payment_qr': idea_files.serialize_qr(hackathon)})
+
+
+class IdeaQrLinkView(APIView):
+    """GET /api/hackathons/{slug}/idea-qr/link/ - a 60-second link to the QR image: organizers and registered team members only."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def get(self, request, slug):
+        return DRFResponse(idea_files.qr_link(_get_hackathon(request, slug), request.user))
+
+
+class IdeaFileLinkView(APIView):
+    """GET /api/hackathons/{slug}/ideas/{id}/files/{deck|payment}/link/?inline=1 - a 60-second link. Payment proof: organizers and the team only."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def get(self, request, slug, pk, kind):
+        hackathon = _get_hackathon(request, slug)
+        idea = _idea_related(IdeaSubmission.objects).filter(pk=pk, team__hackathon=hackathon).first()
+        if idea is None:
+            raise Http404
+        return DRFResponse(idea_files.link(hackathon, request.user, idea, kind.upper(), inline=request.query_params.get('inline') == '1'))
+
+
 # ---------------------------------------------------------------------------
 # Phase 1: ideas - organizers
 # ---------------------------------------------------------------------------
@@ -598,13 +750,13 @@ class AdminIdeasView(APIView):
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
-        ideas = IdeaSubmission.objects.filter(team__hackathon=hackathon).select_related('team').order_by('status', 'team__name')
-        rows = [{**_idea_payload(idea), 'team_status': idea.team.status} for idea in ideas]
+        ideas = _idea_related(IdeaSubmission.objects).filter(team__hackathon=hackathon).order_by('status', 'team__name')
+        rows = [{**_idea_payload(idea, payment=True), 'team_status': idea.team.status} for idea in ideas]
         missing = IdeaService.teams_without_idea(hackathon).values('id', 'name')
         counts = {value: 0 for value in IdeaStatus.values}
         for row in rows:
             counts[row['status']] += 1
-        return DRFResponse({'state': idea_window_state(hackathon), 'rows': rows, 'missing': list(missing), 'counts': counts})
+        return DRFResponse({'state': idea_window_state(hackathon), 'rows': rows, 'missing': list(missing), 'counts': counts, 'config': _idea_config(hackathon)})
 
 
 class IdeaReviewView(APIView):
@@ -613,11 +765,11 @@ class IdeaReviewView(APIView):
 
     def post(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
-        idea = IdeaSubmission.objects.select_related('team').filter(pk=pk, team__hackathon=hackathon).first()
+        idea = _idea_related(IdeaSubmission.objects).filter(pk=pk, team__hackathon=hackathon).first()
         if idea is None:
             raise Http404
         IdeaService.review(idea, request.user, request.data.get('status', ''), request.data.get('feedback', ''))
-        return DRFResponse(_idea_payload(idea))
+        return DRFResponse(_idea_payload(idea, payment=True))
 
 
 class IdeaRemindView(APIView):
@@ -643,8 +795,8 @@ class JudgingIdeasListView(APIView):
         own_team = _my_team(hackathon, request.user)
         rows = []
         for idea in (
-            IdeaSubmission.objects.filter(team__hackathon=hackathon, team__is_waitlisted=False)
-            .exclude(team__status__in=(TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN)).select_related('team').order_by('team__name')
+            _idea_related(IdeaSubmission.objects).filter(team__hackathon=hackathon, team__is_waitlisted=False)
+            .exclude(team__status__in=(TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN)).order_by('team__name')
         ):
             review = mine.get(idea.id)
             rows.append({
