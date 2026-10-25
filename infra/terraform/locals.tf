@@ -58,8 +58,12 @@ locals {
     DEFAULT_FROM_EMAIL      = var.default_from_email
     SECURE_SSL_REDIRECT     = "False"
     FORM_UPLOADS_BACKEND    = var.enable_form_uploads ? "s3" : "inline"
-    FORM_UPLOAD_BUCKET      = aws_s3_bucket.form_uploads.id
-    FORM_UPLOAD_REGION      = var.aws_region
+    FORM_UPLOAD_BUCKET       = aws_s3_bucket.form_uploads.id
+    FORM_UPLOAD_REGION       = var.aws_region
+    # Regional endpoint. The global host (bucket.s3.amazonaws.com) redirects, and the browser
+    # treats that redirect as a CORS failure. Images that sign with virtual-hosted style use
+    # this same host.
+    FORM_UPLOAD_ENDPOINT_URL = "https://s3.${var.aws_region}.amazonaws.com"
     # Names only. Django reads the values from SSM when serverless.
     # RUN_STARTUP_TASKS is omitted so entrypoint.sh does not migrate on cold start.
     SSM_SECRET_KEY_NAME   = local.ssm_secret_key_name

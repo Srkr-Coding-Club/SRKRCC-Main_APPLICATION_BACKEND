@@ -5,13 +5,13 @@ from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.forms import upload_service
 from apps.forms.models import FieldType, FormStatus, FormUpload, UploadState
-from apps.forms.upload_storage import StoredObject
+from apps.forms.upload_storage import StoredObject, get_upload_storage
 from .factories import add_field, make_form
 
 User = get_user_model()
@@ -309,3 +309,21 @@ class UploadTests(APITestCase):
         self.assertEqual(upload_service.max_bytes_for(self.many), 2 * MB)
         self.assertEqual(upload_service.max_files_for(self.many), 10)
         self.assertEqual(upload_service.min_bytes_for(self.many), 1)
+
+
+@override_settings(FORM_UPLOAD_BUCKET="srkrcc-dev-form-uploads-745999343357", FORM_UPLOAD_REGION="ap-south-1", FORM_UPLOAD_ENDPOINT_URL="")
+class PresignHostTests(SimpleTestCase):
+    def test_the_form_posts_to_the_regional_bucket_host(self):
+        with mock.patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test"}):
+            signed = get_upload_storage().presign_post(
+                key="form-uploads/tmp/1/abc", content_type="image/png", min_bytes=1, max_bytes=100, expires=60,
+            )
+        self.assertEqual(signed["url"], "https://srkrcc-dev-form-uploads-745999343357.s3.ap-south-1.amazonaws.com/")
+
+    @override_settings(FORM_UPLOAD_BUCKET="local-bucket", FORM_UPLOAD_REGION="us-east-1", FORM_UPLOAD_ENDPOINT_URL="http://127.0.0.1:4566")
+    def test_a_local_endpoint_stays_on_that_host(self):
+        with mock.patch.dict("os.environ", {"AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test"}):
+            signed = get_upload_storage().presign_post(
+                key="k", content_type="image/png", min_bytes=1, max_bytes=100, expires=60,
+            )
+        self.assertEqual(signed["url"], "http://127.0.0.1:4566/local-bucket")
