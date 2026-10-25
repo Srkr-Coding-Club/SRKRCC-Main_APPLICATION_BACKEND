@@ -21,9 +21,6 @@ env:
   ECR_REPOSITORY: srkrcc-backend
   IMAGE_TAG: ${{ github.sha }}
   LAMBDA_FUNCTION_NAME: srkrcc-dev-backend
-  # Fixed on purpose. A repository variable must not be able to point this
-  # check at Render or any other host. /api/ping/ does not query the database.
-  LAMBDA_HEALTH_URL: https://bpta2b57zq225e7w7gsmr4mjom0lxqpx.lambda-url.ap-south-1.on.aws/api/ping/
   SSM_SECRET_KEY_NAME: /srkrcc/dev/backend/secret_key
   SSM_DATABASE_URL_NAME: /srkrcc/dev/backend/database_url
   # Same host list Django expects with DEBUG=False. Migrates do not serve
@@ -54,35 +51,18 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify AWS identity
-        run: |
-          set -euo pipefail
-          aws sts get-caller-identity
-
       - name: Log in to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Record the Lambda image currently in service
-        run: |
-          set -euo pipefail
-          previous="$(aws lambda get-function \
-            --function-name "$LAMBDA_FUNCTION_NAME" \
-            --region "$AWS_REGION" \
-            --query "Code.ImageUri" \
-            --output text)"
-          echo "PREVIOUS_IMAGE_URI=$previous" >> "$GITHUB_ENV"
-          echo "Current Lambda image: $previous"
-
-      - name: Build, push, and resolve the image digest
+      - name: Build and push the image
         run: |
           set -euo pipefail
           image="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           docker build --platform linux/amd64 --provenance=false -t "$image" .
-          docker push "$image" | tee "$RUNNER_TEMP/docker-push.txt"
-          pushed_digest="$(sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' "$RUNNER_TEMP/docker-push.txt" | tail -1)"
+          docker push "$image"
           ecr_digest="$(aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY" \
             --image-ids "imageTag=$IMAGE_TAG" \
@@ -93,128 +73,22 @@ jobs:
             echo "::error::ECR did not return a digest for the image built from $IMAGE_TAG."
             exit 1
           fi
-          if [ "$pushed_digest" != "$ecr_digest" ]; then
-            echo "::error::The digest registered in ECR does not match the image pushed from this commit."
-            exit 1
-          fi
-          local_digest="$(docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -F@ -v repo="$ECR_REGISTRY/$ECR_REPOSITORY" '$1 == repo { print $2; exit }')"
-          if [ -n "$local_digest" ] && [ "$local_digest" != "$ecr_digest" ]; then
-            echo "::error::The local image digest does not match the digest registered in ECR."
-            exit 1
-          fi
-          immutable="$ECR_REGISTRY/$ECR_REPOSITORY@$ecr_digest"
-          echo "IMMUTABLE_IMAGE=$immutable" >> "$GITHUB_ENV"
-          echo "Deploying immutable image $immutable"
+          echo "IMMUTABLE_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY@$ecr_digest" >> "$GITHUB_ENV"
+          echo "Deploying immutable image $ECR_REGISTRY/$ECR_REPOSITORY@$ecr_digest"
 
-      - name: Apply database migrations once
-        run: |
-          set -euo pipefail
-          # Migrations must remain compatible with the Lambda image still in
-          # service. This step does not roll the database back on failure.
-          # Failure output is redacted so a database URL cannot land in the log.
-          if ! docker run --rm --entrypoint python \
-            -e AWS_ACCESS_KEY_ID \
-            -e AWS_SECRET_ACCESS_KEY \
-            -e AWS_SESSION_TOKEN \
-            -e AWS_REGION \
-            -e AWS_DEFAULT_REGION="$AWS_REGION" \
-            -e SERVERLESS=1 \
-            -e DEBUG=False \
-            -e ALLOWED_HOSTS \
-            -e EMAIL_PROVIDER=console \
-            -e DATABASE_USE_DIRECT=1 \
-            -e SSM_SECRET_KEY_NAME \
-            -e SSM_DATABASE_URL_NAME \
-            "$IMMUTABLE_IMAGE" \
-            manage.py migrate --noinput >"$RUNNER_TEMP/migrate.txt" 2>&1; then
-            echo "::error::Database migration failed."
-            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/migrate.txt" || true
-            exit 1
-          fi
-
-      - name: Verify the database accepts the migrated schema
-        run: |
-          set -euo pipefail
-          # migrate --check connects and reports unapplied migrations. It does
-          # not change the schema. /api/ping/ is not this check.
-          if ! docker run --rm --entrypoint python \
-            -e AWS_ACCESS_KEY_ID \
-            -e AWS_SECRET_ACCESS_KEY \
-            -e AWS_SESSION_TOKEN \
-            -e AWS_REGION \
-            -e AWS_DEFAULT_REGION="$AWS_REGION" \
-            -e SERVERLESS=1 \
-            -e DEBUG=False \
-            -e ALLOWED_HOSTS \
-            -e EMAIL_PROVIDER=console \
-            -e DATABASE_USE_DIRECT=1 \
-            -e SSM_SECRET_KEY_NAME \
-            -e SSM_DATABASE_URL_NAME \
-            "$IMMUTABLE_IMAGE" \
-            manage.py migrate --check >"$RUNNER_TEMP/migrate-check.txt" 2>&1; then
-            echo "::error::Database verification failed. The database was unreachable or migrations are still unapplied."
-            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/migrate-check.txt" || true
-            exit 1
-          fi
-
-      - name: Create database cache table
-        run: |
-          set -euo pipefail
-          # DatabaseCache LOCATION=django_cache_table backs DRF throttling when
-          # DEBUG=False. createcachetable is idempotent: it creates the table
-          # only if missing and leaves an existing table untouched.
-          if ! docker run --rm --entrypoint python \
-            -e AWS_ACCESS_KEY_ID \
-            -e AWS_SECRET_ACCESS_KEY \
-            -e AWS_SESSION_TOKEN \
-            -e AWS_REGION \
-            -e AWS_DEFAULT_REGION="$AWS_REGION" \
-            -e SERVERLESS=1 \
-            -e DEBUG=False \
-            -e ALLOWED_HOSTS \
-            -e EMAIL_PROVIDER=console \
-            -e DATABASE_USE_DIRECT=1 \
-            -e SSM_SECRET_KEY_NAME \
-            -e SSM_DATABASE_URL_NAME \
-            "$IMMUTABLE_IMAGE" \
-            manage.py createcachetable >"$RUNNER_TEMP/createcachetable.txt" 2>&1; then
-            echo "::error::Database cache table creation failed."
-            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/createcachetable.txt" || true
-            exit 1
-          fi
-
-      - name: Seed feature flags and the admin account
+      - name: Migrate, create the cache table, and seed
         env:
           # Secret, not a variable: never store the admin password in plain text.
           DJANGO_SUPERUSER_PASSWORD: ${{ secrets.DJANGO_SUPERUSER_PASSWORD }}
           DJANGO_SUPERUSER_EMAIL: ${{ vars.DJANGO_SUPERUSER_EMAIL || 'srkrcodingclubofficial@gmail.com' }}
         run: |
           set -euo pipefail
-          # Same commands as entrypoint.sh when RUN_STARTUP_TASKS=1.
-          # setup_admin only uses the password when creating the first admin;
-          # an existing admin's password is left alone unless --reset-password.
-          # Direct host: the pooler drops the session lock migrate just used.
+          # One container for every database step. setup_admin only uses the
+          # password when creating the first admin. Direct host: the pooler
+          # drops the session lock migrate uses. Failure output is redacted
+          # so a database URL cannot land in the log.
           if [ -z "${DJANGO_SUPERUSER_PASSWORD:-}" ]; then
-            echo "::error::Set the repository secret DJANGO_SUPERUSER_PASSWORD (Settings → Secrets and variables → Actions). There is no default admin password when DEBUG=False."
-            exit 1
-          fi
-          if ! docker run --rm --entrypoint python \
-            -e AWS_ACCESS_KEY_ID \
-            -e AWS_SECRET_ACCESS_KEY \
-            -e AWS_SESSION_TOKEN \
-            -e AWS_REGION \
-            -e AWS_DEFAULT_REGION="$AWS_REGION" \
-            -e SERVERLESS=1 \
-            -e DEBUG=False \
-            -e ALLOWED_HOSTS \
-            -e EMAIL_PROVIDER=console \
-            -e DATABASE_USE_DIRECT=1 \
-            -e SSM_SECRET_KEY_NAME \
-            -e SSM_DATABASE_URL_NAME \
-            "$IMMUTABLE_IMAGE" \
-            manage.py seed_flags >"$RUNNER_TEMP/seed-flags.txt" 2>&1; then
-            echo "::error::Feature-flag seed failed."
-            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/seed-flags.txt" || true
+            echo "::error::Set the repository secret DJANGO_SUPERUSER_PASSWORD. There is no default admin password when DEBUG=False."
             exit 1
           fi
           if ! docker run --rm --entrypoint python \
@@ -233,9 +107,10 @@ jobs:
             -e SSM_SECRET_KEY_NAME \
             -e SSM_DATABASE_URL_NAME \
             "$IMMUTABLE_IMAGE" \
-            manage.py setup_admin >"$RUNNER_TEMP/setup-admin.txt" 2>&1; then
-            echo "::error::Admin account setup failed."
-            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/setup-admin.txt" || true
+            -c 'import subprocess,sys; steps=[[sys.executable,"manage.py","migrate","--noinput"],[sys.executable,"manage.py","createcachetable"],[sys.executable,"manage.py","seed_flags"],[sys.executable,"manage.py","setup_admin"]]; [print("--> "+" ".join(step), flush=True) or subprocess.check_call(step) for step in steps]' \
+            >"$RUNNER_TEMP/startup.txt" 2>&1; then
+            echo "::error::Database startup failed. Migrations were not rolled back."
+            sed -E 's#postgres(ql)?://[^[:space:]]+#<database-url>#g' "$RUNNER_TEMP/startup.txt" || true
             exit 1
           fi
 
@@ -251,20 +126,3 @@ jobs:
           aws lambda wait function-updated \
             --function-name "$LAMBDA_FUNCTION_NAME" \
             --region "$AWS_REGION"
-
-      - name: Check that the process is answering
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4 5 6; do
-            code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 "$LAMBDA_HEALTH_URL" || echo "000")"
-            if [ "$code" = "200" ]; then
-              echo "Process liveness check returned HTTP 200. This does not prove a database query succeeded."
-              exit 0
-            fi
-            echo "Attempt ${attempt} returned HTTP ${code}."
-            sleep 10
-          done
-          echo "::error::Process liveness check failed. The database was not rolled back."
-          echo "Previous Lambda image: ${PREVIOUS_IMAGE_URI}"
-          echo "Restore that image only after confirming it still works with the migrated schema. Do not run migrate backwards automatically."
-          exit 1

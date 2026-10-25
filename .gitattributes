@@ -1,1 +1,2 @@
 entrypoint.sh text eol=lf
+docker/lambda-adapter binary

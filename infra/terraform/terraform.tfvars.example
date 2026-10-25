@@ -25,4 +25,11 @@ cors_allowed_origins = "http://localhost:3000"
 csrf_trusted_origins = "http://localhost:3000"
 frontend_url         = "http://localhost:3000"
 
+# Gmail SMTP for the Lambda function. Put the real app password only in
+# terraform.tfvars. Leave these empty in the example.
+email_provider      = "gmail"
+email_host_user     = ""
+email_host_password = ""
+default_from_email  = ""
+
 log_retention_days = 14
