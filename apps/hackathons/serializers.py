@@ -422,10 +422,12 @@ class TeamMemberSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     email = serializers.EmailField(source='user.email', read_only=True)
     club_id = serializers.CharField(source='user.club_id', read_only=True)
+    # Only people on the same team ever receive this serializer, so a number is shared with teammates and nobody else.
+    phone_number = serializers.CharField(source='user.phone_number', read_only=True, allow_null=True)
 
     class Meta:
         model = TeamMember
-        fields = ['user_id', 'name', 'email', 'club_id', 'role', 'joined_at']
+        fields = ['user_id', 'name', 'email', 'club_id', 'phone_number', 'role', 'joined_at']
 
     def get_name(self, obj):
         return _user_name(obj.user)
@@ -433,14 +435,13 @@ class TeamMemberSerializer(serializers.ModelSerializer):
 
 class AdminTeamMemberSerializer(TeamMemberSerializer):
     college = serializers.SerializerMethodField()
-    phone_number = serializers.CharField(source='user.phone_number', read_only=True)
     branch = serializers.CharField(source='user.branch', read_only=True)
     year = serializers.IntegerField(source='user.year', read_only=True)
     roll_number = serializers.CharField(source='user.roll_number', read_only=True)
 
     class Meta(TeamMemberSerializer.Meta):
         fields = TeamMemberSerializer.Meta.fields + [
-            'phone_number', 'branch', 'year', 'roll_number', 'college', 'answers', 'rules_accepted_at',
+            'branch', 'year', 'roll_number', 'college', 'answers', 'rules_accepted_at',
         ]
 
     def get_college(self, obj):

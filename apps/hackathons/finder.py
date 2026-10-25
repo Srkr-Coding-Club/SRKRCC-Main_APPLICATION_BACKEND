@@ -52,6 +52,10 @@ def _person(user) -> str:
     return f'{user.first_name} {user.last_name}'.strip() or user.email.split('@')[0]
 
 
+def _phone(user) -> str:
+    return (user.phone_number or '').strip()
+
+
 def _profile_line(user) -> str:
     college = user.college.name if user.college_id else (user.other_college_name or '')
     return ' · '.join(part for part in (user.branch, f'Year {user.year}' if user.year else '', college) if part)
@@ -84,10 +88,13 @@ class FinderService:
     def listing(hackathon: Hackathon, viewer) -> dict:
         _require_finder_on(hackathon)
         in_team = set(hackathon.memberships.values_list('user_id', flat=True))
+        # A leader may call someone before inviting them; everyone else sees no numbers here.
+        viewer_leads = hackathon.teams.filter(leader=viewer, status__in=ACTIVE_TEAM_STATUSES).exists()
         seekers = [
             {
                 'id': seeker.id, 'name': _person(seeker.user), 'skills': seeker.skills, 'note': seeker.note,
                 'profile': _profile_line(seeker.user), 'is_me': seeker.user_id == viewer.id,
+                **({'phone': _phone(seeker.user)} if viewer_leads else {}),
             }
             for seeker in hackathon.seekers.select_related('user', 'user__college').filter(is_active=True)
             if seeker.user_id not in in_team
@@ -214,6 +221,7 @@ class FinderService:
             seeker = TeamSeeker.objects.filter(hackathon=request.hackathon, user=request.user).first()
             data.update({
                 'name': _person(request.user), 'profile': _profile_line(request.user), 'skills': seeker.skills if seeker else '',
+                'phone': _phone(request.user),
                 'blocked_reason': FinderService.blocked_reason(request),
             })
         return data

@@ -222,7 +222,8 @@ class LeaderOnlyEditTests(APITestCase):
         self.client.force_authenticate(self.member)
         resp = self.client.get(f'/api/hackathons/teams/{self.team.id}/')
         self.assertEqual(resp.status_code, 200)
-        self.assertNotIn('phone_number', resp.data['members'][0])
+        # Teammates share mobile numbers with each other (and only with each other).
+        self.assertIn('phone_number', resp.data['members'][0])
 
     def test_edits_locked(self):
         self.hack.team_edits_locked = True
