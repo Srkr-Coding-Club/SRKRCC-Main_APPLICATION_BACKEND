@@ -31,6 +31,11 @@ output "form_uploads_bucket_name" {
   value       = aws_s3_bucket.form_uploads.id
 }
 
+output "form_uploads_bucket_origin" {
+  description = "Set this as the frontend UPLOAD_CONNECT_SRC (Amplify env, then rebuild). Browsers post files to this origin."
+  value       = "https://${aws_s3_bucket.form_uploads.bucket_regional_domain_name}"
+}
+
 output "ssm_secret_key_name" {
   description = "Write SECRET_KEY here with the AWS CLI. Not created by Terraform."
   value       = local.ssm_secret_key_name

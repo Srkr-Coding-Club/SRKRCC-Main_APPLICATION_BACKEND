@@ -13,7 +13,7 @@ real, current setup, not the target/future one described further below:
 | Database | Render PostgreSQL (`render.yaml`'s `databases:` block). |
 | Cache | **None.** No `CACHES` setting in `config/settings.py` — Django's default in-process `LocMemCache` backs the one thing that uses caching (password-setup rate limiting). |
 | Background jobs | **None separately deployed.** Plain Python threads inside the same web process — see [tech-stack.md](../architecture/tech-stack.md#background-jobs--caching-current-state). |
-| File storage | Django's default local filesystem storage — no Cloudflare R2 / S3 config exists in `settings.py` or `requirements.txt`. On a host with an ephemeral filesystem (like Render's free tier), uploaded files do not reliably survive a redeploy — a real gap if user-uploaded files (signatures, profile photos) matter long-term. |
+| File storage | Render leaves `USE_S3` and `FORM_UPLOADS_BACKEND` unset, so Django uses the local filesystem and form files stay base64 in the submission. That disk is ephemeral. `settings.py` can use S3 (`USE_S3`, `django-storages`, `boto3`); the Lambda Terraform stack turns that on, and turns direct form uploads on with `FORM_UPLOADS_BACKEND=s3`. |
 | Email | Django's `EmailMultiAlternatives` via `EMAIL_PROVIDER`: console in dev, Resend on staging, Gmail SMTP in prod. Per-environment variables are in `.env.staging.example` and `.env.production.example`; details in [email-notifications.md](email-notifications.md#email-providers). `render.yaml` does not define the email variables, so set them in the Render dashboard for each service. |
 | Monitoring | None configured (no Sentry/PostHog in `requirements.txt`). |
 
@@ -49,6 +49,8 @@ the running system.
 ## AWS Lambda (dev function `srkrcc-dev-backend`)
 
 Render is unchanged: `build.sh` still runs `migrate` at build time, and the start command is Gunicorn with `SECRET_KEY` and `DATABASE_URL` from the Render environment. That path does not set `SERVERLESS` or `AWS_LAMBDA_FUNCTION_NAME`, so it never calls Parameter Store.
+
+The dev Terraform stack sets `USE_S3=True` and `FORM_UPLOADS_BACKEND=s3` on the Lambda function. Those values take effect only after `terraform apply`. Render does not receive them. Backups still write under `/tmp/media` on Lambda.
 
 Lambda does not receive the database URL as an environment variable. `config/ssm_secrets.py` loads `SECRET_KEY` and `DATABASE_URL` from `/srkrcc/dev/backend/secret_key` and `/srkrcc/dev/backend/database_url` in `ap-south-1` before Django reads settings. `/api/ping/` does not query Postgres, so a healthy ping does not mean the database is reachable.
 

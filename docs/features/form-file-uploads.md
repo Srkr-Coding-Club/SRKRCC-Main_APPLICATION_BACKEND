@@ -5,7 +5,7 @@ File and Multi-File questions can send their files straight to an S3 bucket inst
 ## Switches
 | Setting | Meaning |
 |---|---|
-| `FORM_UPLOADS_BACKEND` | `inline` (default, legacy base64) or `s3`. Switching is the rollout/rollback lever. |
+| `FORM_UPLOADS_BACKEND` | `inline` (application default: local and Render, legacy base64) or `s3`. The dev Lambda stack sets `s3` via `enable_form_uploads`. Set that variable to `false` to roll Lambda back to base64. |
 | `FORM_UPLOAD_BUCKET` | Bucket for uploads (falls back to `AWS_STORAGE_BUCKET_NAME`). Use a dedicated bucket. |
 | `FORM_UPLOAD_DEFAULT_MB` | Limit for a question whose admin set none. Default **2**. |
 | `FORM_UPLOAD_CEILING_MB` | Most any admin may set. Default 25. |
@@ -81,7 +81,7 @@ The admin menu shows an amber badge on Data Center -> Maintenance with the numbe
 API: `GET /api/admin/maintenance/` and `POST /api/admin/maintenance/<task>/run/` (both admin-only). To add a task, register a `maintenance.Task` (see `apps/forms/maintenance_tasks.py`).
 
 ## Infrastructure (`infra/terraform/s3_form_uploads.tf`)
-A bucket separate from media: public access blocked, AES-256 encryption, TLS-only policy, versioning, a CORS rule for the site origin (`POST`/`GET`, from `cors_allowed_origins` and `csrf_trusted_origins`), and lifecycle rules: unattached uploads under `form-uploads/tmp/` expire after `form_upload_tmp_retention_days` (8, must stay above the app's pending window), and old versions of deleted or replaced files after `form_upload_noncurrent_days` (7). The Lambda role may read, write and delete objects in it. Switch it on with `enable_form_uploads = true` (sets `FORM_UPLOADS_BACKEND=s3`, the bucket and region); apply with it `false` first, check the bucket, then turn it on. Add the bucket's origin (`https://<bucket>.s3.<region>.amazonaws.com`) to the site's `UPLOAD_CONNECT_SRC`.
+A bucket separate from media: public access blocked, AES-256 encryption, TLS-only policy, versioning, a CORS rule for the site origin (`POST`/`GET`, from `cors_allowed_origins` and `csrf_trusted_origins`), and lifecycle rules: unattached uploads under `form-uploads/tmp/` expire after `form_upload_tmp_retention_days` (8, must stay above the app's pending window), and old versions of deleted or replaced files after `form_upload_noncurrent_days` (7). The Lambda role may read, write and delete objects in it. `enable_form_uploads` defaults to true, which sets `FORM_UPLOADS_BACKEND=s3`, the bucket, and the region on Lambda. After apply, set the frontend `UPLOAD_CONNECT_SRC` to the `form_uploads_bucket_origin` output (`https://<bucket>.s3.<region>.amazonaws.com`) and rebuild the site. The bucket CORS rule already allows `cors_allowed_origins` and `csrf_trusted_origins`.
 
 ## Not built yet
 ZIP download of many files, and a GuardDuty plan itself (enabled in the AWS console / its own Terraform, not here).

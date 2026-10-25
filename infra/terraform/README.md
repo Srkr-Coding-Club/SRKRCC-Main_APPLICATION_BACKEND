@@ -106,10 +106,12 @@ Recommended next step, in a **separate** bootstrap:
 | Env | Value on Lambda |
 |---|---|
 | `SERVERLESS` | `1` (no migrate on cold start; `conn_max_age=0`; `/tmp/media`) |
-| `USE_S3` | `False` unless `enable_s3_storage` |
+| `USE_S3` | `True` when `enable_s3_storage` (default true). Django default storage uses the media bucket. Backups still use local paths. |
+| `FORM_UPLOADS_BACKEND` | `s3` when `enable_form_uploads` (default true). File questions, slides, and payment screenshots post straight to the form-uploads bucket. |
+| `FORM_UPLOAD_BUCKET` | The form-uploads bucket id. Copy `form_uploads_bucket_origin` into the frontend `UPLOAD_CONNECT_SRC`. |
 | `RUN_STARTUP_TASKS` | unset |
 | `EMAIL_PROVIDER` | `var.email_provider` (`gmail` by default) |
 | `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `DEFAULT_FROM_EMAIL` | Gmail SMTP. The app password is a sensitive Terraform variable, so it is in state. Django does not load it from SSM. Set it only in gitignored `terraform.tfvars`. |
 | `FRONTEND_URL` | `var.frontend_url`, used for links inside email |
 
-Backups and DMC exports still use local `open()` paths. They are not on S3 unless Django `USE_S3` is enabled, and even then those services do not use the storage backend.
+Backups and DMC exports still use local `open()` paths. They do not follow Django's storage backend, so `USE_S3` does not put them in the media bucket. On Lambda those files stay under `/tmp/media`.
