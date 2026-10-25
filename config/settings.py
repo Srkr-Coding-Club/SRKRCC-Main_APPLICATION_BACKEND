@@ -488,9 +488,10 @@ RESEND_API_KEY = _email['RESEND_API_KEY']
 DEFAULT_FROM_EMAIL = _email['DEFAULT_FROM_EMAIL']
 
 # Email verification (apps/accounts/services/email_verification.py).
-# EMAIL_VERIFICATION_MODE: off = nothing happens; banner = people see their status; features = private features
-# need a verified address; block = an account still unverified after its deadline is locked out of the private app.
-EMAIL_VERIFICATION_MODE = os.getenv('EMAIL_VERIFICATION_MODE', 'off').strip().lower()
+# EMAIL_VERIFICATION_MODE: off = nothing shown; banner = people see their status and can verify (the default);
+# features = private features need a verified address; block = an account still unverified after its deadline is
+# locked out of the private app. Set off only to hide the feature entirely.
+EMAIL_VERIFICATION_MODE = os.getenv('EMAIL_VERIFICATION_MODE', 'banner').strip().lower()
 EMAIL_VERIFY_GRACE_DAYS = int(os.getenv('EMAIL_VERIFY_GRACE_DAYS', '7'))
 EMAIL_VERIFY_LINK_HOURS = int(os.getenv('EMAIL_VERIFY_LINK_HOURS', '24'))
 EMAIL_VERIFY_DISPUTE_DAYS = int(os.getenv('EMAIL_VERIFY_DISPUTE_DAYS', '14'))

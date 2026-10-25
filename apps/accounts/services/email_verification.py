@@ -63,9 +63,13 @@ class VerificationError(Exception):
 # Settings and state
 # ---------------------------------------------------------------------------
 
+DEFAULT_MODE = 'banner'
+
+
 def mode() -> str:
-    value = str(getattr(settings, 'EMAIL_VERIFICATION_MODE', 'off')).strip().lower()
-    return value if value in MODES else 'off'
+    """The rollout stage. An unknown value (a typo in the environment) means the default, not silently off."""
+    value = str(getattr(settings, 'EMAIL_VERIFICATION_MODE', DEFAULT_MODE)).strip().lower()
+    return value if value in MODES else DEFAULT_MODE
 
 
 def mode_at_least(level: str) -> bool:

@@ -84,9 +84,14 @@ class State(_Case):
         user.refresh_from_db()
         self.assertAlmostEqual((ev.deadline(user) - timezone.now()).total_seconds(), 7 * 86400, delta=120)
 
-    def test_an_unknown_mode_means_off(self):
+    def test_an_unknown_mode_means_the_default(self):
         with override_settings(EMAIL_VERIFICATION_MODE='nonsense'):
-            self.assertEqual(ev.mode(), 'off')
+            self.assertEqual(ev.mode(), ev.DEFAULT_MODE)
+
+    def test_the_default_is_banner_so_people_see_it_out_of_the_box(self):
+        from django.conf import settings as django_settings
+        self.assertEqual(ev.DEFAULT_MODE, 'banner')
+        self.assertEqual(django_settings.EMAIL_VERIFICATION_MODE, 'banner')
 
 
 class TheGate(_Case):

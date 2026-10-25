@@ -21,12 +21,12 @@ The email address is the account's identity and where every confirmation goes. W
 ## The Switch: `EMAIL_VERIFICATION_MODE`
 | Value | Effect |
 |---|---|
-| `off` (default) | Nothing happens. |
-| `banner` | People see their status and can verify. Nothing is restricted. |
+| `off` | Nothing is shown and nothing is restricted (use only to hide the feature). |
+| `banner` (default) | People see their status and can verify. Nothing is restricted. |
 | `features` | The verified-only features above are enforced. |
 | `block` | As `features`, and an account past its deadline is blocked. |
 
-Roll out in that order. Going back is just changing the value; to give people more time while email is having trouble, use `extend_verification_deadlines`.
+An unknown value falls back to the default (`banner`). Roll out in that order. Going back is just changing the value; to give people more time while email is having trouble, use `extend_verification_deadlines`.
 
 ## How It Works
 - **State**: `User.email_verified_at`, `email_verify_deadline`, `email_disputed_at`. `GET /api/auth/me/` returns `email_verification` (`mode`, `verified`, `days_left`, `blocked`, masked addresses).

@@ -45,10 +45,16 @@ def sweep_expired(*, now=None, batch: int = 500, keep_rows_days: int = 30) -> di
     if stale:
         FormUpload.objects.filter(pk__in=[u.pk for u in stale]).update(state=UploadState.DELETED, deleted_at=now)
         _delete_objects([u.key for u in stale])
+    from apps.hackathons.models import IdeaFile
+    stale_ideas = list(IdeaFile.objects.filter(state__in=(UploadState.PENDING, UploadState.UPLOADED), expires_at__lt=now)[:batch])
+    if stale_ideas:
+        IdeaFile.objects.filter(pk__in=[f.pk for f in stale_ideas]).update(state=UploadState.DELETED, deleted_at=now)
+        _delete_objects([f.key for f in stale_ideas])
+    IdeaFile.objects.filter(state__in=(UploadState.DELETED, UploadState.REJECTED), updated_at__lt=now - timedelta(days=keep_rows_days)).delete()
     forgotten, _ = FormUpload.objects.filter(
         state__in=(UploadState.DELETED, UploadState.REJECTED), updated_at__lt=now - timedelta(days=keep_rows_days),
     ).delete()
-    return {'expired': len(stale), 'rows_forgotten': forgotten}
+    return {'expired': len(stale) + len(stale_ideas), 'rows_forgotten': forgotten}
 
 
 # --- malware scan results -------------------------------------------------------------------------
@@ -67,8 +73,24 @@ def refresh_scan(upload: FormUpload, storage=None) -> str:
         upload.scan_status = ScanStatus.CLEAN
         upload.save(update_fields=['scan_status', 'updated_at'])
     elif verdict == _INFECTED_VERDICT:
-        _quarantine(upload)
+        (_quarantine_idea_file if hasattr(upload, 'kind') else _quarantine)(upload)
     return upload.scan_status
+
+
+def _quarantine_idea_file(file) -> None:
+    """Malware in an idea file: detached from the idea, removed from the bucket, and recorded."""
+    from apps.hackathons.models import IdeaSubmission
+    with transaction.atomic():
+        IdeaSubmission.objects.filter(deck_file=file).update(deck_file=None)
+        IdeaSubmission.objects.filter(payment_proof=file).update(payment_proof=None)
+        from apps.hackathons.models import Hackathon
+        Hackathon.objects.filter(idea_payment_qr=file).update(idea_payment_qr=None)
+        file.scan_status, file.state, file.deleted_at = ScanStatus.INFECTED, UploadState.DELETED, timezone.now()
+        file.save(update_fields=['scan_status', 'state', 'deleted_at', 'updated_at'])
+        log_audit_event(actor=None, action='Malware Found In Idea File', target_model='Hackathon', target_id=str(file.hackathon_id), details={
+            'file': file.original_name, 'kind': file.kind, 'team_id': file.team_id,
+        })
+        transaction.on_commit(lambda: _delete_objects([file.key]))
 
 
 def _quarantine(upload: FormUpload) -> None:
@@ -94,6 +116,10 @@ def scan_pending(*, days: int = 3, batch: int = 500) -> dict[str, int]:
     """Check files still waiting for a verdict (uploaded in the last ``days`` days)."""
     since = timezone.now() - timedelta(days=days)
     waiting = list(FormUpload.objects.filter(
+        scan_status=ScanStatus.NOT_SCANNED, state__in=(UploadState.UPLOADED, UploadState.ATTACHED), created_at__gte=since,
+    )[:batch])
+    from apps.hackathons.models import IdeaFile
+    waiting += list(IdeaFile.objects.filter(
         scan_status=ScanStatus.NOT_SCANNED, state__in=(UploadState.UPLOADED, UploadState.ATTACHED), created_at__gte=since,
     )[:batch])
     storage = upload_storage.get_upload_storage() if waiting else None
@@ -180,14 +206,18 @@ def backfill_inline(*, form_slug: str | None = None, limit: int = 0, dry_run: bo
 # --- how much work is waiting (for the Maintenance page) --------------------------------------------
 
 def count_expired() -> int:
-    return FormUpload.objects.filter(state__in=(UploadState.PENDING, UploadState.UPLOADED), expires_at__lt=timezone.now()).count()
+    from apps.hackathons.models import IdeaFile
+    now = timezone.now()
+    states = (UploadState.PENDING, UploadState.UPLOADED)
+    return FormUpload.objects.filter(state__in=states, expires_at__lt=now).count() + IdeaFile.objects.filter(state__in=states, expires_at__lt=now).count()
 
 
 def count_unscanned(days: int = 3) -> int:
-    return FormUpload.objects.filter(
-        scan_status=ScanStatus.NOT_SCANNED, state__in=(UploadState.UPLOADED, UploadState.ATTACHED),
-        created_at__gte=timezone.now() - timedelta(days=days),
-    ).count()
+    from apps.hackathons.models import IdeaFile
+    since = timezone.now() - timedelta(days=days)
+    kept = (UploadState.UPLOADED, UploadState.ATTACHED)
+    return (FormUpload.objects.filter(scan_status=ScanStatus.NOT_SCANNED, state__in=kept, created_at__gte=since).count()
+            + IdeaFile.objects.filter(scan_status=ScanStatus.NOT_SCANNED, state__in=kept, created_at__gte=since).count())
 
 
 def count_inline_answers() -> int:

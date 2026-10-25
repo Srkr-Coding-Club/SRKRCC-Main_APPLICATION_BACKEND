@@ -1,12 +1,13 @@
-# AWS Lambda Web Adapter (multi-arch). Documented image:
-# public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0
-# Local Compose does not invoke the extension; Lambda's runtime does
-# and proxies HTTP to PORT.
-FROM public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 AS adapter
-
+# Official Lambda Web Adapter 1.1.0 (linux/amd64), taken from
+# public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0. GitHub runners cannot pull
+# that registry (anonymous 429). A binary compiled in this image crashed on
+# Lambda before Django started, so the function URL returned 502. This copy is
+# the static release binary (sha256 358b36689e564ba479aba244916ba5226e18d7d01f4bf6bf164088552a71c40d).
+# Local Compose does not invoke the extension.
 FROM python:3.12-slim
 
-COPY --from=adapter /lambda-adapter /opt/extensions/lambda-adapter
+COPY docker/lambda-adapter /opt/extensions/lambda-adapter
+RUN chmod 755 /opt/extensions/lambda-adapter
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

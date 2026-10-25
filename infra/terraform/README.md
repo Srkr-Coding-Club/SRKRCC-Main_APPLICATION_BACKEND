@@ -108,5 +108,8 @@ Recommended next step, in a **separate** bootstrap:
 | `SERVERLESS` | `1` (no migrate on cold start; `conn_max_age=0`; `/tmp/media`) |
 | `USE_S3` | `False` unless `enable_s3_storage` |
 | `RUN_STARTUP_TASKS` | unset |
+| `EMAIL_PROVIDER` | `var.email_provider` (`gmail` by default) |
+| `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `DEFAULT_FROM_EMAIL` | Gmail SMTP. The app password is a sensitive Terraform variable, so it is in state. Django does not load it from SSM. Set it only in gitignored `terraform.tfvars`. |
+| `FRONTEND_URL` | `var.frontend_url`, used for links inside email |
 
 Backups and DMC exports still use local `open()` paths. They are not on S3 unless Django `USE_S3` is enabled, and even then those services do not use the storage backend.

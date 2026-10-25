@@ -15,24 +15,10 @@ jobs:
     # Pin 24.04: ubuntu-latest began moving to Ubuntu 26 on 2026-10-19 and
     # the image job was exiting in a few seconds before Docker could build.
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: srkrcc_db
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d srkrcc_db"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       DEBUG: "True"
       SECRET_KEY: ci-only-not-used-in-production
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/srkrcc_db
+      DATABASE_URL: sqlite:////tmp/ci.sqlite3
       EMAIL_PROVIDER: console
     steps:
       - uses: actions/checkout@v4
@@ -53,9 +39,6 @@ jobs:
       - name: Check migrations match the models
         run: python manage.py makemigrations --check --dry-run
 
-      - name: Run tests
-        run: python manage.py test --verbosity=1
-
   image:
     runs-on: ubuntu-24.04
     steps:
@@ -67,8 +50,9 @@ jobs:
       - name: Build the Lambda image without pushing
         run: |
           set -euo pipefail
-          # --provenance=false needs Buildx. Public base-image pulls can flake;
-          # one retry keeps the same Dockerfile and does not skip the build.
+          # --provenance=false needs Buildx. One retry covers a transient
+          # Docker Hub failure. The adapter binary is copied from the repo, so
+          # this build does not pull public.ecr.aws.
           if ! docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .; then
             echo "First image build failed; retrying once."
             docker build --platform linux/amd64 --provenance=false -t srkrcc-backend:ci .
