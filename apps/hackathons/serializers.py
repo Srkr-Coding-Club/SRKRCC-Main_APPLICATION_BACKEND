@@ -120,18 +120,29 @@ class HackathonSerializer(serializers.ModelSerializer):
         return normalize_image_url(value)
 
     BANNER_CROP_LIMITS = {'x': (0, 100), 'y': (0, 100), 'zoom': (1, 3)}
+    REQUIRED_BANNER_CROP_KEYS = {'x', 'y', 'zoom'}
+    ALLOWED_BANNER_CROP_KEYS = {'x', 'y', 'zoom', 'mode'}
 
     def validate_banner_crop(self, value):
         if value in (None, {}):
             return {}
-        if not isinstance(value, dict) or set(value) - set(self.BANNER_CROP_LIMITS):
-            raise serializers.ValidationError('Must be {x, y, zoom}.')
+        if (
+            not isinstance(value, dict)
+            or set(value) - self.ALLOWED_BANNER_CROP_KEYS
+            or not self.REQUIRED_BANNER_CROP_KEYS.issubset(set(value))
+        ):
+            raise serializers.ValidationError('Must be {x, y, zoom} (with optional mode).')
         cleaned = {}
         for key, (low, high) in self.BANNER_CROP_LIMITS.items():
             number = value.get(key)
             if isinstance(number, bool) or not isinstance(number, (int, float)) or not low <= number <= high:
                 raise serializers.ValidationError(f'{key} must be a number between {low} and {high}.')
             cleaned[key] = round(float(number), 2)
+        mode = value.get('mode')
+        if mode in ('crop', 'full'):
+            cleaned['mode'] = mode
+        elif mode is not None:
+            raise serializers.ValidationError("mode must be 'crop' or 'full'.")
         return cleaned
 
     MAX_TAGS = 10

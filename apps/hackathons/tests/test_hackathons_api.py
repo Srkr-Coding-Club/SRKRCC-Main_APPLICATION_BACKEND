@@ -272,15 +272,22 @@ class HackathonBannerCropTests(TestCase):
         self.assertEqual(self.client.get(self.url).data['banner_crop'], {})
 
     def test_admin_can_save_and_clear_banner_crop(self):
-        resp = self.client.patch(self.url, {'banner_crop': {'x': 30, 'y': 72.5, 'zoom': 1.5}}, format='json')
+        resp = self.client.patch(self.url, {'banner_crop': {'x': 30, 'y': 72.5, 'zoom': 1.5, 'mode': 'full'}}, format='json')
         self.assertEqual(resp.status_code, 200, resp.data)
-        self.assertEqual(resp.data['banner_crop'], {'x': 30.0, 'y': 72.5, 'zoom': 1.5})
+        self.assertEqual(resp.data['banner_crop'], {'x': 30.0, 'y': 72.5, 'zoom': 1.5, 'mode': 'full'})
         cleared = self.client.patch(self.url, {'banner_crop': {}}, format='json')
         self.assertEqual(cleared.data['banner_crop'], {})
 
     def test_invalid_banner_crop_is_rejected(self):
-        for bad in ({'x': 120, 'y': 50, 'zoom': 1}, {'x': 50, 'y': 50, 'zoom': 5}, {'x': 'a', 'y': 1, 'zoom': 1},
-                    {'x': 50, 'y': 50}, {'x': 50, 'y': 50, 'zoom': 1, 'rotate': 90}, [1, 2, 3]):
+        for bad in (
+            {'x': 120, 'y': 50, 'zoom': 1},
+            {'x': 50, 'y': 50, 'zoom': 5},
+            {'x': 'a', 'y': 1, 'zoom': 1},
+            {'x': 50, 'y': 50},
+            {'x': 50, 'y': 50, 'zoom': 1, 'rotate': 90},
+            {'x': 50, 'y': 50, 'zoom': 1, 'mode': 'invalid'},
+            [1, 2, 3],
+        ):
             resp = self.client.patch(self.url, {'banner_crop': bad}, format='json')
             self.assertEqual(resp.status_code, 400, bad)
         self.hackathon.refresh_from_db()
