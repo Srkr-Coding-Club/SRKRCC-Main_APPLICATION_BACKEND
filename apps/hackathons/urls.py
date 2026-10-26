@@ -11,6 +11,8 @@ router.register(r'', views.HackathonViewSet, basename='hackathon')
 # teams/<id>/, invites/<id>/) are matched before the `{slug}` detail route.
 urlpatterns = [
     path('certificates/verify/<str:code>/', views_ops.CertificateVerifyView.as_view(), name='hackathon-certificate-verify'),
+    path('upload-asset/', views.HackathonAssetUploadView.as_view(), name='hackathon-general-upload-asset'),
+    path('asset-presigned-url/', views.HackathonAssetPresignedUrlView.as_view(), name='hackathon-general-asset-presigned-url'),
     path('my-invites/', views.MyInvitesView.as_view(), name='hackathon-my-invites'),
     path('my-teams/', views.MyTeamsView.as_view(), name='hackathon-my-teams'),
     path('invites/<int:pk>/<str:decision>/', views.InviteRespondView.as_view(), name='hackathon-invite-respond'),
@@ -19,6 +21,8 @@ urlpatterns = [
     path('teams/<int:pk>/invite-by-email/', views.TeamEmailInviteView.as_view(), name='hackathon-team-email-invite'),
     path('teams/<int:pk>/<str:team_action>/', views.TeamActionView.as_view(), name='hackathon-team-action'),
 
+    path('<slug:slug>/upload-asset/', views.HackathonAssetUploadView.as_view(), name='hackathon-upload-asset'),
+    path('<slug:slug>/asset-presigned-url/', views.HackathonAssetPresignedUrlView.as_view(), name='hackathon-asset-presigned-url'),
     path('<slug:slug>/stages/', views.HackathonStagesView.as_view(), name='hackathon-stages'),
     path('<slug:slug>/timeline/', views.StageListView.as_view(), name='hackathon-timeline'),
     path('<slug:slug>/timeline/reorder/', views.StageReorderView.as_view(), name='hackathon-timeline-reorder'),

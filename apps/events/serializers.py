@@ -1,6 +1,7 @@
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
+from apps.core.image_urls import normalize_image_url
 from .models import Event
 from .quick_registration import (
     QUICK_FIELDS,
@@ -48,6 +49,9 @@ class EventSerializer(serializers.ModelSerializer):
 
     def get_registration_profile_fields(self, obj) -> list[str]:
         return quick_field_keys(obj.registration_form)
+
+    def validate_poster_image(self, value):
+        return normalize_image_url(value)
 
     def validate(self, attrs):
         if attrs.get('quick_registration_fields') and attrs.get('registration_form'):

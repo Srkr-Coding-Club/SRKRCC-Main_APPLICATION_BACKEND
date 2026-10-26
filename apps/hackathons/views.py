@@ -5,13 +5,17 @@ from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.parsers import MultiPartParser
+import os
+import uuid
+from PIL import Image as PILImage
+from django.conf import settings
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response as DRFResponse
 from apps.core.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.audit.utils import log_audit_event
-from apps.core.permissions import IsAdmin, _is_admin_or_club_lead
+from apps.core.permissions import IsAdmin, IsAdminOrClubLead, _is_admin_or_club_lead
 from apps.core.cache import PublicReadCacheControlMixin
 
 from . import team_emails
@@ -1247,3 +1251,184 @@ class SubmissionViewSet(viewsets.ModelViewSet):
         if team and not _is_admin_or_club_lead(user) and not is_leader(team, user):
             raise PermissionDenied("Only the team leader can submit for this team.")
         serializer.save()
+
+
+# ---------------------------------------------------------------------------
+# Direct Image Uploads for Hackathon Assets (Banner & Logo)
+# ---------------------------------------------------------------------------
+
+class HackathonAssetUploadView(APIView):
+    """
+    Direct file upload for hackathon banners and logos.
+    Validates image binary integrity with Pillow, extracts natural width and height,
+    saves the file to MEDIA_ROOT/hackathons/assets/, and returns the URL and image dimensions.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrClubLead]
+    parser_classes = [MultiPartParser, FormParser]
+
+    ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.svg'}
+    MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+    def post(self, request, slug=None):
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            return DRFResponse({'error': 'No file uploaded.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if file_obj.size > self.MAX_SIZE_BYTES:
+            return DRFResponse({'error': 'Image file size exceeds the 10 MB limit.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        name = file_obj.name
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in self.ALLOWED_EXTENSIONS:
+            return DRFResponse(
+                {'error': f'Unsupported file extension "{ext}". Allowed extensions: .png, .jpg, .jpeg, .webp, .svg.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        width, height = None, None
+        img_format = None
+
+        if ext == '.svg':
+            content = file_obj.read()
+            file_obj.seek(0)
+            if b'<script' in content.lower():
+                return DRFResponse({'error': 'SVGs containing script tags are rejected for security.'}, status=status.HTTP_400_BAD_REQUEST)
+            img_format = 'SVG'
+        else:
+            try:
+                with PILImage.open(file_obj) as img:
+                    img.verify()
+                file_obj.seek(0)
+                with PILImage.open(file_obj) as img:
+                    width, height = img.size
+                    img_format = img.format
+                file_obj.seek(0)
+            except Exception as e:
+                return DRFResponse({'error': f'Corrupt or invalid image data: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        dest_dir = os.path.join(settings.MEDIA_ROOT, 'hackathons', 'assets')
+        os.makedirs(dest_dir, exist_ok=True)
+
+        clean_slug = slug or 'common'
+        unique_name = f"{clean_slug}_{uuid.uuid4().hex[:10]}{ext}"
+        dest_path = os.path.join(dest_dir, unique_name)
+
+        with open(dest_path, 'wb+') as destination:
+            for chunk in file_obj.chunks():
+                destination.write(chunk)
+
+        asset_url = f"/media/hackathons/assets/{unique_name}"
+
+        log_audit_event(
+            actor=request.user,
+            action="Uploaded Hackathon Asset",
+            target_model="Hackathon",
+            target_id=slug or "general",
+            details={
+                "original_name": name,
+                "file_name": unique_name,
+                "size_bytes": file_obj.size,
+                "width": width,
+                "height": height,
+                "format": img_format,
+            },
+        )
+
+        return DRFResponse({
+            'url': asset_url,
+            'name': name,
+            'size': file_obj.size,
+            'width': width,
+            'height': height,
+            'format': img_format,
+        }, status=status.HTTP_201_CREATED)
+
+
+class HackathonAssetPresignedUrlView(APIView):
+    """
+    Generates a presigned S3 POST URL so the browser can upload banner and logo
+    images directly to an S3 bucket without passing through Django (avoiding serverless payload limits).
+    If S3 is not configured in the environment, gracefully returns mode: 'local'
+    so the client can fall back to direct multipart upload.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrClubLead]
+
+    ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.svg'}
+    MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+    def post(self, request, slug=None):
+        filename = (request.data.get('filename') or '').strip()
+        content_type = (request.data.get('content_type') or 'application/octet-stream').strip().lower()
+        size = request.data.get('size')
+
+        if not filename:
+            return DRFResponse({'error': 'Filename is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in self.ALLOWED_EXTENSIONS:
+            return DRFResponse(
+                {'error': f'Unsupported file extension "{ext}". Allowed extensions: .png, .jpg, .jpeg, .webp, .svg.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if size is not None:
+            try:
+                size_int = int(size)
+                if size_int > self.MAX_SIZE_BYTES:
+                    return DRFResponse({'error': 'Image file size exceeds the 10 MB limit.'}, status=status.HTTP_400_BAD_REQUEST)
+            except (ValueError, TypeError):
+                pass
+
+        bucket = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '') or getattr(settings, 'FORM_UPLOAD_BUCKET', '')
+        use_s3 = (getattr(settings, 'USE_S3', False) or getattr(settings, 'FORM_UPLOADS_BACKEND', '') == 's3' or bool(bucket)) and bool(bucket)
+
+        if not use_s3:
+            return DRFResponse({
+                'mode': 'local',
+                'upload_url': f'/api/hackathons/{slug}/upload-asset/' if slug else '/api/hackathons/upload-asset/',
+            }, status=status.HTTP_200_OK)
+
+        import boto3
+        from botocore.config import Config
+
+        region = getattr(settings, 'AWS_S3_REGION_NAME', '') or getattr(settings, 'FORM_UPLOAD_REGION', 'ap-south-1') or 'ap-south-1'
+        endpoint_url = getattr(settings, 'FORM_UPLOAD_ENDPOINT_URL', '') or None
+
+        clean_slug = slug or 'common'
+        unique_name = f"{clean_slug}_{uuid.uuid4().hex[:10]}{ext}"
+        s3_key = f"hackathons/assets/{unique_name}"
+
+        s3_client = boto3.client(
+            's3',
+            region_name=region,
+            endpoint_url=endpoint_url,
+            config=Config(
+                signature_version='s3v4',
+                s3={'addressing_style': 'virtual'},
+            ),
+        )
+
+        presigned_post = s3_client.generate_presigned_post(
+            Bucket=bucket,
+            Key=s3_key,
+            Fields={'Content-Type': content_type},
+            Conditions=[
+                {'Content-Type': content_type},
+                ['content-length-range', 1, self.MAX_SIZE_BYTES],
+            ],
+            ExpiresIn=900,
+        )
+
+        if endpoint_url:
+            public_url = f"{endpoint_url.rstrip('/')}/{bucket}/{s3_key}"
+        else:
+            public_url = f"https://{bucket}.s3.{region}.amazonaws.com/{s3_key}"
+
+        return DRFResponse({
+            'mode': 's3',
+            'post': presigned_post,
+            'public_url': public_url,
+            'key': s3_key,
+            'max_bytes': self.MAX_SIZE_BYTES,
+        }, status=status.HTTP_200_OK)
+
