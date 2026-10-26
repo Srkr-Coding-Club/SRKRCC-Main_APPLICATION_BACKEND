@@ -153,8 +153,8 @@ class IdeaPhaseTests(APITestCase):
         self.admin = make_user(role='ADMIN')
         self.idea_url = f'/api/hackathons/{self.hack.slug}/my-idea/'
         self.project_url = f'/api/hackathons/{self.hack.slug}/my-submission/'
-        self.idea = {'title': 'Smart bins', 'problem': 'Campus waste.', 'solution': 'Sensors and an app.', 'plan': 'Week 1 build.'}
-        self.project = {'project_title': 'Smart bins', 'description': 'Built it.', 'repo_url': 'https://github.com/x/bins'}
+        self.idea = {'title': 'Smart bins', 'problem': 'Campus waste is not sorted, so recyclables reach landfill.', 'solution': 'Sensors at each bin and an app that tells the cleaners what is full.', 'plan': 'Week 1 build.'}
+        self.project = {'project_title': 'Smart bins', 'description': 'We built the bins, the sensor firmware and the cleaners app.', 'repo_url': 'https://github.com/x/bins'}
 
     def test_leader_submits_and_edits_until_it_is_decided(self):
         resp = _api(self.leader).put(self.idea_url, self.idea, format='json')

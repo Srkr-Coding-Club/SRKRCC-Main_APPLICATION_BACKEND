@@ -8,6 +8,7 @@ from rest_framework.exceptions import PermissionDenied
 from apps.audit.utils import log_audit_event
 
 from . import access, config_validation as validate
+from .link_rules import clean_link
 from .config_validation import guard_field as field_guard
 from .ideas import project_gate
 from .errors import HackathonError
@@ -15,7 +16,9 @@ from .models import Hackathon, Submission, Team, TeamStatus
 from .services import _notify_users, is_leader
 
 MAX_TITLE = 200
+MIN_TITLE = 3
 MAX_DESCRIPTION = 5000
+MIN_DESCRIPTION = 30   # a sentence or two: enough for a judge to know what was built
 MAX_TECH_STACK = 10
 
 
@@ -31,6 +34,19 @@ def window_state(hackathon: Hackathon) -> str:
     return 'OPEN'
 
 
+def _clean_stack(stack: list) -> list[str]:
+    """Trimmed technology names, empty ones dropped, repeats removed (case-insensitive) keeping the first spelling."""
+    seen, cleaned = set(), []
+    for item in stack:
+        if not str(item).strip():
+            continue
+        name = field_guard('tech_stack', lambda item=item: validate._text(item, 'Tech', 40))
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            cleaned.append(name)
+    return cleaned
+
+
 def _clean(data: dict) -> dict:
     data = data or {}
     stack = data.get('tech_stack') or []
@@ -39,18 +55,23 @@ def _clean(data: dict) -> dict:
     description = str(data.get('description') or '').strip()
     if not description:
         raise HackathonError('Describe what you built.', 'INVALID', field='description')
+    if len(description) < MIN_DESCRIPTION:
+        raise HackathonError(f'Say a little more about what you built (at least {MIN_DESCRIPTION} characters).', 'INVALID', field='description')
     if len(description) > MAX_DESCRIPTION:
         raise HackathonError(f'The description is limited to {MAX_DESCRIPTION} characters.', 'INVALID', field='description')
+    title = field_guard('project_title', lambda: validate._text(data.get('project_title'), 'Project title', MAX_TITLE, required=True))
+    if len(title) < MIN_TITLE:
+        raise HackathonError(f'The project title needs at least {MIN_TITLE} characters.', 'INVALID', field='project_title')
 
     return {
-        'project_title': field_guard('project_title', lambda: validate._text(data.get('project_title'), 'Project title', MAX_TITLE, required=True)),
+        'project_title': title,
         'tagline': field_guard('tagline', lambda: validate._text(data.get('tagline'), 'Tagline', 200)),
         'description': description,
-        'repo_url': field_guard('repo_url', lambda: validate._url(data.get('repo_url'), 'Repository link', required=True)),
-        'demo_url': field_guard('demo_url', lambda: validate._url(data.get('demo_url'), 'Demo link')) or None,
-        'video_url': field_guard('video_url', lambda: validate._url(data.get('video_url'), 'Video link')) or None,
-        'slides_url': field_guard('slides_url', lambda: validate._url(data.get('slides_url'), 'Slides link')) or None,
-        'tech_stack': [field_guard('tech_stack', lambda item=item: validate._text(item, 'Tech', 40)) for item in stack if str(item).strip()],
+        'repo_url': field_guard('repo_url', lambda: clean_link(data.get('repo_url'), 'Repository link', kind='repo', required=True)),
+        'demo_url': field_guard('demo_url', lambda: clean_link(data.get('demo_url'), 'Demo link')) or None,
+        'video_url': field_guard('video_url', lambda: clean_link(data.get('video_url'), 'Video link', kind='video')) or None,
+        'slides_url': field_guard('slides_url', lambda: clean_link(data.get('slides_url'), 'Slides link')) or None,
+        'tech_stack': _clean_stack(stack),
         'is_public': bool(data.get('is_public', True)),
     }
 
