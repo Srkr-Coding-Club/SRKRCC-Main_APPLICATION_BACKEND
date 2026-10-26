@@ -89,8 +89,17 @@ def final_key(form_id: int, upload_id) -> str:
 def get_upload_storage() -> UploadStorage:
     import boto3
     from botocore.config import Config
+    # Virtual-hosted style puts the region in the form URL (bucket.s3.ap-south-1.amazonaws.com).
+    # Without it, boto3 signs bucket.s3.amazonaws.com. S3 redirects that host, and the browser
+    # reports the redirect as a CORS error.
     client = boto3.client(
-        's3', region_name=settings.FORM_UPLOAD_REGION, endpoint_url=settings.FORM_UPLOAD_ENDPOINT_URL or None,
-        config=Config(signature_version='s3v4', retries={'max_attempts': 3, 'mode': 'standard'}),
+        's3',
+        region_name=settings.FORM_UPLOAD_REGION,
+        endpoint_url=settings.FORM_UPLOAD_ENDPOINT_URL or None,
+        config=Config(
+            signature_version='s3v4',
+            retries={'max_attempts': 3, 'mode': 'standard'},
+            s3={'addressing_style': 'virtual'},
+        ),
     )
     return UploadStorage(client, settings.FORM_UPLOAD_BUCKET)

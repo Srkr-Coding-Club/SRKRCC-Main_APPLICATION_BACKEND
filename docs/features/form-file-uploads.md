@@ -16,7 +16,7 @@ Credentials come from the process role / default AWS chain, never from settings.
 
 ## Flow
 1. `POST /api/forms/{slug}/uploads/` `{field_id, name, size, type}` (signed in). The server checks the form is open, the question takes files, the name, type rules (`allowedFileTypes`, `blockedFileTypes`, risky types such as .exe/.html/.svg unless allowed) and the size (`maxFileSizeMB`, else the default, never above the ceiling). It creates a `FormUpload` row (`PENDING`, key generated server-side) and returns a **presigned POST** with `content-length-range` and the content type signed in, so S3 itself refuses a wrong size or type.
-2. The browser posts the file to S3.
+2. The browser posts the file to the regional bucket host (`https://<bucket>.s3.<region>.amazonaws.com`). The global host `bucket.s3.amazonaws.com` redirects, and the browser reports that redirect as a CORS failure.
 3. `POST /api/forms/{slug}/uploads/{id}/complete/`. The server asks S3 for the real size, re-applies the limits (the admin may have changed them), and checks the first bytes against the extension. A failing file is deleted and the row is kept as `REJECTED`. Passing marks it `UPLOADED`. Calling twice is harmless.
 4. `DELETE /api/forms/{slug}/uploads/{id}/` removes a file picked but not submitted (object deleted, row `DELETED`).
 

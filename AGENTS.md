@@ -138,15 +138,79 @@ For backend changes:
 * Protect user/role boundaries and never expose internal database stack traces to clients.
 * Background job processing uses plain Python threads (`apps/core/tasks.py::run_in_background`), not Celery/Redis — this is a deliberate choice for the app's current scale (see that module's docstring). Don't introduce a Celery/Redis dependency without a concrete scale-driven reason; follow the existing thread-based pattern for new background work.
 
+### Handling requests: bugs vs. enhancements
+
+**Bug / issue reports** — find, validate, then fix:
+1. Locate the relevant code and form a hypothesis from the source first.
+2. Validate: reproduce or confirm the issue with the smallest targeted check (one test label, or direct inspection). If it can't be reproduced, say so instead of guessing or running broader suites.
+3. Only then fix it, and re-run that same targeted check to prove the fix.
+4. Never open with the full test suite; widen only to the blast radius of the change.
+
+**Enhancement / improvement requests** — understand, ask, then build:
+1. Understand the relevant part of the application first (read the code, docs, and current behavior).
+2. Ask the user which area/feature should be enhanced and what specifically should change, unless the request already states both clearly. Offer concrete options from what you found.
+3. Do not start implementing until the user has confirmed the target and the desired change.
+
+### Collaborating with the user: questions, options, and skills
+
+Plan together before building. Use the interactive question tool (`AskUserQuestion`) instead of long free-text questions whenever a decision is genuinely the user's.
+
+**When to ask**
+* The request is ambiguous, has more than one reasonable interpretation, or the choice changes what gets built (scope, which app/endpoint/role, behavior, data model, API contract impact).
+* An enhancement request that doesn't name both the area and the change (see above).
+* A bug whose expected behavior is unclear, or whose fix has product trade-offs.
+* The change is hard to reverse or outward-facing: migrations, data backfills or deletes, permission/auth changes, API contract changes, commits, pushes, deploys.
+
+**When NOT to ask**
+* The answer is in the code, docs, tests, or this file: look it up instead.
+* There is a conventional default: pick it, state it in one line, and proceed.
+* A simple, clearly-scoped bug fix or edit. Do not interrogate the user on small tasks.
+
+**How to ask well**
+1. Do the homework first. Read the relevant models, views, serializers, and tests so the options come from the real application, not generic ideas.
+2. Ask 1-4 focused questions per round, each with 2-4 concrete, mutually exclusive options. Each option gets a short label plus what it means and its trade-off. Put the recommended option first and mark it "(Recommended)". Use multi-select only when choices are not mutually exclusive.
+3. Use previews (request/response shape, schema sketch, code snippet) when the user must compare options side by side.
+4. Keep questions specific and answerable in a click. Avoid "what do you want?" and yes/no questions like "should I proceed?".
+5. Never ask for something already stated earlier in the conversation.
+
+**Follow-up questions**
+* After each answer, decide whether it opens a new decision (permissions per role, validation and error responses, backward compatibility, migrations on existing data, background-job behavior). If yes, ask a short follow-up round; if no, stop asking.
+* Summarize the agreed plan in a few lines (what, where, how, what is out of scope) and get a go-ahead before implementing anything non-trivial.
+* If scope grows mid-task, pause and re-confirm rather than silently expanding.
+
+**Suggest skills and help**
+Proactively offer the fitting skill or workflow, one line each, and let the user choose. Do not invoke heavy workflows unasked. Typical matches:
+* Bug or error: `debug-issue` (or `engineering:debug`).
+* Understanding an unfamiliar area: `explore-codebase`.
+* Architecture, API, or data-model decisions: `engineering:architecture`, `engineering:system-design`.
+* Test planning: `engineering:testing-strategy`.
+* Restructuring code: `refactor-safely`, `simplify`.
+* Reviewing changes before merge: `code-review`, `review-changes`, `security-review`.
+* Release readiness (migrations, rollback): `engineering:deploy-checklist`.
+Also offer practical help: a quick plan, a comparison of options, a risk/impact summary, or a docs update.
+
+**Tone**
+Be concise and collaborative. Offer a recommendation with each question, never an exhaustive survey. After the user decides, act on it without re-litigating.
+
 ### 9. Testing and Validation
+
+**Diagnose first, test narrowly, never start with the full suite.** A bare `python manage.py test` runs everything and is slow and expensive; do not use it to find or confirm a bug.
+
+When investigating a bug or issue:
+
+1. **Locate and read first.** Find the relevant code and form a hypothesis from the source before running anything.
+2. **Reproduce narrowly.** Confirm the bug with the smallest check: a single test label (`python manage.py test apps.<app>.tests.<module>.<Class>.<test>`), or a direct inspection. If it is not reproducible, say so; do not run broader suites hoping to find it.
+3. **Fix, then re-run that same targeted check** to prove the fix.
+4. **Widen only as far as the blast radius**: the affected app's tests (`python manage.py test apps.<app>`), plus apps that consume what you changed.
 
 Before considering a change complete:
 
-* Inspect existing tests related to the affected functionality.
-* Add or update tests for meaningful behavior changes (`python manage.py test`).
+* Inspect existing tests related to the affected functionality and run them (targeted, per above).
+* Add or update tests for meaningful behavior changes.
 * Test important edge cases and failure paths.
 * Validate authorization and security-sensitive behavior where applicable.
-* Run Django system check (`python manage.py check`) and migrations check (`python manage.py makemigrations --check`).
+* Run `python manage.py check` always; run `makemigrations --check` only if models changed.
+* Run the full backend suite **only** when the change touches shared/core code (`apps/core`, auth, permissions, settings, base models) or when the user asks. Never run it as an opening step, and do not re-run a suite that already passed unless code changed since.
 
 ### 10. Architecture Preservation & Automated Documentation Lifecycle
 

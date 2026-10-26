@@ -2,6 +2,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import serializers
 
+from apps.core.image_urls import normalize_image_url
 from apps.forms.models import ProfileField
 from . import config_validation as config, idea_files
 from .models import (
@@ -111,6 +112,12 @@ class HackathonSerializer(serializers.ModelSerializer):
 
     def get_is_manually_hidden(self, obj) -> bool:
         return obj.hidden_at is not None
+
+    def validate_banner_image(self, value):
+        return normalize_image_url(value)
+
+    def validate_logo_image(self, value):
+        return normalize_image_url(value)
 
     BANNER_CROP_LIMITS = {'x': (0, 100), 'y': (0, 100), 'zoom': (1, 3)}
 

@@ -4,8 +4,6 @@ organizers review it; the admin may require an approved idea before the project 
 """
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
@@ -14,12 +12,15 @@ from apps.audit.utils import log_audit_event
 
 from . import access, config_validation as validate, idea_files
 from .errors import HackathonError
+from .link_rules import clean_link
 from .models import Hackathon, IdeaFileKind, IdeaStatus, IdeaSubmission, Team, TeamStatus
 from .services import _notify_users, is_leader
 from .config_validation import guard_field as field_guard
 
 MAX_TITLE = 200
+MIN_TITLE = 3
 MAX_TEXT = 3000
+MIN_TEXT = 20   # a sentence: enough for the problem and the approach to mean something
 MAX_FEEDBACK = 1000
 MAX_TECH_STACK = 10
 REVIEW_OUTCOMES = (IdeaStatus.APPROVED, IdeaStatus.CHANGES_REQUESTED, IdeaStatus.REJECTED)
@@ -99,19 +100,13 @@ def project_gate(hackathon: Hackathon, team: Team | None) -> dict:
     return {'required': True, 'satisfied': True, 'reason': ''}
 
 
-_LINKEDIN_HOSTS = ('linkedin.com', 'lnkd.in')
 MAX_TRANSACTION_ID = 60
 
 
 def _linkedin(data: dict, hackathon: Hackathon | None, by_organizer: bool) -> str | None:
     required = bool(hackathon and hackathon.idea_linkedin_required and not by_organizer)
-    value = field_guard('linkedin_url', lambda: validate._url(data.get('linkedin_url'), 'LinkedIn post link', required=required))
-    if not value:
-        return None
-    host = (urlparse(value).hostname or '').lower()
-    if not any(host == name or host.endswith('.' + name) for name in _LINKEDIN_HOSTS):
-        raise HackathonError('Share the link of your LinkedIn post (linkedin.com).', 'INVALID', field='linkedin_url')
-    return value
+    value = field_guard('linkedin_url', lambda: clean_link(data.get('linkedin_url'), 'LinkedIn post link', kind='linkedin', required=required))
+    return value or None
 
 
 def _transaction_id(data: dict) -> str:
@@ -131,17 +126,22 @@ def _clean(data: dict, hackathon: Hackathon | None = None, *, by_organizer: bool
         value = str(data.get(key) or '').strip()
         if required and not value:
             raise HackathonError(f'{label} is required.', 'INVALID', field=key)
+        if required and len(value) < MIN_TEXT:
+            raise HackathonError(f'{label} needs at least {MIN_TEXT} characters so the organizers can understand it.', 'INVALID', field=key)
         if len(value) > MAX_TEXT:
             raise HackathonError(f'{label} is limited to {MAX_TEXT} characters.', 'INVALID', field=key)
         return value
 
+    title = field_guard('title', lambda: validate._text(data.get('title'), 'Idea title', MAX_TITLE, required=True))
+    if len(title) < MIN_TITLE:
+        raise HackathonError(f'The idea title needs at least {MIN_TITLE} characters.', 'INVALID', field='title')
     return {
-        'title': field_guard('title', lambda: validate._text(data.get('title'), 'Idea title', MAX_TITLE, required=True)),
+        'title': title,
         'problem': long_text('problem', 'The problem', required=True),
         'solution': long_text('solution', 'Your approach', required=True),
         'plan': long_text('plan', 'The plan', required=False),
         'tech_stack': [field_guard('tech_stack', lambda item=item: validate._text(item, 'Tech', 40)) for item in stack if str(item).strip()],
-        'deck_url': field_guard('deck_url', lambda: validate._url(data.get('deck_url'), 'Slides link')) or None,
+        'deck_url': field_guard('deck_url', lambda: clean_link(data.get('deck_url'), 'Slides link')) or None,
         'linkedin_url': _linkedin(data, hackathon, by_organizer),
         'transaction_id': _transaction_id(data),
     }
@@ -160,7 +160,7 @@ def _chosen_files(team: Team, hackathon: Hackathon, data: dict, existing: IdeaSu
     payment = pick(IdeaFileKind.PAYMENT, 'payment_file_id', existing.payment_proof if existing else None)
     if not by_organizer:
         if hackathon.idea_deck_required and deck is None:
-            raise HackathonError('Upload your slides (.ppt or .pptx).', 'INVALID', field='deck_file_id')
+            raise HackathonError('Upload your slides (.ppt, .pptx or .pdf).', 'INVALID', field='deck_file_id')
         if hackathon.idea_fee_amount and payment is None:
             raise HackathonError(f'Upload the screenshot of your payment of \u20b9{hackathon.idea_fee_amount}.', 'INVALID', field='payment_file_id')
     return deck, payment

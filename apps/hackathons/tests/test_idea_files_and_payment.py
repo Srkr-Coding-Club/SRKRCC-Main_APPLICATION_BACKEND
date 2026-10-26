@@ -43,7 +43,7 @@ class IdeaCase(APITestCase):
         self.admin = make_user(role="ADMIN")
         self.url = f"/api/hackathons/{self.hack.slug}/my-idea/"
         self.files_url = f"{self.url}files/"
-        self.body = {"title": "Smart bins", "problem": "Campus waste.", "solution": "Sensors and an app.", "plan": "Week 1 build."}
+        self.body = {"title": "Smart bins", "problem": "Campus waste is not sorted, so recyclables reach landfill.", "solution": "Sensors at each bin and an app that tells the cleaners what is full.", "plan": "Week 1 build."}
 
     def staff(self, role, permissions=None):
         user = make_user()
@@ -135,11 +135,12 @@ class UploadingFiles(IdeaCase):
     def ask(self, kind="DECK", name="deck.pptx", size=100, user=None):
         return api(user or self.leader).post(self.files_url, {"kind": kind, "name": name, "size": size, "type": "x"}, format="json")
 
-    def test_the_slides_must_be_ppt_or_pptx_and_the_screenshot_an_image(self):
-        self.assertEqual(self.ask("DECK", "deck.ppt").status_code, 201)
-        self.assertEqual(self.ask("DECK", "deck.pptx").status_code, 201)
-        for name in ("deck.pdf", "deck.exe", "deck", "deck.png"):
+    def test_the_slides_must_be_ppt_pptx_or_pdf_and_the_screenshot_an_image(self):
+        for name in ("deck.ppt", "deck.pptx", "deck.pdf", "DECK.PDF"):
+            self.assertEqual(self.ask("DECK", name).status_code, 201, name)
+        for name in ("deck.exe", "deck", "deck.png", "deck.docx", "deck.pdf.exe"):
             self.assertEqual(self.ask("DECK", name).data["code"], "FILE_TYPE_NOT_ALLOWED", name)
+        self.assertIn(".ppt, .pptx or .pdf", self.ask("DECK", "deck.exe").data["detail"])
         for name in ("pay.png", "pay.jpg", "pay.jpeg", "pay.webp"):
             self.assertEqual(self.ask("PAYMENT", name).status_code, 201, name)
         for name in ("pay.pdf", "pay.svg", "pay.gif", "pay.pptx"):

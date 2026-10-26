@@ -1,5 +1,5 @@
 """
-Files for the idea phase: the slides (.ppt / .pptx) and the payment screenshot.
+Files for the idea phase: the slides (.ppt / .pptx / .pdf) and the payment screenshot.
 
 They go straight to the storage bucket like form uploads (presigned POST, checked on completion) but belong to a team.
 The payment screenshot and the transaction id are for organizers only: judges never see them.
@@ -31,7 +31,7 @@ _ACTIVE = (UploadState.PENDING, UploadState.UPLOADED)
 
 #: kind -> (allowed extensions, content types we accept, biggest file in MB)
 RULES = {
-    IdeaFileKind.DECK: (('.ppt', '.pptx'), None, 25),
+    IdeaFileKind.DECK: (('.ppt', '.pptx', '.pdf'), None, 25),
     IdeaFileKind.PAYMENT: (('.png', '.jpg', '.jpeg', '.webp'), ('image/png', 'image/jpeg', 'image/webp'), 5),
     IdeaFileKind.QR: (('.png', '.jpg', '.jpeg', '.webp'), ('image/png', 'image/jpeg', 'image/webp'), 5),
 }
@@ -41,8 +41,14 @@ FIELD = {IdeaFileKind.DECK: 'deck_file_id', IdeaFileKind.PAYMENT: 'payment_file_
 _CONTENT_TYPE_FOR = {
     '.ppt': 'application/vnd.ms-powerpoint',
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.pdf': 'application/pdf',
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
 }
+
+
+def _listed(extensions) -> str:
+    """'.ppt, .pptx or .pdf'"""
+    return ', '.join(extensions[:-1]) + (' or ' if len(extensions) > 1 else '') + extensions[-1]
 
 
 def available() -> bool:
@@ -95,7 +101,7 @@ def _issue(hackathon: Hackathon, team: Team | None, user, kind: str, name, size)
             or any(ord(char) < 32 or ord(char) == 127 for char in cleaned)):
         raise HackathonError('That is not a valid file name.', 'INVALID', field=FIELD[kind])
     if ext not in extensions:
-        raise HackathonError(f"The {LABEL[kind]} must be {' or '.join(extensions)}.", 'FILE_TYPE_NOT_ALLOWED', field=FIELD[kind])
+        raise HackathonError(f"The {LABEL[kind]} must be {_listed(extensions)}.", 'FILE_TYPE_NOT_ALLOWED', field=FIELD[kind])
     try:
         declared = int(size)
     except (TypeError, ValueError):

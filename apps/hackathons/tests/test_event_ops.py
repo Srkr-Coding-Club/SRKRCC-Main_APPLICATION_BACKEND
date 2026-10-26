@@ -116,7 +116,7 @@ class SubmissionTests(APITestCase):
         self.leader, self.member = make_user(), make_user()
         self.team = make_team(self.hack, self.leader, self.member)
         self.url = f'/api/hackathons/{self.hack.slug}/my-submission/'
-        self.body = {'project_title': 'Robo', 'description': 'It moves.', 'repo_url': 'https://github.com/x/robo'}
+        self.body = {'project_title': 'Robo', 'description': 'A small robot that moves along a line and carries parts around the lab.', 'repo_url': 'https://github.com/x/robo'}
 
     def test_leader_submits_and_can_update(self):
         resp = _api(self.leader).put(self.url, self.body, format='json')
@@ -341,3 +341,43 @@ class FinderCloneAnalyticsTests(APITestCase):
         self.assertEqual(len(admin.get(f'{self.base}/participants/').data), 1)
         self.assertEqual(_api(make_user()).get(f'{self.base}/analytics/').status_code, 403)
         self.assertEqual(_api(make_user()).get(f'{self.base}/participants/').status_code, 403)
+
+
+class SubmissionDetailRulesTests(SubmissionTests):
+    """The details of a project: how long a title and description must be, and what the links may point at."""
+
+    def put(self, **change):
+        return _api(self.leader).put(self.url, {**self.body, **change}, format='json')
+
+    def test_a_good_submission_with_every_link_is_saved_as_sent(self):
+        resp = self.put(
+            repo_url='https://github.com/code-owls/robo', demo_url='https://robo.vercel.app', video_url='https://youtu.be/abc',
+            slides_url='https://docs.google.com/presentation/d/abc/edit', tech_stack=['React', 'react', ' Django ', ''],
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        sub = Submission.objects.get(team=self.team)
+        self.assertEqual((sub.repo_url, sub.video_url), ('https://github.com/code-owls/robo', 'https://youtu.be/abc'))
+        self.assertEqual(sub.tech_stack, ['React', 'Django'])   # trimmed, empty dropped, repeat dropped
+
+    def test_each_bad_link_names_its_field(self):
+        cases = [('repo_url', 'https://example.com/owner/repo'), ('repo_url', 'https://github.com/owner'), ('repo_url', 'http://github.com/o/r'),
+                 ('demo_url', 'https://localhost:3000'), ('demo_url', 'https://192.168.0.4/app'), ('video_url', 'https://example.com/v.mp4'),
+                 ('slides_url', 'ftp://files.example.com/a.pdf'), ('demo_url', 'https://example.org/' + 'a' * 300)]
+        for field, link in cases:
+            resp = self.put(**{field: link})
+            self.assertEqual((resp.status_code, resp.data['field']), (400, field), link)
+
+    def test_an_over_long_link_is_a_400_not_a_server_error(self):
+        self.assertEqual(self.put(repo_url='https://github.com/owner/' + 'r' * 300).status_code, 400)
+
+    def test_title_and_description_need_substance(self):
+        for change, field in (({'project_title': 'A'}, 'project_title'), ({'project_title': '   '}, 'project_title'),
+                              ({'description': 'good project'}, 'description'), ({'description': ' ' * 40}, 'description')):
+            resp = self.put(**change)
+            self.assertEqual((resp.status_code, resp.data['field']), (400, field), change)
+        self.assertEqual(self.put(project_title='Bot').status_code, 200)
+
+    def test_a_refused_save_changes_nothing(self):
+        self.assertEqual(self.put().status_code, 200)
+        self.assertEqual(self.put(project_title='Changed', repo_url='https://example.com/x/y').status_code, 400)
+        self.assertEqual(Submission.objects.get(team=self.team).project_title, self.body['project_title'])
