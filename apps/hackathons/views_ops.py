@@ -4,20 +4,24 @@ analytics and cloning. Rules live in the service modules; these views parse, aut
 """
 from __future__ import annotations
 
-from django.http import Http404
 from django.utils import timezone
+from django.http import HttpResponse, Http404
 from rest_framework import permissions, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response as DRFResponse
 from rest_framework.views import APIView
 
+from apps.audit.utils import log_audit_event
+from apps.core.dmc.export_service import export_filename
 from apps.core.permissions import IsAdminOrClubLead
 from apps.core.throttling import ScopedRateThrottle
 
 from . import access, analytics, certificates, idea_files, registration
 from .access import can_check_in, can_judge, scoped
-from .checkin import CheckInService, make_token
+from .checkin import CheckInService, make_token, window_state as check_in_window
 from .cloning import CloneService
+from . import withdrawals
+from .exports import EXPORT_FORMATS, EXPORT_KINDS, render as render_export
 from .ideas import IdeaService, can_team_edit, project_gate, window_state as idea_window_state
 from .errors import HackathonError
 from .finder import FinderService
@@ -123,9 +127,12 @@ class MyCheckInView(APIView):
         if team is None or team.status != TeamStatus.REGISTERED or team.is_waitlisted:
             raise HackathonError('Check-in opens once your team is registered.', 'TEAM_NOT_REGISTERED')
         record = hackathon.check_ins.filter(user=request.user).first()
+        window = check_in_window(hackathon)
         return DRFResponse({
-            'token': make_token(hackathon, request.user),
+            # No point showing a code the scanners will refuse.
+            'token': make_token(hackathon, request.user) if window == 'OPEN' else '',
             'checked_in': record is not None, 'checked_in_at': record.checked_in_at if record else None,
+            'window': window, 'opens_at': hackathon.check_in_opens_at, 'closes_at': hackathon.check_in_closes_at,
         })
 
 
@@ -465,18 +472,107 @@ class CheckInView(APIView):
         hackathon = _get_hackathon(request, slug)
         if not can_check_in(hackathon, request.user):
             raise PermissionDenied('You are not allowed to check participants in.')
-        return DRFResponse(CheckInService.roster(hackathon))
+        params = request.query_params
+        return DRFResponse(CheckInService.roster(
+            hackathon, query=params.get('q', ''), missing=params.get('missing') == '1',
+            limit=_int_param(params.get('limit'), 100), offset=_int_param(params.get('offset'), 0),
+            with_held_back=access.has_permission(hackathon, request.user, 'teams'),
+        ))
 
     def post(self, request, slug):
         hackathon = _get_hackathon(request, slug)
         record, created = CheckInService.check_in(
             hackathon, request.user, user_id=request.data.get('user_id'), token=request.data.get('token'),
+            scanned_at=request.data.get('scanned_at'),
+            override=bool(request.data.get('override')), reason=request.data.get('reason'),
         )
-        user = record.user
+        user, by = record.user, record.checked_in_by
         return DRFResponse({
             'created': created, 'user_id': user.id, 'name': f'{user.first_name} {user.last_name}'.strip() or user.email,
             'team_name': record.team.name, 'checked_in_at': record.checked_in_at,
+            'checked_in_by': (f'{by.first_name} {by.last_name}'.strip() or by.email) if by else None,
         })
+
+
+def _int_param(raw, default: int) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+class WithdrawalsView(APIView):
+    """GET (organizer) /api/hackathons/{slug}/withdrawals/ - requests waiting, recent decisions, repeat creators, the limits."""
+    permission_classes = [scoped('teams')]
+
+    def get(self, request, slug):
+        return DRFResponse(withdrawals.WithdrawalService.overview(_get_hackathon(request, slug)))
+
+
+class WithdrawalDecideView(APIView):
+    """POST (organizer) /api/hackathons/{slug}/withdrawals/{id}/decide/ {approve: bool, note?}"""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug, pk):
+        hackathon = _get_hackathon(request, slug)
+        from .models import WithdrawalRequest
+
+        item = WithdrawalRequest.objects.filter(pk=pk, team__hackathon=hackathon).first()
+        if item is None:
+            raise Http404
+        approve = request.data.get('approve')
+        if not isinstance(approve, bool):
+            raise HackathonError('Say whether to approve or deny.', 'INVALID', field='approve')
+        done = withdrawals.WithdrawalService.decide(item, request.user, approve, request.data.get('note', ''))
+        return DRFResponse({'id': done.id, 'status': done.status})
+
+
+class TeamAllowanceView(APIView):
+    """POST (organizer) /api/hackathons/{slug}/team-allowances/ {user_id, extra?, reason?} - lets one person create more teams."""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug):
+        from django.contrib.auth import get_user_model
+
+        hackathon = _get_hackathon(request, slug)
+        try:
+            user_id = int(request.data.get('user_id'))
+        except (TypeError, ValueError):
+            raise HackathonError('Choose a person.', 'INVALID', field='user_id')
+        user = get_user_model().objects.filter(pk=user_id).first()
+        if user is None:
+            raise HackathonError('That person does not exist.', 'NOT_FOUND', field='user_id', status=404)
+        try:
+            extra = int(request.data.get('extra', 1))
+        except (TypeError, ValueError):
+            raise HackathonError('How many extra teams must be a number.', 'INVALID', field='extra')
+        allowance = withdrawals.WithdrawalService.grant_allowance(hackathon, request.user, user, extra, request.data.get('reason', ''))
+        return DRFResponse({'user_id': user.id, 'extra': allowance.extra})
+
+
+class CheckInStatsView(APIView):
+    """GET /api/hackathons/{slug}/check-in/stats/ - scans per volunteer and arrivals over time (organizers)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, slug):
+        return DRFResponse(CheckInService.stats(_get_hackathon(request, slug), request.user))
+
+
+class NoShowsView(APIView):
+    """GET teams where nobody arrived; POST {action: 'remind' | 'withdraw', team_ids?} (organizers)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, slug):
+        return DRFResponse(CheckInService.no_shows(_get_hackathon(request, slug), request.user))
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        action = request.data.get('action')
+        if action == 'remind':
+            return DRFResponse({'reminded': CheckInService.remind_absent(hackathon, request.user)})
+        if action == 'withdraw':
+            return DRFResponse({'withdrawn': CheckInService.withdraw_no_shows(hackathon, request.user, request.data.get('team_ids'))})
+        raise HackathonError("Choose 'remind' or 'withdraw'.", 'INVALID', field='action')
 
 
 class CheckInDetailView(APIView):
@@ -522,12 +618,33 @@ class AdminCertificatesView(APIView):
         })
 
 
-class ParticipantsView(APIView):
-    """GET (organizer) /api/hackathons/{slug}/participants/ - flat rows for CSV export."""
-    permission_classes = [scoped('teams')]
+class HackathonExportView(APIView):
+    """
+    GET /api/hackathons/{slug}/export/{kind}/?export_format=csv|xlsx|json (organizers and volunteers, by kind).
 
-    def get(self, request, slug):
-        return DRFResponse(analytics.participants_rows(_get_hackathon(request, slug)))
+    Kinds: teams, participants, ideas, submissions, rounds (needs ?round=), check-in. ``ids`` limits teams to a
+    selection and ``status`` / ``search`` narrow round results. Rendered by the shared export serializer.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, slug, kind):
+        hackathon = _get_hackathon(request, slug)
+        spec = EXPORT_KINDS.get(kind)
+        if spec is None:
+            raise Http404
+        if not access.has_any_permission(hackathon, request.user, spec.permissions):
+            raise PermissionDenied('You are not allowed to download this.')
+        fmt = request.query_params.get('export_format', 'csv').lower()
+        if fmt not in EXPORT_FORMATS:
+            raise HackathonError(f"Unsupported format. Choose: {', '.join(EXPORT_FORMATS)}.", 'INVALID', field='export_format')
+        data, content_type, rows = render_export(hackathon, spec, request.query_params, fmt)
+        log_audit_event(
+            actor=request.user, action=f'Hackathon Export ({fmt.upper()})', target_model='Hackathon', target_id=hackathon.slug,
+            details={'kind': spec.key, 'format': fmt, 'rows': rows},
+        )
+        response = HttpResponse(data, content_type=content_type)
+        response['Content-Disposition'] = f'attachment; filename="{export_filename(hackathon.slug, spec.name, fmt)}"'
+        return response
 
 
 class AnalyticsView(APIView):

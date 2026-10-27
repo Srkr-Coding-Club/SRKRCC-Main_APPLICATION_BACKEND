@@ -20,6 +20,7 @@ import io
 import json
 import os
 import tempfile
+from datetime import date, datetime
 from typing import Any, Generator
 
 from django.conf import settings
@@ -34,13 +35,59 @@ DMC_SYNC_EXPORT_MAX_ROWS: int = getattr(settings, "DMC_SYNC_EXPORT_MAX_ROWS", 10
 
 
 # ---------------------------------------------------------------------------
+# The export contract shared by every tabular export in the application
+# ---------------------------------------------------------------------------
+#   * file name   <scope>-<kind>-YYYYMMDD_HHMMSS.<ext>   (export_filename)
+#   * CSV         UTF-8 with a BOM so Excel reads non-English text, formula-injection safe
+#   * headers     the column labels shown on screen
+#   * values      Yes / No for booleans, lists joined with ", ", "-" for not applicable
+#   * dates       IST, "27 Oct 2026, 11:52" (date-only values: "27 Oct 2026")
+# Anything that produces a downloadable table goes through serialize_records and export_filename.
+
+EXPORT_DATETIME_FORMAT = "%d %b %Y, %H:%M"
+EXPORT_DATE_FORMAT = "%d %b %Y"
+
+
+def export_filename(scope: str, kind: str, fmt: str, now: datetime | None = None) -> str:
+    """``scope`` is what the data belongs to (a hackathon or form slug, a dataset id); ``kind`` what it lists."""
+    stamp = timezone.localtime(now or timezone.now()).strftime("%Y%m%d_%H%M%S")
+    return f"{scope}-{kind}-{stamp}.{fmt}"
+
+
+def format_export_datetime(value: Any) -> str | None:
+    """A datetime (or its ISO string) as IST text; None when ``value`` is not a datetime."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(value, datetime):
+        if timezone.is_naive(value):
+            return value.strftime(EXPORT_DATETIME_FORMAT)
+        return timezone.localtime(value).strftime(EXPORT_DATETIME_FORMAT)
+    if isinstance(value, date):
+        return value.strftime(EXPORT_DATE_FORMAT)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Value formatting helper
 # ---------------------------------------------------------------------------
 
 def _format_cell(cv: CanonicalValue | Any) -> str:
     """Convert a CanonicalValue envelope to a human-readable string for CSV/XLSX cells."""
     if not isinstance(cv, CanonicalValue):
-        return str(cv) if cv is not None else ""
+        if cv is None:
+            return ""
+        if isinstance(cv, bool):
+            return "Yes" if cv else "No"
+        if isinstance(cv, (datetime, date)):
+            return format_export_datetime(cv) or ""
+        if isinstance(cv, (list, tuple)):
+            return ", ".join(str(item) for item in cv)
+        if isinstance(cv, dict):
+            return json.dumps(cv, ensure_ascii=False)
+        return str(cv)
     if cv.state == "not_applicable":
         return "-"
     if cv.state == "empty":
@@ -50,6 +97,10 @@ def _format_cell(cv: CanonicalValue | Any) -> str:
     v = cv.value
     if isinstance(v, bool):
         return "Yes" if v else "No"
+    if cv.type in ("datetime", "date") or isinstance(v, (datetime, date)):
+        formatted = format_export_datetime(v)
+        if formatted is not None:
+            return formatted
     if isinstance(v, list):
         return ", ".join(str(i) for i in v)
     if isinstance(v, dict):
@@ -60,7 +111,7 @@ def _format_cell(cv: CanonicalValue | Any) -> str:
 def _format_json_cell(cv: CanonicalValue | Any) -> Any:
     """Return a JSON-serializable representation of the canonical value."""
     if not isinstance(cv, CanonicalValue):
-        return cv
+        return cv.isoformat() if isinstance(cv, (datetime, date)) else cv
     return {"state": cv.state, "value": cv.value, "display_value": cv.display_value}
 
 
@@ -206,7 +257,7 @@ class ExportService:
         if export_req.row_scope == "selected":
             total = len(export_req.selected_record_ids)
 
-        filename = f"{self.dataset_def.id}_export_{timezone.now().strftime('%Y%m%d_%H%M%S')}.{export_req.format}"
+        filename = export_filename(self.dataset_def.id, "export", export_req.format)
 
         if total <= DMC_SYNC_EXPORT_MAX_ROWS:
             return self._run_sync(export_req, query_req, export_cols, filename, total)

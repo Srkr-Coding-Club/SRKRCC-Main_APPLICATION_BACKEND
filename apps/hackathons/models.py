@@ -108,6 +108,8 @@ class Hackathon(TimeStampedModel):
     submission_deadline = models.DateTimeField(blank=True, null=True)
     idea_opens_at = models.DateTimeField(blank=True, null=True, help_text='Phase 1 (plan): when teams may start submitting ideas.')
     idea_deadline = models.DateTimeField(blank=True, null=True, help_text='Phase 1 (plan): ideas cannot be submitted or edited after this.')
+    check_in_opens_at = models.DateTimeField(blank=True, null=True, help_text='Day-of check-in: QR codes work from this time (empty = always).')
+    check_in_closes_at = models.DateTimeField(blank=True, null=True, help_text='Day-of check-in: scanning stops after this time (empty = never).')
     idea_review_required = models.BooleanField(default=True, help_text='Organizers must approve an idea before it counts as accepted.')
     idea_fee_amount = models.PositiveIntegerField(default=0, help_text='Rupees a team pays with its idea (0 = no payment). The payment screenshot is then required.')
     idea_payment_qr = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='QR code teams scan to pay (image uploaded by the organizers).')
@@ -210,6 +212,15 @@ class Team(TimeStampedModel):
     status_reason = models.CharField(max_length=300, blank=True, help_text='Shown to the team, e.g. why it was disqualified.')
     looking_for_members = models.BooleanField(default=False)
     looking_for = models.CharField(max_length=200, blank=True, help_text='Skills / roles the team wants, shown in the team finder.')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+        help_text='Who created the team themselves (empty when an organizer created it). Counts toward the per-person team limit.',
+    )
+    withdrawn_at = models.DateTimeField(blank=True, null=True, help_text='When the team was withdrawn by its own leader.')
+    withdrawn_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+        help_text='The leader who withdrew the team (drives the cooldown before they may create another).',
+    )
 
     class Meta:
         constraints = [
@@ -253,6 +264,44 @@ class TeamMember(models.Model):
 
     def __str__(self):
         return f"{self.user} in {self.team.name} ({self.role})"
+
+
+class WithdrawalStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Waiting for the organizers'
+    APPROVED = 'APPROVED', 'Approved'
+    DENIED = 'DENIED', 'Denied'
+    CANCELLED = 'CANCELLED', 'Cancelled'
+
+
+class WithdrawalRequest(TimeStampedModel):
+    """A leader asking to withdraw a team that already holds a place (registered, or in a round). Organizers decide."""
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='withdrawal_requests')
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='+')
+    reason = models.CharField(max_length=300)
+    status = models.CharField(max_length=10, choices=WithdrawalStatus.choices, default=WithdrawalStatus.PENDING)
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    decided_at = models.DateTimeField(blank=True, null=True)
+    decision_note = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['team'], condition=Q(status='PENDING'), name='uniq_pending_withdrawal_per_team'),
+        ]
+
+
+class TeamAllowance(TimeStampedModel):
+    """Organizers let one person create more teams than the usual limit (see withdrawals.MAX_SELF_CREATED_TEAMS)."""
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='team_allowances')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='+')
+    extra = models.PositiveSmallIntegerField(default=1, help_text='Teams this person may create beyond the usual limit.')
+    reason = models.CharField(max_length=200, blank=True)
+    granted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['hackathon', 'user'], name='uniq_team_allowance_per_person'),
+        ]
 
 
 class InviteStatus(models.TextChoices):
@@ -602,6 +651,7 @@ class CheckIn(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='check_ins')
     checked_in_at = models.DateTimeField(default=timezone.now)
     checked_in_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    override_reason = models.CharField(max_length=200, blank=True, help_text='Why an organizer let in someone whose team was not registered (empty = a normal check-in).')
 
     class Meta:
         ordering = ['-checked_in_at']

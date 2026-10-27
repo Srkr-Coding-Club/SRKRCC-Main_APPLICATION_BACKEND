@@ -3,6 +3,7 @@ check-in, certificates, team finder, cloning and analytics."""
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
+from apps.hackathons.checkin import make_token
 from apps.hackathons.models import Hackathon, HackathonStaff, Submission, Team, TeamMember, TeamStatus
 from .helpers import make_hackathon, make_ps, make_team, make_user
 
@@ -271,6 +272,85 @@ class CheckInAndCertificateTests(APITestCase):
         self.assertEqual(_api(self.volunteer).post(f'{self.base}/check-in/', {'token': 'garbage'}, format='json').data['code'], 'INVALID_QR')
         self.assertEqual(_api(self.person).post(f'{self.base}/check-in/', {'user_id': self.person.id}, format='json').status_code, 403)
 
+    def test_window_gates_qr_scans_but_not_manual_check_in(self):
+        self.hack.check_in_opens_at = timezone.now() + HOUR
+        self.hack.save()
+        mine = _api(self.person).get(f'{self.base}/my-check-in/').data
+        self.assertEqual((mine['window'], mine['token']), ('NOT_OPEN', ''))
+        self.hack.check_in_opens_at = None
+        self.hack.save()
+        token = _api(self.person).get(f'{self.base}/my-check-in/').data['token']
+        self.hack.check_in_closes_at = timezone.now() - HOUR
+        self.hack.save()
+        self.assertEqual(_api(self.volunteer).post(f'{self.base}/check-in/', {'token': token}, format='json').data['code'], 'CHECK_IN_CLOSED')
+        # an offline scan made while the window was open is still accepted when replayed late
+        early_at = timezone.now() - 2 * HOUR
+        early_token = make_token(self.hack, self.person, at=early_at)
+        replay = _api(self.volunteer).post(f'{self.base}/check-in/', {'token': early_token, 'scanned_at': early_at.isoformat()}, format='json')
+        self.assertTrue(replay.data['created'])
+        self.assertEqual(replay.data['checked_in_by'], (self.volunteer.first_name + ' ' + self.volunteer.last_name).strip() or self.volunteer.email)
+        self.assertTrue(_api(self.volunteer).post(f'{self.base}/check-in/', {'user_id': self.person.id}, format='json').status_code == 200)
+
+    def test_qr_codes_rotate_and_old_ones_expire(self):
+        stale = make_token(self.hack, self.person, at=timezone.now() - 10 * timezone.timedelta(minutes=1))
+        self.assertEqual(_api(self.volunteer).post(f'{self.base}/check-in/', {'token': stale}, format='json').data['code'], 'QR_EXPIRED')
+        recent = make_token(self.hack, self.person, at=timezone.now() - timezone.timedelta(minutes=1))
+        self.assertTrue(_api(self.volunteer).post(f'{self.base}/check-in/', {'token': recent}, format='json').data['created'])
+
+    def test_only_organizers_override_an_unregistered_team_and_need_a_reason(self):
+        forming = make_user()
+        make_team(self.hack, forming, name='Forming', status=TeamStatus.FORMING)
+        body = {'user_id': forming.id, 'override': True}
+        self.assertEqual(_api(self.volunteer).post(f'{self.base}/check-in/', {**body, 'reason': 'VIP'}, format='json').status_code, 403)
+        self.assertEqual(_api(self.admin).post(f'{self.base}/check-in/', body, format='json').data['code'], 'REASON_REQUIRED')
+        done = _api(self.admin).post(f'{self.base}/check-in/', {**body, 'reason': 'Teammate arrived late'}, format='json')
+        self.assertTrue(done.data['created'])
+        from apps.hackathons.models import CheckIn
+        self.assertEqual(CheckIn.objects.get(user=forming).override_reason, 'Teammate arrived late')
+        removed = make_user()
+        make_team(self.hack, removed, name='Gone', status=TeamStatus.DISQUALIFIED)
+        self.assertEqual(_api(self.admin).post(f'{self.base}/check-in/', {'user_id': removed.id, 'override': True, 'reason': 'x'}, format='json').data['code'], 'TEAM_REMOVED')
+
+    def test_roster_is_searchable_paged_and_lists_held_back_people_for_organizers_only(self):
+        for i in range(3):
+            make_team(self.hack, make_user(first_name=f'Zed{i}'), name=f'Zed team {i}')
+        waiting = make_user(first_name='Waiter')
+        make_team(self.hack, waiting, name='Queue', status=TeamStatus.FORMING)
+        page = _api(self.volunteer).get(f'{self.base}/check-in/?limit=2&offset=2').data
+        self.assertEqual((page['total'], page['count'], len(page['participants'])), (4, 4, 2))
+        found = _api(self.volunteer).get(f'{self.base}/check-in/?q=zed').data
+        self.assertEqual((found['count'], found['total']), (3, 4))
+        self.assertEqual(found['held_back'], [])
+        self.assertEqual(_api(self.volunteer).get(f'{self.base}/check-in/?q=Waiter').data['held_back'], [])
+        held = _api(self.admin).get(f'{self.base}/check-in/?q=Waiter').data['held_back']
+        self.assertEqual([h['name'] for h in held], ['Waiter Last'])
+        _api(self.volunteer).post(f'{self.base}/check-in/', {'user_id': self.person.id}, format='json')
+        self.assertEqual(_api(self.volunteer).get(f'{self.base}/check-in/?missing=1').data['count'], 3)
+        self.assertEqual(_api(self.volunteer).get(f'{self.base}/check-in/').data['participants'][0]['checked_in_by'] is not None, True)
+
+    def test_no_show_follow_up_reminds_and_withdraws_so_the_waitlist_moves(self):
+        self.hack.max_teams, self.hack.waitlist_enabled = 2, True
+        self.hack.save()
+        absent = make_team(self.hack, make_user(), name='Absent')
+        queued = make_team(self.hack, make_user(), name='Queued')
+        queued.is_waitlisted = True
+        queued.save()
+        _api(self.volunteer).post(f'{self.base}/check-in/', {'user_id': self.person.id}, format='json')
+        self.assertEqual(_api(self.volunteer).get(f'{self.base}/check-in/no-shows/').status_code, 403)
+        report = _api(self.admin).get(f'{self.base}/check-in/no-shows/').data
+        self.assertEqual([t['name'] for t in report['teams']], ['Absent'])
+        self.assertEqual(_api(self.admin).post(f'{self.base}/check-in/no-shows/', {'action': 'remind'}, format='json').data['reminded'], 1)
+        with self.captureOnCommitCallbacks(execute=True):
+            out = _api(self.admin).post(f'{self.base}/check-in/no-shows/', {'action': 'withdraw', 'team_ids': [absent.id, self.team.id]}, format='json')
+        self.assertEqual(out.data['withdrawn'], 1)  # Gamma has someone checked in, so it is untouched
+        absent.refresh_from_db(); queued.refresh_from_db(); self.team.refresh_from_db()
+        self.assertEqual((absent.status, self.team.status, queued.is_waitlisted), ('WITHDRAWN', 'REGISTERED', False))
+
+    def test_window_must_close_after_it_opens(self):
+        now = timezone.now()
+        resp = _api(self.admin).patch(self.base + '/', {'check_in_opens_at': now.isoformat(), 'check_in_closes_at': (now - HOUR).isoformat()}, format='json')
+        self.assertEqual(resp.status_code, 400)
+
     def test_unregistered_teams_cannot_check_in(self):
         self.team.status = TeamStatus.FORMING
         self.team.save()
@@ -338,9 +418,9 @@ class FinderCloneAnalyticsTests(APITestCase):
         admin = _api(make_user(role='ADMIN'))
         data = admin.get(f'{self.base}/analytics/').data
         self.assertEqual({row['key']: row['count'] for row in data['funnel']}['registered'], 1)
-        self.assertEqual(len(admin.get(f'{self.base}/participants/').data), 1)
+        self.assertEqual(admin.get(f'{self.base}/export/participants/').status_code, 200)
         self.assertEqual(_api(make_user()).get(f'{self.base}/analytics/').status_code, 403)
-        self.assertEqual(_api(make_user()).get(f'{self.base}/participants/').status_code, 403)
+        self.assertEqual(_api(make_user()).get(f'{self.base}/export/participants/').status_code, 403)
 
 
 class SubmissionDetailRulesTests(SubmissionTests):

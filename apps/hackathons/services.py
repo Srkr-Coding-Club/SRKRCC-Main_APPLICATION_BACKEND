@@ -24,12 +24,12 @@ from rest_framework.exceptions import PermissionDenied
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import _is_admin_or_club_lead
 
-from . import access, registration, round_rules, team_emails
+from . import access, registration, round_rules, team_emails, withdrawals
 from .errors import HackathonError
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, InviteStatus,
     EmailInviteStatus, HackathonStage, ProblemStatement, Round, RoundEntry, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamRole,
-    TeamStatus,
+    TeamStatus, WithdrawalRequest,
 )
 
 User = get_user_model()
@@ -428,6 +428,7 @@ class TeamService:
                 raise HackathonError('Team changes are locked for this hackathon, so new teams cannot be created.', 'TEAM_EDITS_LOCKED')
             _require_profile_complete(hackathon, leader)
             registration.check_eligibility(hackathon, leader)
+            withdrawals.check_can_create(hackathon, leader)
             accepted_at, answers = registration.registration_inputs(hackathon, registration_data)
         elif registration_data:
             accepted_at, answers = registration.registration_inputs(hackathon, {**registration_data, 'accept_rules': True})
@@ -442,7 +443,8 @@ class TeamService:
 
         try:
             team = Team.objects.create(
-                hackathon=hackathon, name=name, leader=leader, status=TeamStatus.FORMING, is_waitlisted=waitlisted, **problem,
+                hackathon=hackathon, name=name, leader=leader, status=TeamStatus.FORMING, is_waitlisted=waitlisted,
+                created_by=None if by_admin else leader, **problem,
             )
             TeamMember.objects.create(
                 team=team, hackathon=hackathon, user=leader, role=TeamRole.LEADER,
@@ -745,7 +747,11 @@ class TeamService:
 
     @staticmethod
     @transaction.atomic
-    def leave_team(team: Team, user) -> Team:
+    def leave_team(team: Team, user, reason: str = '') -> tuple[Team, WithdrawalRequest | None]:
+        """
+        A member leaves. The sole leader withdraws the team instead, which needs a reason and, for a team that holds a
+        place, an organizer's approval: then the second value is the request that was opened.
+        """
         team = _lock_team(team)
         membership = team.memberships.filter(user=user).first()
         if membership is None:
@@ -755,24 +761,14 @@ class TeamService:
         if team.leader_id == user.id:
             if others.exists():
                 raise HackathonError('Transfer leadership to a teammate before leaving.', 'LEADER_MUST_TRANSFER')
-            # Sole member leaving: the team is withdrawn rather than deleted, so
-            # admins keep a record of it.
-            membership.delete()
-            team.leader = None
-            team.status = TeamStatus.WITHDRAWN
-            team.save(update_fields=['leader', 'status', 'updated_at'])
-            team.invites.filter(status=InviteStatus.PENDING).update(
-                status=InviteStatus.CANCELLED, responded_at=timezone.now(),
-            )
-            _audit(user, 'Withdrew Hackathon Team', team)
-            WaitlistService.promote_after_commit(team.hackathon)
-            return team
+            # Sole member leaving: the team is withdrawn rather than deleted, so admins keep a record of it.
+            return withdrawals.WithdrawalService.withdraw(team, user, reason)
         membership.delete()
         _recompute_status(team)
         _audit(user, 'Left Hackathon Team', team)
         team_emails.notify_team('member_left', team, user)
         WaitlistService.promote_after_commit(team.hackathon)
-        return team
+        return team, None
 
     @staticmethod
     @transaction.atomic
@@ -879,6 +875,8 @@ class TeamService:
         team.status = new_status
         team.status_reason = ' '.join((reason or '').split())[:300] if new_status in (TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN) else ''
         team.save(update_fields=['status', 'status_reason', 'updated_at'])
+        if new_status not in ACTIVE_TEAM_STATUSES:
+            withdrawals.WithdrawalService.close_pending(team)
         if new_status in ACTIVE_TEAM_STATUSES:
             _recompute_status(team)
         _audit(actor, 'Admin Changed Hackathon Team Status', team, old=old, new=team.status)

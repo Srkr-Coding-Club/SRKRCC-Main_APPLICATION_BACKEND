@@ -271,8 +271,9 @@ class LeaderOnlyEditTests(APITestCase):
 
     def test_sole_leader_leaving_withdraws_team(self):
         TeamMember.objects.filter(user=self.member).delete()
+        Team.objects.filter(pk=self.team.pk).update(status=TeamStatus.FORMING)  # a team that holds a place needs approval instead
         self.client.force_authenticate(self.leader)
-        self.client.post(f'/api/hackathons/teams/{self.team.id}/leave/', {}, format='json')
+        self.client.post(f'/api/hackathons/teams/{self.team.id}/leave/', {'reason': 'Changed my plans'}, format='json')
         self.team.refresh_from_db()
         self.assertEqual(self.team.status, TeamStatus.WITHDRAWN)
         self.assertIsNone(self.team.leader)

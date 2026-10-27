@@ -44,7 +44,7 @@ from apps.core.idempotency import (
 )
 from apps.core.dmc.adapters.forms import FormIndividualAdapter
 from apps.core.dmc.contracts import QueryRequest
-from apps.core.dmc.export_service import serialize_records
+from apps.core.dmc.export_service import export_filename, serialize_records
 
 logger = logging.getLogger(__name__)
 
@@ -1283,7 +1283,7 @@ class FormViewSet(viewsets.ModelViewSet):
             details={"form": form.slug, "format": export_format, "matched_rows": len(matched_ids), "selection_only": 'ids' in request.query_params},
         )
 
-        filename = f"{form.slug}-responses-{timezone.now():%Y%m%d_%H%M%S}.{export_format}"
+        filename = export_filename(form.slug, "responses", export_format)
         http_response = HttpResponse(data, content_type=content_type)
         http_response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return http_response

@@ -287,3 +287,38 @@ class AttendanceReportViewTests(APITestCase):
         self.client.force_authenticate(self.member)
         resp = self.client.get(f"/api/forms/{self.form.id}/attendance/report/")
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+
+    def test_report_export_matches_the_shared_file_contract(self):
+        import csv
+        import io
+        import json
+        import re
+
+        self.client.force_authenticate(self.admin)
+        resp = self.client.get(f"/api/forms/{self.form.id}/attendance/report/export/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.content.decode("utf-8").startswith("﻿"))
+        self.assertRegex(resp["Content-Disposition"], rf'filename="{re.escape(self.form.slug)}-attendance-\d{{8}}_\d{{6}}\.csv"')
+        rows = list(csv.reader(io.StringIO(resp.content.decode("utf-8-sig"))))
+        self.assertEqual(rows[0][:2], ["Response ID", "Registrant"])
+        self.assertEqual(len(rows[0]), 4)
+        self.assertTrue(all(label.startswith("Attended: Day 1 ") for label in rows[0][2:]))
+        by_id = {row[0]: row[2:] for row in rows[1:]}
+        first = by_id[str(self.r1.id)]
+        self.assertEqual(sorted(first), ["No", "Yes"])
+        self.assertEqual(by_id[str(self.r2.id)], ["No", "No"])
+
+        as_json = self.client.get(f"/api/forms/{self.form.id}/attendance/report/export/", {"export_format": "json"})
+        self.assertEqual(len(json.loads(as_json.content)), 2)
+        self.assertEqual(self.client.get(f"/api/forms/{self.form.id}/attendance/report/export/", {"export_format": "pdf"}).status_code, 400)
+
+    def test_report_export_is_admin_only_and_audited(self):
+        from apps.audit.models import AuditLog
+
+        self.client.force_authenticate(self.member)
+        self.assertEqual(self.client.get(f"/api/forms/{self.form.id}/attendance/report/export/").status_code, status.HTTP_403_FORBIDDEN)
+        self.client.force_authenticate(self.admin)
+        self.client.get(f"/api/forms/{self.form.id}/attendance/report/export/", {"export_format": "xlsx"})
+        entry = AuditLog.objects.filter(action="Attendance Report Export (XLSX)").latest("id")
+        self.assertEqual(entry.details["rows"], 2)
