@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from apps.core.image_urls import normalize_image_url
 from apps.forms.models import ProfileField
-from . import config_validation as config, idea_files
+from . import check_in_sessions, config_validation as config, idea_files
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, HackathonStage, InviteStatus,
     ProblemStatement, Round, RoundEntry, Submission, Team, TeamInvite, TeamMember, TeamStatus,
@@ -41,7 +41,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'team_edits_locked', 'allow_open_innovation', 'required_profile_fields', 'faq', 'is_registration_open',
             'features', 'max_teams', 'max_participants', 'waitlist_enabled', 'eligibility', 'rules',
             'require_rules_acceptance', 'registration_questions', 'problem_statements_reveal_at',
-            'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'check_in_opens_at', 'check_in_closes_at', 'idea_review_required',
+            'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'check_in_opens_at', 'check_in_closes_at', 'check_in_days', 'check_in_slots_per_day', 'idea_review_required',
             'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
             'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
             'certificate_config', 'mentors', 'judges', 'sponsors', 'contacts', 'community_links', 'venue_map_url',
@@ -49,6 +49,17 @@ class HackathonSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         ]
         read_only_fields = ['status', 'results_published_at']
+        extra_kwargs = {
+            'check_in_days': {'min_value': 1, 'max_value': check_in_sessions.MAX_DAYS},
+            'check_in_slots_per_day': {'min_value': 1, 'max_value': len(check_in_sessions.SLOT_ORDER)},
+        }
+
+    def update(self, instance, validated_data):
+        instance = super().update(instance, validated_data)
+        if instance.feature('check_in'):
+            # Days, slots or the event dates may have changed: bring the check-in sessions in line.
+            check_in_sessions.sync(instance)
+        return instance
 
     def get_is_full(self, obj) -> bool:
         if not obj.max_teams:
@@ -755,7 +766,7 @@ class AdminRoundEntrySerializer(serializers.ModelSerializer):
 
     def get_checked_in(self, obj):
         annotated = getattr(obj, 'checked_in_total', None)
-        return int(annotated) if annotated is not None else obj.team.check_ins.count()
+        return int(annotated) if annotated is not None else obj.team.check_ins.filter(session__is_main=True).count()
 
     def get_member_count(self, obj):
         annotated = getattr(obj, 'member_total', None)

@@ -6,6 +6,7 @@ from collections import Counter
 from django.db.models import Count
 from django.db.models.functions import TruncDate
 
+from . import check_in_sessions
 from .models import EntryStatus, Hackathon, IdeaSubmission, RoundEntry, Submission, TeamStatus
 
 TOP_BREAKDOWN_ITEMS = 12
@@ -44,7 +45,7 @@ def overview(hackathon: Hackathon) -> dict:
     )
     return {
         'funnel': funnel,
-        'checked_in': hackathon.check_ins.count(),
+        'checked_in': check_in_sessions.main_check_ins(hackathon).count(),
         'waitlisted_teams': teams.filter(is_waitlisted=True).count(),
         'by_branch': _breakdown(m.user.branch for m in placed_members),
         'by_year': _breakdown(f'Year {m.user.year}' if m.user.year else None for m in placed_members),

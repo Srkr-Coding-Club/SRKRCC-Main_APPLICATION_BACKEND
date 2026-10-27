@@ -18,11 +18,11 @@ COPIED_FIELDS = (
     'require_rules_acceptance', 'registration_questions', 'show_leaderboard', 'mentors', 'judges', 'sponsors', 'contacts',
     'community_links', 'venue_map_url', 'is_flagship', 'idea_review_required', 'project_requires_approved_idea',
     'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled',
+    'check_in_days', 'check_in_slots_per_day',
 )
 SHIFTED_FIELDS = (
     'start_date', 'end_date', 'registration_opens_at', 'registration_closes_at', 'submission_opens_at',
     'submission_deadline', 'problem_statements_reveal_at', 'idea_opens_at', 'idea_deadline',
-    'check_in_opens_at', 'check_in_closes_at',
     'check_in_opens_at', 'check_in_closes_at',
 )
 

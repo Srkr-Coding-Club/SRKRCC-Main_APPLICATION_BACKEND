@@ -10,12 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from django.db.models import Prefetch
+from django.db.models import Count, Prefetch
+from django.utils.text import slugify
 
 from apps.core.dmc.contracts import ColumnDefinition
 from apps.core.dmc.export_service import serialize_records
 
 from .errors import HackathonError
+from . import check_in_sessions
 from .models import CheckIn, Hackathon, IdeaSubmission, Submission, TeamMember, TeamStatus
 
 EXPORT_FORMATS = ('csv', 'xlsx', 'json')
@@ -94,13 +96,26 @@ PARTICIPANT_COLUMNS = [
 ]
 
 
+def _later_sessions(hackathon: Hackathon):
+    """The sessions after arrival that are worth a column: ones that take scans, or kept because people were checked in."""
+    return [
+        session for session in hackathon.check_in_sessions.annotate(taken=Count('check_ins')).order_by('day_index', 'slot')
+        if not session.is_main and (session.is_scannable or session.taken)
+    ]
+
+
 def participant_columns(hackathon: Hackathon) -> list[ColumnDefinition]:
     questions = [_col(f"answer_{q['key']}", q['label']) for q in (hackathon.registration_questions or [])]
-    return PARTICIPANT_COLUMNS + questions
+    attended = [_col(f'attended_{session.id}', f'Attended: {session.label}', 'boolean') for session in _later_sessions(hackathon)]
+    return PARTICIPANT_COLUMNS + attended + questions
 
 
 def participant_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
-    arrived = set(hackathon.check_ins.values_list('user_id', flat=True))
+    arrived = set(check_in_sessions.main_check_ins(hackathon).values_list('user_id', flat=True))
+    later = _later_sessions(hackathon)
+    attended: dict[int, set[int]] = {session.id: set() for session in later}
+    for session_id, user_id in CheckIn.objects.filter(hackathon=hackathon, session_id__in=attended).values_list('session_id', 'user_id'):
+        attended[session_id].add(user_id)
     questions = hackathon.registration_questions or []
     memberships = hackathon.memberships.select_related('user', 'user__college', 'team').order_by('team__name', 'role', 'id')
     for membership in memberships:
@@ -111,6 +126,8 @@ def participant_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
             'branch': user.branch or '', 'year': user.year or '', 'roll_number': user.roll_number or '', 'college': _college(user),
             'rules_accepted': membership.rules_accepted_at is not None, 'checked_in': user.id in arrived,
         }
+        for session in later:
+            row[f'attended_{session.id}'] = user.id in attended[session.id]
         for question in questions:
             row[f"answer_{question['key']}"] = (membership.answers or {}).get(question['key'], '')
         yield row
@@ -197,7 +214,8 @@ CHECK_IN_COLUMNS = [
 
 
 def check_in_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
-    arrived = {c.user_id: c for c in CheckIn.objects.filter(hackathon=hackathon).select_related('checked_in_by')}
+    session = check_in_sessions.resolve(hackathon, params.get('session'))
+    arrived = {c.user_id: c for c in CheckIn.objects.filter(session=session).select_related('checked_in_by')}
     placed = hackathon.memberships.filter(team__status=TeamStatus.REGISTERED, team__is_waitlisted=False)
     for membership in placed.select_related('user', 'team').order_by('team__name', 'role', 'user__first_name', 'id'):
         record = arrived.get(membership.user_id)
@@ -235,6 +253,15 @@ EXPORT_KINDS: dict[str, ExportKind] = {kind.key: kind for kind in (
     ExportKind('rounds', 'round-results', ('rounds',), _fixed(ROUND_COLUMNS), round_rows),
     ExportKind('check-in', 'check-in', ('check_in',), _fixed(CHECK_IN_COLUMNS), check_in_rows),
 )}
+
+
+def file_part(hackathon: Hackathon, kind: ExportKind, params: QuerySlice) -> str:
+    """The kind's name in the file name; a check-in list of a session other than arrival says which one."""
+    if kind.key == 'check-in':
+        session = check_in_sessions.resolve(hackathon, params.get('session'))
+        if not session.is_main:
+            return f"{kind.name}-{slugify(session.label) or 'session'}"
+    return kind.name
 
 
 def render(hackathon: Hackathon, kind: ExportKind, params: QuerySlice, fmt: str) -> tuple[bytes, str, int]:

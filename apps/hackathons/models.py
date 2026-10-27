@@ -110,6 +110,8 @@ class Hackathon(TimeStampedModel):
     idea_deadline = models.DateTimeField(blank=True, null=True, help_text='Phase 1 (plan): ideas cannot be submitted or edited after this.')
     check_in_opens_at = models.DateTimeField(blank=True, null=True, help_text='Day-of check-in: QR codes work from this time (empty = always).')
     check_in_closes_at = models.DateTimeField(blank=True, null=True, help_text='Day-of check-in: scanning stops after this time (empty = never).')
+    check_in_days = models.PositiveSmallIntegerField(default=1, help_text='Days people are checked in on; with the slots below this generates the check-in sessions.')
+    check_in_slots_per_day = models.PositiveSmallIntegerField(default=1, help_text='Check-in slots per day (1 to 3: morning, afternoon, evening).')
     idea_review_required = models.BooleanField(default=True, help_text='Organizers must approve an idea before it counts as accepted.')
     idea_fee_amount = models.PositiveIntegerField(default=0, help_text='Rupees a team pays with its idea (0 = no payment). The payment screenshot is then required.')
     idea_payment_qr = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='QR code teams scan to pay (image uploaded by the organizers).')
@@ -144,6 +146,22 @@ class Hackathon(TimeStampedModel):
 
     def feature(self, name: str) -> bool:
         return bool((self.features or {}).get(name, False))
+
+    def main_check_in_session(self) -> 'CheckInSession':
+        """The arrival session everything (certificates, round rules, no-shows) means by "checked in"; created on first use."""
+        session = self.check_in_sessions.filter(is_main=True).first()
+        if session is None:
+            session, _ = self.check_in_sessions.get_or_create(
+                day_index=0, slot=CheckInSlot.MORNING,
+                defaults={
+                    'is_main': True, 'name': 'Check-in', 'needs_arrival': False, 'counts_for_certificate': True,
+                    'date': timezone.localtime(self.start_date).date() if self.start_date else timezone.localdate(),
+                },
+            )
+            if not session.is_main:
+                session.is_main = True
+                session.save(update_fields=['is_main'])
+        return session
 
     @property
     def is_registration_open(self) -> bool:
@@ -645,19 +663,95 @@ class HackathonWinner(TimeStampedModel):
         ]
 
 
+class CheckInSlot(models.IntegerChoices):
+    """Chronological, so sessions sort in the order the day happens."""
+    MORNING = 0, 'Morning'
+    AFTERNOON = 1, 'Afternoon'
+    EVENING = 2, 'Evening'
+
+
+class CheckInScanMode(models.TextChoices):
+    MEMBERS = 'MEMBERS', 'Each person scans their own code'
+    TEAMS = 'TEAMS', 'Scan the team code, then pick who is present'
+    BOTH = 'BOTH', 'Either'
+
+
+class CheckInSession(TimeStampedModel):
+    """
+    One scannable moment of the event (Day 2 Afternoon, Lunch, ...), generated from the hackathon's days and slots.
+    The main session is the arrival check-in: "checked in" everywhere else in the app means checked in to it. Its opening
+    and closing times are the hackathon's own check_in_opens_at / check_in_closes_at.
+    """
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='check_in_sessions')
+    day_index = models.PositiveSmallIntegerField(help_text='0 is the first day.')
+    slot = models.PositiveSmallIntegerField(choices=CheckInSlot.choices)
+    date = models.DateField()
+    name = models.CharField(max_length=80, blank=True, help_text='Shown to volunteers and people; empty = "Day 2 Afternoon".')
+    opens_at = models.DateTimeField(blank=True, null=True)
+    closes_at = models.DateTimeField(blank=True, null=True)
+    is_main = models.BooleanField(default=False)
+    needs_arrival = models.BooleanField(default=True, help_text='Only people already checked in to the main session may be scanned.')
+    counts_for_certificate = models.BooleanField(default=False)
+    scan_mode = models.CharField(max_length=8, choices=CheckInScanMode.choices, default=CheckInScanMode.BOTH)
+    is_active = models.BooleanField(default=True, help_text='Switched off by an organizer: nobody can be scanned in.')
+    outside_schedule = models.BooleanField(default=False, help_text='The hackathon no longer has this day or slot; kept because people were checked in.')
+
+    class Meta:
+        ordering = ['day_index', 'slot']
+        constraints = [
+            models.UniqueConstraint(fields=['hackathon', 'day_index', 'slot'], name='uniq_check_in_session_slot'),
+            models.UniqueConstraint(fields=['hackathon'], condition=Q(is_main=True), name='uniq_main_check_in_session'),
+        ]
+
+    def __str__(self):
+        return f'{self.hackathon_id}: {self.label}'
+
+    @property
+    def label(self) -> str:
+        return self.name or f'Day {self.day_index + 1} {CheckInSlot(self.slot).label}'
+
+    @property
+    def is_scannable(self) -> bool:
+        return self.is_active and not self.outside_schedule
+
+    def window(self):
+        """(opens, closes). The main session uses the hackathon's own times, which organizers already edit there."""
+        if self.is_main:
+            return self.hackathon.check_in_opens_at, self.hackathon.check_in_closes_at
+        return self.opens_at, self.closes_at
+
+
+class CheckInVia(models.TextChoices):
+    MEMBER_QR = 'MEMBER_QR', "The person's own code"
+    TEAM_QR = 'TEAM_QR', "The team's code"
+    LIST = 'LIST', 'Ticked from the list'
+    OVERRIDE = 'OVERRIDE', 'Let in by an organizer'
+
+
 class CheckIn(models.Model):
     hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='check_ins')
+    # RESTRICT: a session that has people checked in is retired, never deleted (see check_in_sessions.sync), yet deleting
+    # the whole hackathon (which removes its sessions and check-ins together) still works.
+    session = models.ForeignKey(CheckInSession, on_delete=models.RESTRICT, related_name='check_ins')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hackathon_check_ins')
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='check_ins')
     checked_in_at = models.DateTimeField(default=timezone.now)
     checked_in_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     override_reason = models.CharField(max_length=200, blank=True, help_text='Why an organizer let in someone whose team was not registered (empty = a normal check-in).')
+    via = models.CharField(max_length=10, choices=CheckInVia.choices, default=CheckInVia.LIST)
+    batch_id = models.UUIDField(blank=True, null=True, db_index=True, help_text='Everyone checked in by one team scan shares this, so the batch can be undone together.')
 
     class Meta:
         ordering = ['-checked_in_at']
         constraints = [
-            models.UniqueConstraint(fields=['hackathon', 'user'], name='uniq_check_in_per_user'),
+            models.UniqueConstraint(fields=['session', 'user'], name='uniq_check_in_per_session_user'),
         ]
+
+    def save(self, *args, **kwargs):
+        # Code that does not name a session (older callers, tests) means the arrival session.
+        if self.session_id is None:
+            self.session = self.hackathon.main_check_in_session()
+        super().save(*args, **kwargs)
 
 
 class TeamSeeker(TimeStampedModel):

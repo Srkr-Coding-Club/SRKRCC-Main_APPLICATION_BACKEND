@@ -7,7 +7,8 @@ from __future__ import annotations
 from collections import Counter
 
 from .errors import HackathonError
-from .models import CheckIn, IdeaStatus, RoundEntry, TeamMember
+from . import check_in_sessions
+from .models import IdeaStatus, RoundEntry, TeamMember
 
 TOP, MIN, FLAG = 'top', 'min', 'flag'
 
@@ -51,7 +52,7 @@ def _metric(entry: RoundEntry, rule: str, checked_in_teams: set[int], fully_chec
 def _fully_checked_in_teams(hackathon) -> set[int]:
     """Teams where every member has arrived (a team with no members never qualifies)."""
     members = Counter(TeamMember.objects.filter(hackathon=hackathon).values_list('team_id', flat=True))
-    arrived = Counter(CheckIn.objects.filter(hackathon=hackathon).values_list('team_id', flat=True))
+    arrived = Counter(check_in_sessions.main_check_ins(hackathon).values_list('team_id', flat=True))
     return {team_id for team_id, count in members.items() if arrived.get(team_id, 0) >= count}
 
 
@@ -74,7 +75,7 @@ def evaluate(round_obj, rule: str, value) -> list[dict]:
     entries = list(
         round_obj.entries.select_related('team', 'team__idea', 'team__submission').order_by('team__name')
     )
-    checked_in = set(CheckIn.objects.filter(hackathon=round_obj.hackathon).values_list('team_id', flat=True))
+    checked_in = set(check_in_sessions.main_check_ins(round_obj.hackathon).values_list('team_id', flat=True))
     fully_checked_in = _fully_checked_in_teams(round_obj.hackathon)
     rows = []
     for entry in entries:

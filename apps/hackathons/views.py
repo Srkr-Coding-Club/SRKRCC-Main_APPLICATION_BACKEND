@@ -979,7 +979,7 @@ def round_entries_queryset(round_obj, params):
         'team__leader', 'team__problem_statement', 'decided_by', 'team__idea', 'team__submission',
     ).annotate(
         member_total=Count('team__memberships', distinct=True), promoted_total=promoted,
-        checked_in_total=Count('team__check_ins', distinct=True),
+        checked_in_total=Count('team__check_ins', filter=Q(team__check_ins__session__is_main=True), distinct=True),
     )
     if params.get('status'):
         qs = qs.filter(status=params['status'])
