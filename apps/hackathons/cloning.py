@@ -22,6 +22,8 @@ COPIED_FIELDS = (
 SHIFTED_FIELDS = (
     'start_date', 'end_date', 'registration_opens_at', 'registration_closes_at', 'submission_opens_at',
     'submission_deadline', 'problem_statements_reveal_at', 'idea_opens_at', 'idea_deadline',
+    'check_in_opens_at', 'check_in_closes_at',
+    'check_in_opens_at', 'check_in_closes_at',
 )
 
 

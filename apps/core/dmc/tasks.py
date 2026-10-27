@@ -10,13 +10,12 @@ everything up fresh from `job_id` rather than receiving live objects, since it
 runs on its own thread/connection.
 """
 
-from django.utils import timezone
 
 from apps.core.dmc.contracts import ExportRequest, FilterClause, QueryRequest, SortClause
 
 
 def run_export_job(job_id):
-    from apps.core.dmc.export_service import ExportService
+    from apps.core.dmc.export_service import ExportService, export_filename
     from apps.core.dmc.models import ExportJob
     from apps.core.dmc.registry import get_dataset
 
@@ -50,7 +49,7 @@ def run_export_job(job_id):
         visible_column_keys=job.column_keys,
     )
 
-    filename = f"{dataset_def.id}_export_{timezone.now().strftime('%Y%m%d_%H%M%S')}.{job.format}"
+    filename = export_filename(dataset_def.id, "export", job.format)
 
     svc = ExportService(dataset_def, adapter, user)
     svc._execute_job(job, export_cols, export_req, query_req, filename)

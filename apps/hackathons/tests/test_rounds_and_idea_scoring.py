@@ -3,7 +3,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
 from apps.hackathons.models import (
-    CheckIn, EntryStatus, HackathonStaff, IdeaStatus, IdeaSubmission, Round, RoundEntry, Submission,
+    CheckIn, EntryStatus, HackathonStaff, IdeaStatus, IdeaSubmission, Round, RoundEntry, Submission, TeamMember,
 )
 from .helpers import make_hackathon, make_team, make_user
 
@@ -58,6 +58,11 @@ class RoundEnhancementTests(APITestCase):
         self.assertEqual(names(self._auto(rule='HAS_PROJECT')), ['Team A', 'Team B', 'Team C'])
         CheckIn.objects.create(hackathon=self.hack, user=self.teams[1].leader, team=self.teams[1])
         self.assertEqual(names(self._auto(rule='CHECKED_IN')), ['Team B'])
+        extra = make_user()
+        TeamMember.objects.create(team=self.teams[1], user=extra, hackathon=self.hack)
+        self.assertEqual(names(self._auto(rule='ALL_CHECKED_IN')), [])
+        CheckIn.objects.create(hackathon=self.hack, user=extra, team=self.teams[1])
+        self.assertEqual(names(self._auto(rule='ALL_CHECKED_IN')), ['Team B'])
 
     def test_bad_rules_and_empty_selection_are_refused(self):
         self.assertEqual(self._auto(rule='MAGIC').status_code, 400)

@@ -41,7 +41,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'team_edits_locked', 'allow_open_innovation', 'required_profile_fields', 'faq', 'is_registration_open',
             'features', 'max_teams', 'max_participants', 'waitlist_enabled', 'eligibility', 'rules',
             'require_rules_acceptance', 'registration_questions', 'problem_statements_reveal_at',
-            'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'idea_review_required',
+            'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'check_in_opens_at', 'check_in_closes_at', 'idea_review_required',
             'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
             'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
             'certificate_config', 'mentors', 'judges', 'sponsors', 'contacts', 'community_links', 'venue_map_url',
@@ -287,6 +287,10 @@ class HackathonSerializer(serializers.ModelSerializer):
         idea_deadline = attrs.get('idea_deadline', getattr(self.instance, 'idea_deadline', None))
         if idea_opens and idea_deadline and idea_deadline <= idea_opens:
             raise serializers.ValidationError({'idea_deadline': 'Must be after the time idea submission opens.'})
+        ci_opens = attrs.get('check_in_opens_at', getattr(self.instance, 'check_in_opens_at', None))
+        ci_closes = attrs.get('check_in_closes_at', getattr(self.instance, 'check_in_closes_at', None))
+        if ci_opens and ci_closes and ci_closes <= ci_opens:
+            raise serializers.ValidationError({'check_in_closes_at': 'Must be after the time check-in opens.'})
         project_deadline = attrs.get('submission_deadline', getattr(self.instance, 'submission_deadline', None))
         if idea_deadline and project_deadline and idea_deadline > project_deadline:
             raise serializers.ValidationError({'idea_deadline': 'The idea phase must end before the project deadline.'})

@@ -1,4 +1,4 @@
-"""Organizer insight: the participation funnel, who the participants are, and flat exports."""
+"""Organizer insight: the participation funnel and who the participants are."""
 from __future__ import annotations
 
 from collections import Counter
@@ -56,27 +56,6 @@ def overview(hackathon: Hackathon) -> dict:
             'placed_participants': len(placed_members),
         },
     }
-
-
-def participants_rows(hackathon: Hackathon) -> list[dict]:
-    """One row per participant: profile, team, answers to the registration questions, check-in."""
-    arrived = set(hackathon.check_ins.values_list('user_id', flat=True))
-    questions = hackathon.registration_questions or []
-    rows = []
-    for membership in hackathon.memberships.select_related('user', 'user__college', 'team').order_by('team__name', 'role'):
-        user = membership.user
-        row = {
-            'team': membership.team.name, 'team_status': 'WAITLISTED' if membership.team.is_waitlisted else membership.team.status,
-            'role': membership.role, 'name': f'{user.first_name} {user.last_name}'.strip(), 'email': user.email,
-            'phone': user.phone_number or '', 'branch': user.branch or '', 'year': user.year or '',
-            'roll_number': user.roll_number or '', 'college': _college(user),
-            'rules_accepted': 'yes' if membership.rules_accepted_at else '', 'checked_in': 'yes' if user.id in arrived else '',
-        }
-        for question in questions:
-            answer = (membership.answers or {}).get(question['key'], '')
-            row[question['label']] = 'yes' if answer is True else answer
-        rows.append(row)
-    return rows
 
 
 def submission_rows(hackathon: Hackathon) -> list[dict]:

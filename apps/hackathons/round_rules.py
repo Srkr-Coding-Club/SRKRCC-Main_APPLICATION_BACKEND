@@ -4,8 +4,10 @@ approval, a submitted project, check-in), so an organizer previews a shortlist i
 """
 from __future__ import annotations
 
+from collections import Counter
+
 from .errors import HackathonError
-from .models import CheckIn, IdeaStatus, RoundEntry
+from .models import CheckIn, IdeaStatus, RoundEntry, TeamMember
 
 TOP, MIN, FLAG = 'top', 'min', 'flag'
 
@@ -18,6 +20,7 @@ RULES: dict[str, tuple[str, str, str]] = {
     'IDEA_APPROVED': (FLAG, 'Idea approved', ''),
     'HAS_PROJECT': (FLAG, 'Submitted a project', ''),
     'CHECKED_IN': (FLAG, 'At least one member checked in', ''),
+    'ALL_CHECKED_IN': (FLAG, 'Every member checked in', ''),
 }
 
 
@@ -26,7 +29,7 @@ def _related(team, name):
     return getattr(team, name, None) if hasattr(team, name) else None
 
 
-def _metric(entry: RoundEntry, rule: str, checked_in_teams: set[int]):
+def _metric(entry: RoundEntry, rule: str, checked_in_teams: set[int], fully_checked_in_teams: set[int] = frozenset()):
     """(passes_flag_or_None, number_or_None) for one entry under a rule."""
     team = entry.team
     if rule.startswith('PROJECT_SCORE'):
@@ -40,7 +43,16 @@ def _metric(entry: RoundEntry, rule: str, checked_in_teams: set[int]):
         return bool(idea and idea.status == IdeaStatus.APPROVED), None
     if rule == 'HAS_PROJECT':
         return _related(team, 'submission') is not None, None
+    if rule == 'ALL_CHECKED_IN':
+        return team.id in fully_checked_in_teams, None
     return team.id in checked_in_teams, None
+
+
+def _fully_checked_in_teams(hackathon) -> set[int]:
+    """Teams where every member has arrived (a team with no members never qualifies)."""
+    members = Counter(TeamMember.objects.filter(hackathon=hackathon).values_list('team_id', flat=True))
+    arrived = Counter(CheckIn.objects.filter(hackathon=hackathon).values_list('team_id', flat=True))
+    return {team_id for team_id, count in members.items() if arrived.get(team_id, 0) >= count}
 
 
 def evaluate(round_obj, rule: str, value) -> list[dict]:
@@ -63,9 +75,10 @@ def evaluate(round_obj, rule: str, value) -> list[dict]:
         round_obj.entries.select_related('team', 'team__idea', 'team__submission').order_by('team__name')
     )
     checked_in = set(CheckIn.objects.filter(hackathon=round_obj.hackathon).values_list('team_id', flat=True))
+    fully_checked_in = _fully_checked_in_teams(round_obj.hackathon)
     rows = []
     for entry in entries:
-        flag, metric = _metric(entry, rule, checked_in)
+        flag, metric = _metric(entry, rule, checked_in, fully_checked_in)
         rows.append({'entry': entry, 'flag': flag, 'metric': metric})
 
     if kind == FLAG:

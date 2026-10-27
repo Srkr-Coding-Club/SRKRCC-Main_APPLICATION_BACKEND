@@ -141,6 +141,21 @@ filter the UI offers is always one the server applies.
 - **Asynchronous** (> 1000 rows): Creates `ExportJob`, dispatches a plain background thread via `apps/core/tasks.py::run_in_background` (`apps/core/dmc/tasks.py` — **not Celery**, no task queue in this app), returns `job_id` for polling.
 - Adapters provide `stream_records()` generator — ExportService handles CSV/XLSX/JSON serialization.
 
+### The export contract (every tabular download in the application)
+
+`apps/core/dmc/export_service.py` owns one file contract, and anything that produces a downloadable table goes through `serialize_records` and `export_filename`:
+
+| Rule | Behaviour |
+|---|---|
+| File name | `<scope>-<kind>-YYYYMMDD_HHMMSS.<ext>`, the time in IST (`users-export-…`, `<form>-responses-…`, `<hackathon>-teams-…`, `<form>-attendance-…`) |
+| CSV | UTF-8 **with a BOM** (Excel reads non-English text), formula-injection safe (a leading `'` on cells starting `= + - @ tab CR`) |
+| Headers | The column labels shown on screen, never field names |
+| Values | `Yes` / `No` for booleans, lists joined with `, `, `-` for not applicable, dates as IST text `27 Oct 2026, 11:52` (date-only `27 Oct 2026`); JSON keeps ISO dates |
+| Formats | `csv`, `xlsx`, `json` everywhere |
+| Audit | Every download writes an audit entry (who, what, format, rows) |
+
+Users of the contract: the DMC (`POST /datasets/<id>/export/`), form responses (`GET /api/forms/<slug>/responses/export/`), the attendance report (`GET /api/forms/<id>/attendance/report/export/`) and the hackathon downloads (`GET /api/hackathons/<slug>/export/<kind>/`, see [hackathon.md](hackathon.md)). The browser no longer builds CSV files itself. `apps/core/tests/test_export_contract.py` and `apps/hackathons/tests/test_exports.py` hold the contract tests.
+
 ---
 
 ## Key Invariants
