@@ -1,8 +1,12 @@
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
 from rest_framework.response import Response as DRFResponse
 from rest_framework.views import APIView
 
+from apps.audit.utils import log_audit_event
+from apps.core.dmc.contracts import ColumnDefinition
+from apps.core.dmc.export_service import export_filename, serialize_records
 from apps.core.permissions import IsAdminOrClubLead
 from apps.forms.models import Form, Response as FormResponse
 
@@ -200,6 +204,53 @@ class AttendanceScanView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+def build_report(form):
+    """Per-session summaries and one row per registrant saying which sessions they attended."""
+    sessions = list(form.attendance_sessions.all().order_by('day_index', 'session_label'))
+
+    responses = list(
+        FormResponse.objects.filter(form=form, is_test_submission=False)
+        .select_related('user', 'created_by_admin')
+        .prefetch_related('answers__field', 'attendance_badge__records')
+    )
+
+    total_registrants = len(responses)
+    session_counts = {s.id: 0 for s in sessions}
+    registrant_rows = []
+
+    for resp in responses:
+        badge = getattr(resp, 'attendance_badge', None)
+        attended_session_ids = set()
+        if badge is not None:
+            attended_session_ids = {r.session_id for r in badge.records.all()}
+
+        for sid in attended_session_ids:
+            if sid in session_counts:
+                session_counts[sid] += 1
+
+        registrant_rows.append({
+            "response_id": resp.id,
+            "display_name": resolve_display_name(resp),
+            "sessions": {s.id: (s.id in attended_session_ids) for s in sessions},
+        })
+
+    session_summaries = []
+    for s in sessions:
+        attended = session_counts.get(s.id, 0)
+        percentage = round((attended / total_registrants) * 100, 1) if total_registrants else 0.0
+        session_summaries.append({
+            "id": s.id,
+            "day_index": s.day_index,
+            "session_label": s.session_label,
+            "date": s.date,
+            "attended_count": attended,
+            "total_registrants": total_registrants,
+            "percentage": percentage,
+        })
+
+    return sessions, session_summaries, registrant_rows
+
+
 class AttendanceReportView(APIView):
     """
     GET /api/forms/<form_id>/attendance/report/
@@ -209,50 +260,48 @@ class AttendanceReportView(APIView):
     permission_classes = [IsAdminOrClubLead]
 
     def get(self, request, form_id):
-        form = get_object_or_404(Form, id=form_id)
-        sessions = list(form.attendance_sessions.all().order_by('day_index', 'session_label'))
-
-        responses = list(
-            FormResponse.objects.filter(form=form, is_test_submission=False)
-            .select_related('user', 'created_by_admin')
-            .prefetch_related('answers__field', 'attendance_badge__records')
-        )
-
-        total_registrants = len(responses)
-        session_counts = {s.id: 0 for s in sessions}
-        registrant_rows = []
-
-        for resp in responses:
-            badge = getattr(resp, 'attendance_badge', None)
-            attended_session_ids = set()
-            if badge is not None:
-                attended_session_ids = {r.session_id for r in badge.records.all()}
-
-            for sid in attended_session_ids:
-                if sid in session_counts:
-                    session_counts[sid] += 1
-
-            registrant_rows.append({
-                "response_id": resp.id,
-                "display_name": resolve_display_name(resp),
-                "sessions": {s.id: (s.id in attended_session_ids) for s in sessions},
-            })
-
-        session_summaries = []
-        for s in sessions:
-            attended = session_counts.get(s.id, 0)
-            percentage = round((attended / total_registrants) * 100, 1) if total_registrants else 0.0
-            session_summaries.append({
-                "id": s.id,
-                "day_index": s.day_index,
-                "session_label": s.session_label,
-                "date": s.date,
-                "attended_count": attended,
-                "total_registrants": total_registrants,
-                "percentage": percentage,
-            })
-
+        _, session_summaries, registrant_rows = build_report(get_object_or_404(Form, id=form_id))
         return DRFResponse({
             "sessions": session_summaries,
             "registrants": registrant_rows,
         }, status=status.HTTP_200_OK)
+
+
+REPORT_EXPORT_FORMATS = ('csv', 'xlsx', 'json')
+
+
+def _session_column_label(session) -> str:
+    return f"Attended: Day {session.day_index + 1} {session.session_label.capitalize()}"
+
+
+class AttendanceReportExportView(APIView):
+    """
+    GET /api/forms/<form_id>/attendance/report/export/?export_format=csv|xlsx|json
+    The per-registrant attendance grid, rendered by the shared export serializer like every other download.
+    """
+    permission_classes = [IsAdminOrClubLead]
+
+    def get(self, request, form_id):
+        form = get_object_or_404(Form, id=form_id)
+        fmt = request.query_params.get('export_format', 'csv').lower()
+        if fmt not in REPORT_EXPORT_FORMATS:
+            return DRFResponse({'error': f"Unsupported format. Choose: {', '.join(REPORT_EXPORT_FORMATS)}"}, status=status.HTTP_400_BAD_REQUEST)
+        sessions, _, registrants = build_report(form)
+        columns = [
+            ColumnDefinition(key='response_id', label='Response ID', type='number'),
+            ColumnDefinition(key='registrant', label='Registrant'),
+        ] + [
+            ColumnDefinition(key=f'session_{s.id}', label=_session_column_label(s), type='boolean') for s in sessions
+        ]
+        records = [
+            {'response_id': r['response_id'], 'registrant': r['display_name'], **{f'session_{s.id}': r['sessions'][s.id] for s in sessions}}
+            for r in registrants
+        ]
+        data, content_type = serialize_records(columns, iter(records), fmt)
+        log_audit_event(
+            actor=request.user, action=f'Attendance Report Export ({fmt.upper()})', target_model='Form', target_id=str(form.pk),
+            details={'form': form.slug, 'format': fmt, 'rows': len(records)},
+        )
+        response = HttpResponse(data, content_type=content_type)
+        response['Content-Disposition'] = f'attachment; filename="{export_filename(form.slug, "attendance", fmt)}"'
+        return response

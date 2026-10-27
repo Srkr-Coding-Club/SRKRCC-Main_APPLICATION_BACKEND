@@ -21,14 +21,14 @@ from apps.core.cache import PublicReadCacheControlMixin
 from . import team_emails
 from .models import (
     EntryStatus, Hackathon, HackathonAnnouncement, HackathonStatus, InviteStatus,
-    ProblemStatement, Round, RoundEntry, Submission, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamStatus,
+    ProblemStatement, Round, RoundEntry, Submission, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamStatus, WithdrawalStatus,
 )
 from .serializers import (
     AdminHackathonAnnouncementSerializer, AdminRoundEntrySerializer, AdminTeamSerializer,
     HackathonAnnouncementSerializer, HackathonSerializer, ProblemStatementSerializer,
     AdminStageSerializer, PublicStageSerializer, RoundSerializer, SubmissionSerializer, TeamInviteSerializer, TeamSerializer,
 )
-from . import access, registration
+from . import access, registration, withdrawals
 from .access import scoped, scoped_or_read_only
 from .services import (
     AnnouncementService, HackathonError, ProblemStatementService, RoundService, StageService, TeamService, WaitlistService,
@@ -500,6 +500,19 @@ class StageImportRoundsView(APIView):
         })
 
 
+def _withdrawal_payload(team):
+    """The latest withdrawal request on a team, for the leader's dashboard (None when there never was one)."""
+    if team is None:
+        return None
+    request = withdrawals.WithdrawalService.latest_for(team)
+    if request is None or request.status == WithdrawalStatus.CANCELLED:
+        return None
+    return {
+        'id': request.id, 'status': request.status, 'reason': request.reason, 'created_at': request.created_at,
+        'decision_note': request.decision_note, 'decided_at': request.decided_at,
+    }
+
+
 class MyTeamView(APIView):
     """GET /api/hackathons/{slug}/my-team/ - everything the participant dashboard needs."""
     permission_classes = [permissions.IsAuthenticated]
@@ -531,6 +544,11 @@ class MyTeamView(APIView):
                 'missing': registration.missing_registration_details(hackathon, membership),
             } if membership else None,
             'team': TeamSerializer(team).data if team else None,
+            'withdrawal_request': _withdrawal_payload(team),
+            'team_limits': {
+                'max_teams': withdrawals.MAX_SELF_CREATED_TEAMS,
+                'cooldown_minutes': int(withdrawals.WITHDRAW_COOLDOWN.total_seconds() // 60),
+            },
             'is_leader': bool(team and team.leader_id == user.id),
             'invites': TeamInviteSerializer(invites, many=True).data,
             'rounds': rounds,
@@ -832,7 +850,8 @@ class TeamActionView(APIView):
       cancel-invite       {invite_id}      leader
       remove-member       {user_id}        leader / admin
       transfer-leadership {user_id}        leader / admin
-      leave               -                member
+      leave               {reason}         member (the sole leader withdraws the team: a reason is required and a team that holds a place needs approval)
+      cancel-withdrawal   -                leader
       admin-add-member    {email}          admin
       admin-set-status    {status}         admin
     """
@@ -866,8 +885,14 @@ class TeamActionView(APIView):
         elif team_action == 'transfer-leadership':
             TeamService.transfer_leadership(team, user, _int(data.get('user_id'), 'user_id'))
         elif team_action == 'leave':
-            TeamService.leave_team(team, user)
-            return DRFResponse({'left': True, 'hackathon_slug': team.hackathon.slug})
+            _, request = TeamService.leave_team(team, user, data.get('reason', ''))
+            if request is not None:
+                return DRFResponse({'left': False, 'withdrawal_requested': True, 'hackathon_slug': team.hackathon.slug})
+            return DRFResponse({'left': True, 'withdrawal_requested': False, 'hackathon_slug': team.hackathon.slug})
+        elif team_action == 'cancel-withdrawal':
+            if not is_leader(team, user):
+                raise PermissionDenied('Only the team leader can do this.')
+            withdrawals.WithdrawalService.cancel(team, user)
         elif team_action == 'admin-add-member':
             TeamService.admin_add_member(team, user, data.get('email', ''))
         elif team_action == 'admin-set-status':
@@ -942,6 +967,28 @@ class RoundDetailView(APIView):
         return DRFResponse({'deleted': True, 'id': pk})
 
 
+def round_entries_queryset(round_obj, params):
+    """A round's entries with everything the organizer table shows; ``params`` may carry ?status= and ?search=."""
+    hackathon = round_obj.hackathon
+    next_round = hackathon.rounds.filter(order__gt=round_obj.order).order_by('order').first()
+    promoted = (
+        Exists(RoundEntry.objects.filter(round_id=next_round.id, team_id=OuterRef('team_id')))
+        if next_round else Value(False, output_field=BooleanField())
+    )
+    qs = round_obj.entries.select_related(
+        'team__leader', 'team__problem_statement', 'decided_by', 'team__idea', 'team__submission',
+    ).annotate(
+        member_total=Count('team__memberships', distinct=True), promoted_total=promoted,
+        checked_in_total=Count('team__check_ins', distinct=True),
+    )
+    if params.get('status'):
+        qs = qs.filter(status=params['status'])
+    if params.get('search'):
+        q = params['search'].strip()
+        qs = qs.filter(Q(team__name__icontains=q) | Q(team__memberships__user__email__icontains=q)).distinct()
+    return qs
+
+
 class RoundEntriesView(APIView):
     """GET (admin) /api/hackathons/{slug}/rounds/{id}/entries/?status=&search="""
     permission_classes = [scoped('rounds')]
@@ -949,23 +996,7 @@ class RoundEntriesView(APIView):
     def get(self, request, slug, pk):
         hackathon = _get_hackathon(request, slug)
         round_obj = get_object_or_404(hackathon.rounds, pk=pk)
-        next_round = hackathon.rounds.filter(order__gt=round_obj.order).order_by('order').first()
-        promoted = (
-            Exists(RoundEntry.objects.filter(round_id=next_round.id, team_id=OuterRef('team_id')))
-            if next_round else Value(False, output_field=BooleanField())
-        )
-        qs = round_obj.entries.select_related(
-            'team__leader', 'team__problem_statement', 'decided_by', 'team__idea', 'team__submission',
-        ).annotate(
-            member_total=Count('team__memberships', distinct=True), promoted_total=promoted,
-            checked_in_total=Count('team__check_ins', distinct=True),
-        )
-        if request.query_params.get('status'):
-            qs = qs.filter(status=request.query_params['status'])
-        if request.query_params.get('search'):
-            q = request.query_params['search'].strip()
-            qs = qs.filter(Q(team__name__icontains=q) | Q(team__memberships__user__email__icontains=q)).distinct()
-        return DRFResponse(AdminRoundEntrySerializer(qs, many=True).data)
+        return DRFResponse(AdminRoundEntrySerializer(round_entries_queryset(round_obj, request.query_params), many=True).data)
 
 
 class RoundActionView(APIView):
