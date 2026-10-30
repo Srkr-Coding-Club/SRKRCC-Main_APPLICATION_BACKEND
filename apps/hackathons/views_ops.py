@@ -28,6 +28,7 @@ from . import withdrawals
 from .exports import EXPORT_FORMATS, EXPORT_KINDS, file_part, render as render_export
 from .ideas import IdeaService, can_team_edit, project_gate, window_state as idea_window_state
 from .errors import HackathonError
+from . import finder_admin
 from .finder import FinderService
 from .judging import CriteriaService, JudgingService, ResultsService, StaffService, clean_target
 from .models import HackathonStaff, IdeaReview, IdeaStatus, IdeaSubmission, PaymentStage, Submission, SubmissionReview, Team, TeamMember, TeamStatus
@@ -291,6 +292,62 @@ class FinderRequestDecisionView(APIView):
         else:
             joined = FinderService.decide_request(hackathon, pk, request.user, action)
         return DRFResponse({'request': FinderService.serialize_request(joined)})
+
+
+class FinderAdminView(APIView):
+    """GET (organizer) /api/hackathons/{slug}/finder/admin/ - everyone in the finder, recruiting teams, join requests and numbers."""
+    permission_classes = [scoped('teams')]
+
+    def get(self, request, slug):
+        return DRFResponse(finder_admin.overview(_get_hackathon(request, slug)))
+
+
+class FinderAdminSeekerRemoveView(APIView):
+    """POST (organizer) /api/hackathons/{slug}/finder/admin/seekers/{id}/remove/ {reason} - take a listing down."""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug, pk):
+        seeker = finder_admin.remove_seeker(_get_hackathon(request, slug), request.user, pk, request.data.get('reason', ''))
+        return DRFResponse({'removed': True, 'id': seeker.pk})
+
+
+class FinderAdminStopRecruitingView(APIView):
+    """POST (organizer) /api/hackathons/{slug}/finder/admin/teams/{id}/stop-recruiting/ {reason}"""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug, pk):
+        closed = finder_admin.stop_recruiting(_get_hackathon(request, slug), request.user, pk, request.data.get('reason', ''))
+        return DRFResponse({'stopped': True, 'requests_closed': closed})
+
+
+class FinderAdminRequestCancelView(APIView):
+    """POST (organizer) /api/hackathons/{slug}/finder/admin/requests/{id}/cancel/ - close a stuck join request."""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug, pk):
+        join = finder_admin.cancel_request(_get_hackathon(request, slug), request.user, pk)
+        return DRFResponse({'request': FinderService.serialize_request(join)})
+
+
+class FinderAdminPlaceView(APIView):
+    """POST (organizer) /api/hackathons/{slug}/finder/admin/place/ {seeker_id, team_id} - put a listed person on a team."""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug):
+        try:
+            seeker_id, team_id = int(request.data.get('seeker_id')), int(request.data.get('team_id'))
+        except (TypeError, ValueError):
+            raise HackathonError('Choose a person and a team.', 'INVALID')
+        team = finder_admin.place_seeker(_get_hackathon(request, slug), request.user, seeker_id, team_id)
+        return DRFResponse({'placed': True, 'team_id': team.pk})
+
+
+class FinderAdminRemindView(APIView):
+    """POST (organizer) /api/hackathons/{slug}/finder/admin/remind/ {audience: seekers|teams}"""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug):
+        return DRFResponse({'reminded': finder_admin.remind(_get_hackathon(request, slug), request.user, request.data.get('audience', ''))})
 
 
 # ---------------------------------------------------------------------------

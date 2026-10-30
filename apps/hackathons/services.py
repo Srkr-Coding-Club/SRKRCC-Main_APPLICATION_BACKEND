@@ -374,11 +374,13 @@ def _audit(actor, action, team: Team, **details):
 # Team formation
 # ---------------------------------------------------------------------------
 
-def _admit(team: Team, user, registration_data: dict | None) -> bool:
+def _admit(team: Team, user, registration_data: dict | None, *, organizer: bool = False) -> bool:
     """
     Put ``user`` on ``team`` after every check that applies to somebody joining (the same whether they accepted an invite
     or the leader accepted their request). Call with the team locked. Returns True when the team just became registered.
     Everything else the person was waiting on (other invites, other join requests) is cancelled.
+    ``organizer`` is an organizer placing the person: the rules and the registration questions are left for the person to
+    complete later (they show up as missing details), everything else is still checked.
     """
     hackathon = team.hackathon
     if team.status not in ACTIVE_TEAM_STATUSES:
@@ -390,7 +392,7 @@ def _admit(team: Team, user, registration_data: dict | None) -> bool:
         raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
     _require_profile_complete(hackathon, user)
     registration.check_eligibility(hackathon, user)
-    accepted_at, answers = registration.registration_inputs(hackathon, registration_data)
+    accepted_at, answers = (None, {}) if organizer else registration.registration_inputs(hackathon, registration_data)
     if team.memberships.count() >= hackathon.max_team_size:
         raise HackathonError('This team is already full.', 'TEAM_FULL')
     if not team.is_waitlisted and registration.participants_would_exceed(hackathon):
