@@ -14,7 +14,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from apps.audit.utils import log_audit_event
 
-from . import check_in_sessions
+from . import celebrate, check_in_sessions
 from .access import can_check_in, has_permission
 from .errors import HackathonError
 from .models import CheckIn, CheckInScanMode, CheckInSession, CheckInSlot, CheckInVia, Hackathon, TeamMember, TeamStatus
@@ -227,6 +227,8 @@ class CheckInService:
                 )
         except IntegrityError:
             record, created = CheckIn.objects.get(session=session, user=membership.user), False
+        if created and session.is_main:
+            celebrate.checked_in(membership.user, hackathon)
         if created and audit:
             details = {'user': membership.user.email, 'team': membership.team.name, 'session': session.label}
             if record.override_reason:

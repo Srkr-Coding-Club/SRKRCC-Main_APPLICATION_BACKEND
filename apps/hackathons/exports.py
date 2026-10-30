@@ -18,7 +18,8 @@ from apps.core.dmc.export_service import serialize_records
 
 from .errors import HackathonError
 from . import check_in_sessions
-from .models import CheckIn, Hackathon, IdeaSubmission, Submission, TeamMember, TeamStatus
+from . import payments as payments_module
+from .models import CheckIn, Hackathon, IdeaSubmission, PaymentStage, PaymentStatus, Submission, TeamMember, TeamStatus
 
 EXPORT_FORMATS = ('csv', 'xlsx', 'json')
 QuerySlice = dict[str, str]
@@ -56,6 +57,14 @@ TEAM_COLUMNS = [
 ]
 
 
+PAYMENT_COLUMNS = [_col('payment_status', 'Payment Status'), _col('payment_amount', 'Payment Amount', 'number'), _col('transaction_id', 'Transaction ID')]
+
+
+def team_columns(hackathon: Hackathon) -> list[ColumnDefinition]:
+    """The payment columns appear only for hackathons whose teams pay when they register."""
+    return TEAM_COLUMNS + (PAYMENT_COLUMNS if hackathon.payment_stage == PaymentStage.REGISTRATION else [])
+
+
 def _problem(team) -> tuple[str, str, str]:
     if team.problem_statement_id:
         problem = team.problem_statement
@@ -67,16 +76,20 @@ def _problem(team) -> tuple[str, str, str]:
 
 def team_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
     wanted = _ids(params)
-    teams = hackathon.teams.select_related('problem_statement').prefetch_related(
+    with_payment = hackathon.payment_stage == PaymentStage.REGISTRATION
+    teams = hackathon.teams.select_related('problem_statement', 'payment').prefetch_related(
         Prefetch('memberships', queryset=TeamMember.objects.select_related('user', 'user__college')),
     ).order_by('-created_at', 'id')
     for team in teams:
         if wanted is not None and team.id not in wanted:
             continue
         code, title, domain = _problem(team)
+        payment = getattr(team, 'payment', None) if with_payment else None
         for membership in team.memberships.all():
             user = membership.user
             yield {
+                **({'payment_status': payment.get_status_display() if payment else 'Not required', 'payment_amount': payment.amount if payment else '',
+                    'transaction_id': payment.transaction_id if payment else ''} if with_payment else {}),
                 'team': team.name, 'team_status': 'WAITLISTED' if team.is_waitlisted else team.status, 'problem_id': code,
                 'problem_title': title, 'problem_domain': domain, 'open_innovation': team.is_open_innovation,
                 'role': membership.role, 'name': _full_name(user), 'email': user.email, 'phone': user.phone_number or '',
@@ -227,6 +240,37 @@ def check_in_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
 
 
 # ---------------------------------------------------------------------------
+# Registration payments: every payment ever made, including those of teams that no longer exist
+# ---------------------------------------------------------------------------
+
+PAYMENT_EXPORT_COLUMNS = [
+    _col('team', 'Team'), _col('team_status', 'Team Status'), _col('leader', 'Leader'), _col('leader_email', 'Leader Email', 'email'),
+    _col('leader_phone', 'Leader Phone'), _col('amount', 'Amount', 'number'), _col('transaction_id', 'Transaction ID'),
+    _col('status', 'Payment Status'), _col('submitted_at', 'Submitted At', 'datetime'), _col('reviewed_by', 'Reviewed By'),
+    _col('reviewed_at', 'Reviewed At', 'datetime'), _col('reason', 'Reason', 'multiline'), _col('settle', 'Money To Settle', 'boolean'),
+]
+
+#: Teams that were placed and later dropped out also leave money behind.
+_DROPPED_TEAM = (TeamStatus.WITHDRAWN, TeamStatus.DISQUALIFIED)
+
+
+def payment_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
+    payments = hackathon.team_payments.select_related('team', 'reviewed_by').order_by('created_at', 'id')
+    if params.get('status') in PaymentStatus.values:
+        payments = payments.filter(status=params['status'])
+    for payment in payments:
+        team_status = payment.team.status if payment.team_id else 'DELETED'
+        yield {
+            'team': payment.team_name or (payment.team.name if payment.team_id else ''), 'team_status': team_status,
+            'leader': payment.leader_name, 'leader_email': payment.leader_email, 'leader_phone': payment.leader_phone,
+            'amount': payment.amount, 'transaction_id': payment.transaction_id, 'status': payment.get_status_display(),
+            'submitted_at': payment.created_at, 'reviewed_by': _full_name(payment.reviewed_by) if payment.reviewed_by_id else '',
+            'reviewed_at': payment.reviewed_at or '', 'reason': payment.reason,
+            'settle': payment.status in (PaymentStatus.REJECTED, *payments_module.CLOSED_STATUSES) or team_status in _DROPPED_TEAM,
+        }
+
+
+# ---------------------------------------------------------------------------
 # The catalogue
 # ---------------------------------------------------------------------------
 
@@ -246,12 +290,13 @@ def _fixed(columns: list[ColumnDefinition]) -> Callable[[Hackathon], list[Column
 
 
 EXPORT_KINDS: dict[str, ExportKind] = {kind.key: kind for kind in (
-    ExportKind('teams', 'teams', ('teams', 'rounds', 'results'), _fixed(TEAM_COLUMNS), team_rows),
+    ExportKind('teams', 'teams', ('teams', 'rounds', 'results'), team_columns, team_rows),
     ExportKind('participants', 'participants', ('teams',), participant_columns, participant_rows),
     ExportKind('ideas', 'ideas', ('ideas',), _fixed(IDEA_COLUMNS), idea_rows),
     ExportKind('submissions', 'submissions', ('submissions',), _fixed(SUBMISSION_COLUMNS), submission_rows),
     ExportKind('rounds', 'round-results', ('rounds',), _fixed(ROUND_COLUMNS), round_rows),
     ExportKind('check-in', 'check-in', ('check_in',), _fixed(CHECK_IN_COLUMNS), check_in_rows),
+    ExportKind('payments', 'payments', ('teams',), _fixed(PAYMENT_EXPORT_COLUMNS), payment_rows),
 )}
 
 

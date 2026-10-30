@@ -28,7 +28,7 @@ from .serializers import (
     HackathonAnnouncementSerializer, HackathonSerializer, ProblemStatementSerializer,
     AdminStageSerializer, PublicStageSerializer, RoundSerializer, SubmissionSerializer, TeamInviteSerializer, TeamSerializer,
 )
-from . import access, registration, withdrawals
+from . import access, payments, registration, withdrawals
 from .access import scoped, scoped_or_read_only
 from .services import (
     AnnouncementService, HackathonError, ProblemStatementService, RoundService, StageService, TeamService, WaitlistService,
@@ -182,6 +182,8 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
             was = bool((before.get('certificate_config') or {}).get('released'))
             now = bool((instance.certificate_config or {}).get('released'))
             if now and not was and instance.feature('certificates'):
+                from . import celebrate
+                celebrate.certificate_ready(instance)
                 from .services import _notify_users
                 _notify_users(
                     [m.user for m in instance.memberships.select_related('user')],
@@ -544,6 +546,7 @@ class MyTeamView(APIView):
                 'missing': registration.missing_registration_details(hackathon, membership),
             } if membership else None,
             'team': TeamSerializer(team).data if team else None,
+            'payment': payments.summary(team) if team else None,
             'withdrawal_request': _withdrawal_payload(team),
             'team_limits': {
                 'max_teams': withdrawals.MAX_SELF_CREATED_TEAMS,
@@ -852,6 +855,7 @@ class TeamActionView(APIView):
       transfer-leadership {user_id}        leader / admin
       leave               {reason}         member (the sole leader withdraws the team: a reason is required and a team that holds a place needs approval)
       cancel-withdrawal   -                leader
+      cancel-payment      -                leader (a team still waiting for its payment check is deleted)
       admin-add-member    {email}          admin
       admin-set-status    {status}         admin
     """
@@ -889,6 +893,9 @@ class TeamActionView(APIView):
             if request is not None:
                 return DRFResponse({'left': False, 'withdrawal_requested': True, 'hackathon_slug': team.hackathon.slug})
             return DRFResponse({'left': True, 'withdrawal_requested': False, 'hackathon_slug': team.hackathon.slug})
+        elif team_action == 'cancel-payment':
+            payments.cancel_pending(team, user)
+            return DRFResponse({'cancelled': True, 'hackathon_slug': team.hackathon.slug})
         elif team_action == 'cancel-withdrawal':
             if not is_leader(team, user):
                 raise PermissionDenied('Only the team leader can do this.')

@@ -17,7 +17,7 @@ from .serializers import (
     AttendanceScanRequestSerializer,
     AttendanceSessionSerializer,
 )
-from .services import issue_badge, resolve_display_name, scan_time_allowed
+from .services import celebrate_check_in, issue_badge, resolve_display_name, scan_time_allowed
 
 
 class AttendanceSessionListView(APIView):
@@ -192,6 +192,8 @@ class AttendanceScanView(APIView):
         record, created = AttendanceRecord.objects.get_or_create(
             badge=badge, session=session, defaults={'scanned_by': request.user},
         )
+        if created:
+            celebrate_check_in(badge, session)
 
         return DRFResponse({
             "success": True,

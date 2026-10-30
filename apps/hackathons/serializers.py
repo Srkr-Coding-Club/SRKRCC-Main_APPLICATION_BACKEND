@@ -7,7 +7,7 @@ from apps.forms.models import ProfileField
 from . import check_in_sessions, config_validation as config, idea_files
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, HackathonStage, InviteStatus,
-    ProblemStatement, Round, RoundEntry, Submission, Team, TeamInvite, TeamMember, TeamStatus,
+    PaymentStage, ProblemStatement, Round, RoundEntry, Submission, Team, TeamInvite, TeamMember, TeamStatus,
 )
 
 MAX_IDEA_FEE = 100000
@@ -28,6 +28,8 @@ class HackathonSerializer(serializers.ModelSerializer):
     submissions_open = serializers.SerializerMethodField()
     results_published = serializers.SerializerMethodField()
     problems_revealed = serializers.SerializerMethodField()
+    # Only whether (and which) QR exists; the image itself is served through a short-lived link to the people who must pay.
+    payment_qr_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Hackathon
@@ -42,7 +44,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'features', 'max_teams', 'max_participants', 'waitlist_enabled', 'eligibility', 'rules',
             'require_rules_acceptance', 'registration_questions', 'problem_statements_reveal_at',
             'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'check_in_opens_at', 'check_in_closes_at', 'check_in_days', 'check_in_slots_per_day', 'idea_review_required',
-            'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
+            'payment_stage', 'payment_qr_id', 'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
             'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
             'certificate_config', 'mentors', 'judges', 'sponsors', 'contacts', 'community_links', 'venue_map_url',
             'waitlisted_team_count', 'is_full', 'submissions_open', 'results_published', 'problems_revealed',
@@ -60,6 +62,9 @@ class HackathonSerializer(serializers.ModelSerializer):
             # Days, slots or the event dates may have changed: bring the check-in sessions in line.
             check_in_sessions.sync(instance)
         return instance
+
+    def get_payment_qr_id(self, obj):
+        return str(obj.idea_payment_qr_id) if obj.idea_payment_qr_id else None
 
     def get_is_full(self, obj) -> bool:
         if not obj.max_teams:
@@ -309,9 +314,24 @@ class HackathonSerializer(serializers.ModelSerializer):
         sub_deadline = attrs.get('submission_deadline', getattr(self.instance, 'submission_deadline', None))
         if sub_opens and sub_deadline and sub_deadline <= sub_opens:
             raise serializers.ValidationError({'submission_deadline': 'Must be after the time submissions open.'})
+        self._check_payment_stage(attrs)
         self._check_idea_settings(attrs)
         self._check_capacity(attrs)
         return attrs
+
+    def _check_payment_stage(self, attrs):
+        """A fee set without saying when it is paid keeps meaning "with the idea"; the stage cannot leave registration while payments wait."""
+        current = getattr(self.instance, 'payment_stage', PaymentStage.NONE)
+        stage = attrs.get('payment_stage', current)
+        fee = attrs.get('idea_fee_amount', getattr(self.instance, 'idea_fee_amount', 0)) or 0
+        if 'payment_stage' not in attrs and 'idea_fee_amount' in attrs and fee and stage == PaymentStage.NONE:
+            attrs['payment_stage'] = stage = PaymentStage.IDEA
+        if self.instance is not None and current == PaymentStage.REGISTRATION and stage != PaymentStage.REGISTRATION:
+            waiting = self.instance.teams.filter(status=TeamStatus.PAYMENT_PENDING).count()
+            if waiting:
+                raise serializers.ValidationError({
+                    'payment_stage': f'{waiting} {"team is" if waiting == 1 else "teams are"} waiting for a payment check. Verify or reject them before changing when the fee is paid.',
+                })
 
     def _check_idea_settings(self, attrs):
         """The payment, slides and edit-window choices must make sense together."""
@@ -323,7 +343,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'idea_fee_amount': f'The fee can be at most \u20b9{MAX_IDEA_FEE}.'})
         if len(value('idea_payment_note', '') or '') > 1000:
             raise serializers.ValidationError({'idea_payment_note': 'Keep the payment note under 1000 characters.'})
-        needs_files = ('idea_fee_amount', 'idea_deck_required')
+        needs_files = ('idea_fee_amount', 'idea_deck_required', 'payment_stage')
         if any(name in attrs for name in needs_files) and (fee or value('idea_deck_required', False)) and not idea_files.available():
             raise serializers.ValidationError({
                 'idea_fee_amount' if fee else 'idea_deck_required':

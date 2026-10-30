@@ -7,7 +7,7 @@ from .serializers import ProblemSerializer, SubmissionSerializer, UserStreakSeri
 from apps.core.permissions import IsAdminOrClubLead, IsAdminOrClubLeadOrReadOnly, IsOwnerOrAdminOrClubLead, _is_admin_or_club_lead
 from apps.core.cache import PublicReadCacheControlMixin
 from apps.core.pagination import StandardPagination
-from .services import rebuild_user_streak
+from .services import celebrate_progress, rebuild_user_streak
 
 
 class SubmissionPagination(StandardPagination):
@@ -72,7 +72,9 @@ class SubmissionViewSet(viewsets.ModelViewSet):
             submission = self.get_queryset().select_for_update().get(pk=pk)
             submission.is_correct = is_correct
             submission.save(update_fields=['is_correct', 'updated_at'])
-            rebuild_user_streak(submission.user)
+            streak = rebuild_user_streak(submission.user)
+            if is_correct:
+                celebrate_progress(submission.user, streak)
         return response.Response(self.get_serializer(submission).data)
 
 class UserStreakViewSet(viewsets.ReadOnlyModelViewSet):

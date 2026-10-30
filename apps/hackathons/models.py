@@ -16,6 +16,13 @@ class HackathonStatus(models.TextChoices):
     CLOSED = 'CLOSED', 'Closed'
 
 
+class PaymentStage(models.TextChoices):
+    """When a team pays the fee (``Hackathon.idea_fee_amount``): never, with its registration, or with its idea."""
+    NONE = 'NONE', 'No fee'
+    REGISTRATION = 'REGISTRATION', 'At registration (when the team is created)'
+    IDEA = 'IDEA', 'With the idea'
+
+
 class HackathonMode(models.TextChoices):
     ONLINE = 'ONLINE', 'Online'
     OFFLINE = 'OFFLINE', 'Offline'
@@ -113,7 +120,8 @@ class Hackathon(TimeStampedModel):
     check_in_days = models.PositiveSmallIntegerField(default=1, help_text='Days people are checked in on; with the slots below this generates the check-in sessions.')
     check_in_slots_per_day = models.PositiveSmallIntegerField(default=1, help_text='Check-in slots per day (1 to 3: morning, afternoon, evening).')
     idea_review_required = models.BooleanField(default=True, help_text='Organizers must approve an idea before it counts as accepted.')
-    idea_fee_amount = models.PositiveIntegerField(default=0, help_text='Rupees a team pays with its idea (0 = no payment). The payment screenshot is then required.')
+    payment_stage = models.CharField(max_length=12, choices=PaymentStage.choices, default=PaymentStage.NONE, help_text='When teams pay the fee below: with their registration, with their idea, or never.')
+    idea_fee_amount = models.PositiveIntegerField(default=0, help_text='Rupees a team pays (0 = no payment), at the stage above. The payment screenshot is then required.')
     idea_payment_qr = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='QR code teams scan to pay (image uploaded by the organizers).')
     idea_payment_note = models.TextField(blank=True, help_text='How to pay (UPI id, QR instructions...), shown to teams with the idea form.')
     idea_deck_required = models.BooleanField(default=False, help_text='Teams must upload a .ppt / .pptx with their idea.')
@@ -202,6 +210,10 @@ class TeamStatus(models.TextChoices):
     REGISTERED = 'REGISTERED', 'Registered'
     DISQUALIFIED = 'DISQUALIFIED', 'Disqualified'
     WITHDRAWN = 'WITHDRAWN', 'Withdrawn'
+    # A team whose registration fee is waiting for an organizer, and one whose payment was turned down. Neither is in
+    # ACTIVE_TEAM_STATUSES, so they hold no seat and take no invites until an organizer verifies the payment.
+    PAYMENT_PENDING = 'PAYMENT_PENDING', 'Payment pending'
+    PAYMENT_REJECTED = 'PAYMENT_REJECTED', 'Payment rejected'
 
 
 class Team(TimeStampedModel):
@@ -829,6 +841,62 @@ class IdeaSubmission(TimeStampedModel):
 
     def __str__(self):
         return f"Idea for {self.team.name}: {self.title} ({self.status})"
+
+
+class PaymentStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Waiting for an organizer'
+    VERIFIED = 'VERIFIED', 'Verified'
+    REJECTED = 'REJECTED', 'Rejected'
+    # The team is gone but the record stays, so the club can still settle the money with the person who paid.
+    CANCELLED = 'CANCELLED', 'Cancelled by the leader'
+    REMOVED = 'REMOVED', 'Removed by an organizer'
+
+
+def payment_key(transaction_id: str) -> str:
+    """A transaction id as compared for duplicates: no spaces, any case."""
+    return ''.join(str(transaction_id or '').split()).lower()
+
+
+class TeamPayment(TimeStampedModel):
+    """The registration fee a team's leader paid outside the platform: the screenshot and reference an organizer checks."""
+    # SET_NULL: when a pending or rejected team is cancelled or removed the payment record outlives it (status CANCELLED / REMOVED).
+    team = models.OneToOneField(Team, null=True, blank=True, on_delete=models.SET_NULL, related_name='payment')
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='team_payments')
+    # Who paid, as it was when they paid: still there after the team is deleted.
+    team_name = models.CharField(max_length=150, blank=True)
+    leader_name = models.CharField(max_length=150, blank=True)
+    leader_email = models.EmailField(blank=True)
+    leader_phone = models.CharField(max_length=30, blank=True)
+    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    amount = models.PositiveIntegerField(help_text='Rupees the team was asked to pay when it submitted (a later fee change does not touch it).')
+    transaction_id = models.CharField(max_length=60)
+    transaction_key = models.CharField(max_length=60, help_text='The transaction id without spaces, lower case: what is compared for duplicates.')
+    screenshot = models.ForeignKey(IdeaFile, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    status = models.CharField(max_length=10, choices=PaymentStatus.choices, default=PaymentStatus.PENDING)
+    reason = models.CharField(max_length=300, blank=True, help_text='Why it was rejected. Organizers only: the team is told to contact the club.')
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    organizer_reminded_at = models.DateTimeField(blank=True, null=True, help_text='When the organizers were last told this payment is still waiting for a check.')
+
+    class Meta:
+        constraints = [
+            # A cancelled or removed payment frees its reference, so the leader can pay again with the same one.
+            models.UniqueConstraint(
+                fields=['hackathon', 'transaction_key'], condition=~Q(status__in=['CANCELLED', 'REMOVED']),
+                name='uniq_payment_reference_per_hackathon',
+            ),
+        ]
+        indexes = [models.Index(fields=['hackathon', 'status'])]
+
+    def save(self, *args, **kwargs):
+        self.transaction_key = payment_key(self.transaction_id)
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None and 'transaction_id' in update_fields:
+            kwargs['update_fields'] = {*update_fields, 'transaction_key'}
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Payment of \u20b9{self.amount} by {self.team_name or 'a team'} ({self.status})"
 
 
 class IdeaReview(TimeStampedModel):

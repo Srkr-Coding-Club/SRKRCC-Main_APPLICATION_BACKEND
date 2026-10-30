@@ -71,7 +71,7 @@ class IdeaCase(APITestCase):
 class SettingsAndRequirements(IdeaCase):
     def test_the_idea_form_learns_the_organizers_choices(self):
         Hackathon_ = type(self.hack)
-        Hackathon_.objects.filter(pk=self.hack.pk).update(idea_fee_amount=200, idea_payment_note="UPI: club@upi", idea_deck_required=True, idea_linkedin_required=True)
+        Hackathon_.objects.filter(pk=self.hack.pk).update(payment_stage="IDEA", idea_fee_amount=200, idea_payment_note="UPI: club@upi", idea_deck_required=True, idea_linkedin_required=True)
         config = api(self.leader).get(self.url).data["config"]
         self.assertEqual((config["fee_amount"], config["payment_note"], config["deck_required"], config["linkedin_required"], config["files_available"]),
                          (200, "UPI: club@upi", True, True, True))
@@ -80,7 +80,7 @@ class SettingsAndRequirements(IdeaCase):
         self.assertEqual(self.save().status_code, 200)
 
     def test_each_requirement_names_the_field_that_is_missing(self):
-        type(self.hack).objects.filter(pk=self.hack.pk).update(idea_fee_amount=200, idea_deck_required=True, idea_linkedin_required=True)
+        type(self.hack).objects.filter(pk=self.hack.pk).update(payment_stage="IDEA", idea_fee_amount=200, idea_deck_required=True, idea_linkedin_required=True)
         reply = self.save()
         self.assertEqual((reply.status_code, reply.data["field"]), (400, "linkedin_url"))
         reply = self.save(linkedin_url=LINKEDIN)
@@ -91,7 +91,7 @@ class SettingsAndRequirements(IdeaCase):
         self.assertEqual(IdeaSubmission.objects.count(), 0)
 
     def test_a_complete_submission_is_saved_and_the_files_become_permanent(self):
-        type(self.hack).objects.filter(pk=self.hack.pk).update(idea_fee_amount=200, idea_deck_required=True, idea_linkedin_required=True)
+        type(self.hack).objects.filter(pk=self.hack.pk).update(payment_stage="IDEA", idea_fee_amount=200, idea_deck_required=True, idea_linkedin_required=True)
         with self.captureOnCommitCallbacks(execute=True):
             reply = self.full_idea()
         self.assertEqual(reply.status_code, 200, reply.data)
@@ -124,7 +124,7 @@ class SettingsAndRequirements(IdeaCase):
             self.assertEqual(patch({"idea_fee_amount": 0, "idea_deck_required": False}).status_code, 200)
 
     def test_the_settings_are_copied_to_a_cloned_hackathon(self):
-        type(self.hack).objects.filter(pk=self.hack.pk).update(idea_fee_amount=200, idea_payment_note="pay", idea_deck_required=True, idea_edits_enabled=False)
+        type(self.hack).objects.filter(pk=self.hack.pk).update(payment_stage="IDEA", idea_fee_amount=200, idea_payment_note="pay", idea_deck_required=True, idea_edits_enabled=False)
         reply = api(self.admin).post(f"/api/hackathons/{self.hack.slug}/clone/", {"title": "Copy", "start_date": (timezone.now() + 30 * HOUR).isoformat()}, format="json")
         self.assertEqual(reply.status_code, 201, reply.data)
         copy = type(self.hack).objects.get(slug=reply.data["slug"])
@@ -254,7 +254,7 @@ class UploadingFiles(IdeaCase):
         self.assertIsNone(IdeaSubmission.objects.get().payment_proof)
 
     def test_a_required_file_cannot_be_removed(self):
-        type(self.hack).objects.filter(pk=self.hack.pk).update(idea_fee_amount=200)
+        type(self.hack).objects.filter(pk=self.hack.pk).update(payment_stage="IDEA", idea_fee_amount=200)
         self.assertEqual(self.save(payment_file_id=self.upload("PAYMENT", "pay.png", PNG)).status_code, 200)
         self.assertEqual(self.save(payment_file_id=None).data["field"], "payment_file_id")
 
@@ -456,7 +456,7 @@ class PaymentQr(IdeaCase):
     def setUp(self):
         super().setUp()
         self.qr_url = f"/api/hackathons/{self.hack.slug}/idea-qr/"
-        type(self.hack).objects.filter(pk=self.hack.pk).update(idea_fee_amount=200)
+        type(self.hack).objects.filter(pk=self.hack.pk).update(payment_stage="IDEA", idea_fee_amount=200)
 
     def upload_qr(self, user=None, name="pay-qr.png", body=PNG):
         client = api(user or self.admin)

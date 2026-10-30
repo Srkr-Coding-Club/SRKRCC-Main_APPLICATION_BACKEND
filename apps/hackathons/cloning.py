@@ -17,7 +17,7 @@ COPIED_FIELDS = (
     'faq', 'team_email_config', 'features', 'max_teams', 'max_participants', 'waitlist_enabled', 'eligibility', 'rules',
     'require_rules_acceptance', 'registration_questions', 'show_leaderboard', 'mentors', 'judges', 'sponsors', 'contacts',
     'community_links', 'venue_map_url', 'is_flagship', 'idea_review_required', 'project_requires_approved_idea',
-    'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled',
+    'payment_stage', 'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled',
     'check_in_days', 'check_in_slots_per_day',
 )
 SHIFTED_FIELDS = (

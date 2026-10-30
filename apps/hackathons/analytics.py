@@ -6,8 +6,8 @@ from collections import Counter
 from django.db.models import Count
 from django.db.models.functions import TruncDate
 
-from . import check_in_sessions
-from .models import EntryStatus, Hackathon, IdeaSubmission, RoundEntry, Submission, TeamStatus
+from . import check_in_sessions, payments
+from .models import EntryStatus, Hackathon, IdeaSubmission, PaymentStatus, RoundEntry, Submission, TeamStatus
 
 TOP_BREAKDOWN_ITEMS = 12
 
@@ -22,9 +22,11 @@ def _breakdown(values) -> list[dict]:
 
 
 def overview(hackathon: Hackathon) -> dict:
-    teams = hackathon.teams.all()
+    # A team still waiting for its payment check, or turned down, is not a team of this hackathon yet.
+    teams = hackathon.teams.exclude(status__in=payments.PAYMENT_STATUSES)
     placed = teams.filter(is_waitlisted=False)
-    memberships = list(hackathon.memberships.select_related('user', 'user__college', 'team'))
+    counted = hackathon.memberships.exclude(team__status__in=payments.PAYMENT_STATUSES)
+    memberships = list(counted.select_related('user', 'user__college', 'team'))
     placed_members = [m for m in memberships if not m.team.is_waitlisted]
     submitted = Submission.objects.filter(team__hackathon=hackathon).count()
     shortlisted = RoundEntry.objects.filter(
@@ -41,12 +43,13 @@ def overview(hackathon: Hackathon) -> dict:
         {'key': 'winners', 'label': 'Teams with an award', 'count': hackathon.winners.values('team_id').distinct().count()},
     ]
     per_day = (
-        hackathon.memberships.annotate(day=TruncDate('joined_at')).values('day').annotate(count=Count('id')).order_by('day')
+        counted.annotate(day=TruncDate('joined_at')).values('day').annotate(count=Count('id')).order_by('day')
     )
     return {
         'funnel': funnel,
         'checked_in': check_in_sessions.main_check_ins(hackathon).count(),
         'waitlisted_teams': teams.filter(is_waitlisted=True).count(),
+        'payments': {status: hackathon.team_payments.filter(status=status).count() for status in payments.QUEUE_STATUSES},
         'by_branch': _breakdown(m.user.branch for m in placed_members),
         'by_year': _breakdown(f'Year {m.user.year}' if m.user.year else None for m in placed_members),
         'by_college': _breakdown(_college(m.user) for m in placed_members),

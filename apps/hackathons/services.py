@@ -18,13 +18,14 @@ import re
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
 from apps.audit.utils import log_audit_event
 from apps.core.permissions import _is_admin_or_club_lead
 
-from . import access, registration, round_rules, team_emails, withdrawals
+from . import access, celebrate, payments, registration, round_rules, team_emails, withdrawals
 from .errors import HackathonError
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, InviteStatus,
@@ -96,6 +97,8 @@ def _require_team_editable(team: Team, actor):
         return
     if team.status in (TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN):
         raise HackathonError('This team can no longer be changed.', 'TEAM_INACTIVE')
+    if team.status in payments.PAYMENT_STATUSES:
+        raise HackathonError('This team is waiting for its payment to be verified, so it cannot be changed yet.', 'TEAM_UNPAID')
     if team.hackathon.team_edits_locked:
         raise HackathonError('Team changes are locked for this hackathon.', 'TEAM_EDITS_LOCKED')
     _require_registration_open(team.hackathon)
@@ -213,12 +216,14 @@ def _recompute_status(team: Team) -> bool:
     team.save(update_fields=['status', 'updated_at'])
     if new_status == TeamStatus.REGISTERED and not team.is_waitlisted:
         team_emails.notify_team('team_registered', team)
+        celebrate.team_registered(team)
         return True
     return False
 
 
 def _notify_member_joined(team: Team, user, newly_registered: bool) -> None:
     """Tell the team someone joined, unless the 'team registered' email already covers it."""
+    celebrate.joined(team, user)
     if newly_registered and team_emails.event_settings(team.hackathon, 'team_registered')[0]:
         return
     team_emails.notify_team('member_joined', team, user)
@@ -422,6 +427,11 @@ class TeamService:
         hackathon = Hackathon.objects.select_for_update().get(pk=hackathon.pk)
         by_admin = bool(actor and _is_team_organizer(hackathon, actor))
         accepted_at, answers, waitlisted = None, {}, False
+        pay = not by_admin and payments.required(hackathon)
+        if pay:
+            again = payments.existing_submission(hackathon, leader, registration_data)
+            if again is not None:
+                return again  # the same payment sent twice (a retry after a dropped connection)
         if not by_admin:
             _require_registration_open(hackathon)
             if hackathon.team_edits_locked:
@@ -440,11 +450,15 @@ class TeamService:
         if not by_admin:
             _require_problems_revealed(hackathon, problem_statement)
             waitlisted = registration.should_waitlist_new_team(hackathon)
+        if pay:
+            # A team that has not been paid for holds no place: the seat (or the waitlist) is decided when an organizer verifies it.
+            payment_file, reference = payments.clean_submission(hackathon, leader, registration_data)
+            waitlisted = False
 
         try:
             team = Team.objects.create(
-                hackathon=hackathon, name=name, leader=leader, status=TeamStatus.FORMING, is_waitlisted=waitlisted,
-                created_by=None if by_admin else leader, **problem,
+                hackathon=hackathon, name=name, leader=leader, status=TeamStatus.PAYMENT_PENDING if pay else TeamStatus.FORMING,
+                is_waitlisted=waitlisted, created_by=None if by_admin else leader, **problem,
             )
             TeamMember.objects.create(
                 team=team, hackathon=hackathon, user=leader, role=TeamRole.LEADER,
@@ -452,6 +466,8 @@ class TeamService:
             )
         except IntegrityError:
             raise HackathonError('You are already in a team, or that name is taken.', 'CONFLICT')
+        if pay:
+            payments.attach_payment(team, leader, payment_file, reference)
 
         # Being on a team means any other pending invites for this hackathon are moot.
         TeamInvite.objects.filter(
@@ -463,6 +479,16 @@ class TeamService:
             team_emails.notify_team('team_created', team)
         audit_actor = actor or leader
         _audit(audit_actor, 'Created Hackathon Team', team, problem=problem_label(team), leader=leader.email, waitlisted=waitlisted)
+        if pay:
+            _notify_after_commit(
+                [leader], f'{team.name}: payment received',
+                f"We received your payment for '{team.name}'. The organizers will check it and your team is registered once it is verified.", hackathon, actor,
+            )
+            _notify_after_commit(
+                payments.reviewers(hackathon), f'New payment to check: {team.name}',
+                f"{leader.first_name or leader.username} paid ₹{hackathon.idea_fee_amount} to register '{team.name}' for {hackathon.title}. Open the Payments tab to verify or reject it.",
+                hackathon, leader,
+            )
         if waitlisted:
             _notify_after_commit(
                 [leader], f"{team.name} is on the waitlist",
@@ -871,12 +897,15 @@ class TeamService:
         team = _lock_team(team)
         if new_status not in TeamStatus.values:
             raise HackathonError('Unknown team status.', 'INVALID_STATUS', field='status')
+        if new_status in (TeamStatus.PAYMENT_PENDING, TeamStatus.PAYMENT_REJECTED) or team.status in (TeamStatus.PAYMENT_PENDING, TeamStatus.PAYMENT_REJECTED):
+            raise HackathonError('A team waiting on its payment is handled from the Payments page.', 'USE_PAYMENTS', field='status')
         old = team.status
         team.status = new_status
         team.status_reason = ' '.join((reason or '').split())[:300] if new_status in (TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN) else ''
         team.save(update_fields=['status', 'status_reason', 'updated_at'])
         if new_status not in ACTIVE_TEAM_STATUSES:
             withdrawals.WithdrawalService.close_pending(team)
+            celebrate.team_gone(team)
         if new_status in ACTIVE_TEAM_STATUSES:
             _recompute_status(team)
         _audit(actor, 'Admin Changed Hackathon Team Status', team, old=old, new=team.status)
@@ -1237,6 +1266,10 @@ class RoundService:
         )
         if round_obj.results_published and changed_team_ids:
             transaction.on_commit(lambda: _notify_result_changed(round_obj, changed_team_ids, actor))
+            if status == EntryStatus.SHORTLISTED:
+                celebrate.shortlisted(round_obj, changed_team_ids)
+            else:
+                celebrate.shortlist_withdrawn(round_obj, changed_team_ids)
         return count
 
     @staticmethod
@@ -1251,6 +1284,7 @@ class RoundService:
             actor=actor, action='Published Hackathon Round Results', target_model='HackathonRound',
             target_id=round_obj.pk, details={'round': round_obj.name},
         )
+        celebrate.shortlisted(round_obj, round_obj.entries.filter(status=EntryStatus.SHORTLISTED).values_list('team_id', flat=True))
         if announce:
             AnnouncementService.create(
                 round_obj.hackathon, actor,
@@ -1284,6 +1318,7 @@ class RoundService:
             actor=actor, action='Unpublished Hackathon Round Results', target_model='HackathonRound',
             target_id=round_obj.pk, details={'round': round_obj.name},
         )
+        celebrate.shortlist_withdrawn(round_obj)
         return round_obj
 
     @staticmethod
@@ -1653,8 +1688,10 @@ class WaitlistService:
             return []
         promoted = []
         queue = (
-            hackathon.teams.select_for_update()
-            .filter(is_waitlisted=True, status__in=ACTIVE_TEAM_STATUSES).order_by('created_at', 'id')
+            hackathon.teams.select_for_update(of=('self',))
+            .filter(is_waitlisted=True, status__in=ACTIVE_TEAM_STATUSES)
+            # A paid team queues from the moment its payment was verified, not from when it was created.
+            .annotate(queued_at=Coalesce('payment__reviewed_at', 'created_at')).order_by('queued_at', 'id')
         )
         for team in queue:
             if registration.teams_full(hackathon):
@@ -1665,6 +1702,7 @@ class WaitlistService:
             team.save(update_fields=['is_waitlisted', 'updated_at'])
             promoted.append(team)
             _audit(None, 'Promoted Team From Waitlist', team)
+            celebrate.waitlist_promoted(team)
             _notify_after_commit(
                 [m.user for m in team.memberships.select_related('user')],
                 f'{team.name} is in!',

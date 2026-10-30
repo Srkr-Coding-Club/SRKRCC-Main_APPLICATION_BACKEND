@@ -16,7 +16,7 @@ from apps.core.dmc.export_service import export_filename
 from apps.core.permissions import IsAdminOrClubLead
 from apps.core.throttling import ScopedRateThrottle
 
-from . import access, analytics, certificates, idea_files, registration
+from . import access, analytics, certificates, idea_files, payments, registration
 from .access import can_check_in, can_judge, scoped
 from . import check_in_sessions
 from .checkin import (
@@ -30,7 +30,7 @@ from .ideas import IdeaService, can_team_edit, project_gate, window_state as ide
 from .errors import HackathonError
 from .finder import FinderService
 from .judging import CriteriaService, JudgingService, ResultsService, StaffService, clean_target
-from .models import HackathonStaff, IdeaReview, IdeaStatus, IdeaSubmission, Submission, SubmissionReview, Team, TeamMember, TeamStatus
+from .models import HackathonStaff, IdeaReview, IdeaStatus, IdeaSubmission, PaymentStage, Submission, SubmissionReview, Team, TeamMember, TeamStatus
 from .submissions import SubmissionService, window_state
 from .views import _get_hackathon
 
@@ -804,7 +804,7 @@ def _idea_payload(idea: IdeaSubmission, *, payment: bool = False) -> dict:
 def _idea_config(hackathon) -> dict:
     """What the team's idea form needs to know about the organizers' choices."""
     return {
-        'fee_amount': hackathon.idea_fee_amount, 'payment_note': hackathon.idea_payment_note,
+        'fee_amount': hackathon.idea_fee_amount if hackathon.payment_stage == PaymentStage.IDEA else 0, 'payment_note': hackathon.idea_payment_note,
         'deck_required': hackathon.idea_deck_required, 'linkedin_required': hackathon.idea_linkedin_required,
         'files_available': idea_files.available(), 'payment_qr': idea_files.serialize_qr(hackathon),
         'edits_enabled': hackathon.idea_edits_enabled, 'edits_until': hackathon.idea_edits_until,
@@ -883,6 +883,72 @@ class MyIdeaFileView(APIView):
     def delete(self, request, slug, file_id):
         idea_files.discard_upload(self._team(request, slug), request.user, file_id)
         return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+
+class MyPaymentFilesView(APIView):
+    """POST /api/hackathons/{slug}/payment-files/ {name, size} - the screenshot of the fee paid to register, before the team exists."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug):
+        granted = payments.request_upload(_get_hackathon(request, slug), request.user, request.data.get('name'), request.data.get('size'))
+        return DRFResponse({
+            'file': idea_files.serialize(granted['file']), 'post': granted['post'],
+            'max_bytes': granted['max_bytes'], 'expires_in': granted['expires_in'],
+        }, status=status.HTTP_201_CREATED)
+
+
+class MyPaymentFileView(APIView):
+    """POST .../payment-files/{id}/ confirms a finished upload; DELETE removes one not yet used by a team."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug, file_id):
+        return DRFResponse({'file': idea_files.serialize(payments.complete_upload(_get_hackathon(request, slug), request.user, file_id))})
+
+    def delete(self, request, slug, file_id):
+        payments.discard_upload(_get_hackathon(request, slug), request.user, file_id)
+        return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+
+class PaymentsView(APIView):
+    """GET /api/hackathons/{slug}/payments/?status=&search= - the registration payments waiting for, or past, an organizer's check."""
+    permission_classes = [scoped('teams')]
+
+    def get(self, request, slug):
+        return DRFResponse(payments.queue(_get_hackathon(request, slug), request.user, request.query_params))
+
+
+class PaymentActionView(APIView):
+    """POST /api/hackathons/{slug}/payments/{id}/{verify|reject|reopen|remove}/ (reject takes an optional {reason})."""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug, pk, payment_action):
+        hackathon = _get_hackathon(request, slug)
+        if payment_action == 'verify':
+            payments.verify(hackathon, request.user, pk)
+        elif payment_action == 'reject':
+            payments.reject(hackathon, request.user, pk, request.data.get('reason', ''))
+        elif payment_action == 'reopen':
+            payments.reopen(hackathon, request.user, pk)
+        elif payment_action == 'remove':
+            payments.remove(hackathon, request.user, pk)
+            return DRFResponse({'removed': True})
+        else:
+            raise Http404
+        return DRFResponse({'payment': payments.row_of(hackathon, pk)})
+
+
+class PaymentLinkView(APIView):
+    """GET /api/hackathons/{slug}/payments/{id}/link/?inline=1 - a 60-second link to the screenshot: organizers and the team's leader."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def get(self, request, slug, pk):
+        return DRFResponse(payments.screenshot_link(_get_hackathon(request, slug), request.user, pk, inline=request.query_params.get('inline') == '1'))
 
 
 class IdeaQrView(APIView):

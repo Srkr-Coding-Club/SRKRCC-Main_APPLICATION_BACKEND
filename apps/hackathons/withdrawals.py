@@ -90,6 +90,8 @@ def _finish_withdrawal(team: Team, member, actor, reason: str) -> Team:
     team.withdrawn_by = member
     team.save(update_fields=['leader', 'status', 'status_reason', 'withdrawn_at', 'withdrawn_by', 'updated_at'])
     team.invites.filter(status=InviteStatus.PENDING).update(status=InviteStatus.CANCELLED, responded_at=timezone.now())
+    from . import celebrate
+    celebrate.team_gone(team)
     log_audit_event(
         actor=actor, action='Withdrew Hackathon Team', target_model='HackathonTeam', target_id=team.pk,
         details={'team': team.name, 'hackathon': team.hackathon.slug, 'reason': reason},

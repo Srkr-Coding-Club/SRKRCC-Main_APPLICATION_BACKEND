@@ -4,7 +4,22 @@ from django.db import transaction
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
+from apps.celebrations import services as celebrations
+
 from .models import Submission, UserStreak
+
+#: A streak is celebrated on the very day it reaches one of these lengths.
+STREAK_MILESTONES = (7, 30, 100)
+
+
+def celebrate_progress(user, streak) -> None:
+    """After a correct verdict: the first solved problem, and a streak that has just reached a milestone."""
+    if Submission.objects.filter(user=user, is_correct=True).count() == 1:
+        celebrations.award_after_commit([user], 'codequest.first_solve', 'first-solve', link_url='/codequest')
+    if streak.current_streak in STREAK_MILESTONES:
+        celebrations.award_after_commit(
+            [user], 'codequest.streak', f'streak:{streak.current_streak}', link_url='/codequest', days=streak.current_streak,
+        )
 
 
 def rebuild_user_streak(user):
