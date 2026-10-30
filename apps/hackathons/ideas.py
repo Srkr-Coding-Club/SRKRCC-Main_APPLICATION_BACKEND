@@ -13,7 +13,8 @@ from apps.audit.utils import log_audit_event
 from . import access, config_validation as validate, idea_files
 from .errors import HackathonError
 from .link_rules import clean_link
-from .models import Hackathon, IdeaFileKind, IdeaStatus, IdeaSubmission, Team, TeamStatus
+from . import celebrate
+from .models import Hackathon, IdeaFileKind, IdeaStatus, IdeaSubmission, PaymentStage, Team, TeamStatus
 from .services import _notify_users, is_leader
 from .config_validation import guard_field as field_guard
 
@@ -161,7 +162,7 @@ def _chosen_files(team: Team, hackathon: Hackathon, data: dict, existing: IdeaSu
     if not by_organizer:
         if hackathon.idea_deck_required and deck is None:
             raise HackathonError('Upload your slides (.ppt, .pptx or .pdf).', 'INVALID', field='deck_file_id')
-        if hackathon.idea_fee_amount and payment is None:
+        if hackathon.payment_stage == PaymentStage.IDEA and hackathon.idea_fee_amount and payment is None:
             raise HackathonError(f'Upload the screenshot of your payment of \u20b9{hackathon.idea_fee_amount}.', 'INVALID', field='payment_file_id')
     return deck, payment
 
@@ -222,6 +223,8 @@ class IdeaService:
             IdeaStatus.CHANGES_REQUESTED: 'needs changes. Update it and resubmit before the deadline.',
             IdeaStatus.REJECTED: 'was not accepted.',
         }[outcome]
+        if outcome == IdeaStatus.APPROVED:
+            celebrate.idea_approved(idea)
         transaction.on_commit(lambda: _notify_users(
             [m.user for m in idea.team.memberships.select_related('user')], f'{idea.team.name}: idea reviewed',
             f"Your idea '{idea.title}' {wording}" + (f' Note: {feedback}' if feedback else ''), hackathon, reviewer,

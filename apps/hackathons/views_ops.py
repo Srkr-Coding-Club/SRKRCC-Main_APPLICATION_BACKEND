@@ -16,17 +16,21 @@ from apps.core.dmc.export_service import export_filename
 from apps.core.permissions import IsAdminOrClubLead
 from apps.core.throttling import ScopedRateThrottle
 
-from . import access, analytics, certificates, idea_files, registration
+from . import access, analytics, certificates, idea_files, payments, registration
 from .access import can_check_in, can_judge, scoped
-from .checkin import CheckInService, make_token, window_state as check_in_window
+from . import check_in_sessions
+from .checkin import (
+    CheckInService, any_session_open, identify as identify_code, make_team_token, make_token, my_sessions as my_check_in_sessions,
+    scan_time, session_summary, sessions_overview as check_in_sessions_overview, window_state as check_in_window,
+)
 from .cloning import CloneService
 from . import withdrawals
-from .exports import EXPORT_FORMATS, EXPORT_KINDS, render as render_export
+from .exports import EXPORT_FORMATS, EXPORT_KINDS, file_part, render as render_export
 from .ideas import IdeaService, can_team_edit, project_gate, window_state as idea_window_state
 from .errors import HackathonError
 from .finder import FinderService
 from .judging import CriteriaService, JudgingService, ResultsService, StaffService, clean_target
-from .models import HackathonStaff, IdeaReview, IdeaStatus, IdeaSubmission, Submission, SubmissionReview, Team, TeamMember, TeamStatus
+from .models import HackathonStaff, IdeaReview, IdeaStatus, IdeaSubmission, PaymentStage, Submission, SubmissionReview, Team, TeamMember, TeamStatus
 from .submissions import SubmissionService, window_state
 from .views import _get_hackathon
 
@@ -126,13 +130,19 @@ class MyCheckInView(APIView):
         team = _my_team(hackathon, request.user)
         if team is None or team.status != TeamStatus.REGISTERED or team.is_waitlisted:
             raise HackathonError('Check-in opens once your team is registered.', 'TEAM_NOT_REGISTERED')
-        record = hackathon.check_ins.filter(user=request.user).first()
+        record = check_in_sessions.main_check_ins(hackathon).filter(user=request.user).first()
         window = check_in_window(hackathon)
+        # No point showing a code the scanners will refuse: one is worth showing while any session can take scans.
+        open_now = any_session_open(hackathon)
         return DRFResponse({
-            # No point showing a code the scanners will refuse.
-            'token': make_token(hackathon, request.user) if window == 'OPEN' else '',
+            'token': make_token(hackathon, request.user) if open_now else '',
+            # The whole team's code, for a volunteer who checks a team in together.
+            'team_token': make_team_token(hackathon, team) if open_now else '',
+            'team': {'id': team.id, 'name': team.name},
             'checked_in': record is not None, 'checked_in_at': record.checked_in_at if record else None,
             'window': window, 'opens_at': hackathon.check_in_opens_at, 'closes_at': hackathon.check_in_closes_at,
+            # The same person's standing in every session, so the card can list them.
+            'sessions': my_check_in_sessions(hackathon, request.user),
         })
 
 
@@ -476,7 +486,7 @@ class CheckInView(APIView):
         return DRFResponse(CheckInService.roster(
             hackathon, query=params.get('q', ''), missing=params.get('missing') == '1',
             limit=_int_param(params.get('limit'), 100), offset=_int_param(params.get('offset'), 0),
-            with_held_back=access.has_permission(hackathon, request.user, 'teams'),
+            with_held_back=access.has_permission(hackathon, request.user, 'teams'), session=params.get('session'),
         ))
 
     def post(self, request, slug):
@@ -484,14 +494,74 @@ class CheckInView(APIView):
         record, created = CheckInService.check_in(
             hackathon, request.user, user_id=request.data.get('user_id'), token=request.data.get('token'),
             scanned_at=request.data.get('scanned_at'),
-            override=bool(request.data.get('override')), reason=request.data.get('reason'),
+            override=bool(request.data.get('override')), reason=request.data.get('reason'), session=request.data.get('session'),
         )
-        user, by = record.user, record.checked_in_by
-        return DRFResponse({
-            'created': created, 'user_id': user.id, 'name': f'{user.first_name} {user.last_name}'.strip() or user.email,
-            'team_name': record.team.name, 'checked_in_at': record.checked_in_at,
-            'checked_in_by': (f'{by.first_name} {by.last_name}'.strip() or by.email) if by else None,
-        })
+        return DRFResponse(_member_check_in_result(record, created))
+
+
+def _member_check_in_result(record, created: bool) -> dict:
+    user, by = record.user, record.checked_in_by
+    return {
+        'created': created, 'user_id': user.id, 'name': f'{user.first_name} {user.last_name}'.strip() or user.email,
+        'team_name': record.team.name, 'checked_in_at': record.checked_in_at,
+        'checked_in_by': (f'{by.first_name} {by.last_name}'.strip() or by.email) if by else None,
+        'session_id': record.session_id, 'via': record.via,
+    }
+
+
+class CheckInScanView(APIView):
+    """
+    POST /api/hackathons/{slug}/check-in/scan/ {token, session?, scanned_at?} - one scanner for both kinds of code.
+
+    A person's code checks them in (``kind: member``, same fields as POST /check-in/). A team's code checks nobody in
+    and returns the team's members with their standing in the session (``kind: team``) for the volunteer to pick from.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        CheckInService._require_feature(hackathon, request.user)
+        token, session, scanned_at = request.data.get('token'), request.data.get('session'), request.data.get('scanned_at')
+        kind, _ = identify_code(hackathon, token, scan_time(scanned_at))
+        if kind == 'team':
+            return DRFResponse(CheckInService.team_roster(hackathon, request.user, token=token, session=session, scanned_at=scanned_at))
+        record, created = CheckInService.check_in(hackathon, request.user, token=token, scanned_at=scanned_at, session=session)
+        return DRFResponse({'kind': 'member', **_member_check_in_result(record, created)})
+
+
+class CheckInTeamBatchView(APIView):
+    """POST /api/hackathons/{slug}/check-in/team-batch/ {token, user_ids, session?, override?, reason?} - the people ticked after a team scan."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        data = request.data
+        return DRFResponse(CheckInService.check_in_team(
+            hackathon, request.user, token=data.get('token'), user_ids=data.get('user_ids'), session=data.get('session'),
+            scanned_at=data.get('scanned_at'), override=bool(data.get('override')), reason=data.get('reason'),
+        ))
+
+
+class CheckInBatchDetailView(APIView):
+    """DELETE /api/hackathons/{slug}/check-in/batches/{batch_id}/?cascade=1 - take back everyone one team scan checked in."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, slug, batch_id):
+        removed = CheckInService.undo_batch(_get_hackathon(request, slug), request.user, batch_id, cascade=request.query_params.get('cascade') == '1')
+        return DRFResponse({'removed': removed})
+
+
+class CheckInSessionsView(APIView):
+    """GET /api/hackathons/{slug}/check-in/sessions/ - every session with how many people are checked in (desk staff and organizers)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        if not hackathon.feature('check_in'):
+            raise HackathonError('Check-in is not enabled for this hackathon.', 'FEATURE_OFF')
+        if not can_check_in(hackathon, request.user):
+            raise PermissionDenied('You are not allowed to check participants in.')
+        return DRFResponse(check_in_sessions_overview(hackathon))
 
 
 def _int_param(raw, default: int) -> int:
@@ -499,6 +569,19 @@ def _int_param(raw, default: int) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return default
+
+
+class CheckInSessionDetailView(APIView):
+    """PATCH (organizer) /api/hackathons/{slug}/check-in/sessions/{id}/ {name?, opens_at?, closes_at?, needs_arrival?, counts_for_certificate?, scan_mode?, is_active?}"""
+    permission_classes = [scoped('teams')]
+
+    def patch(self, request, slug, pk):
+        hackathon = _get_hackathon(request, slug)
+        session = hackathon.check_in_sessions.filter(pk=pk).first()
+        if session is None:
+            raise Http404
+        session = check_in_sessions.update(session, request.user, request.data)
+        return DRFResponse(session_summary(session))
 
 
 class WithdrawalsView(APIView):
@@ -555,7 +638,7 @@ class CheckInStatsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, slug):
-        return DRFResponse(CheckInService.stats(_get_hackathon(request, slug), request.user))
+        return DRFResponse(CheckInService.stats(_get_hackathon(request, slug), request.user, session=request.query_params.get('session')))
 
 
 class NoShowsView(APIView):
@@ -563,15 +646,15 @@ class NoShowsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, slug):
-        return DRFResponse(CheckInService.no_shows(_get_hackathon(request, slug), request.user))
+        return DRFResponse(CheckInService.no_shows(_get_hackathon(request, slug), request.user, session=request.query_params.get('session')))
 
     def post(self, request, slug):
         hackathon = _get_hackathon(request, slug)
         action = request.data.get('action')
         if action == 'remind':
-            return DRFResponse({'reminded': CheckInService.remind_absent(hackathon, request.user)})
+            return DRFResponse({'reminded': CheckInService.remind_absent(hackathon, request.user, session=request.data.get('session'))})
         if action == 'withdraw':
-            return DRFResponse({'withdrawn': CheckInService.withdraw_no_shows(hackathon, request.user, request.data.get('team_ids'))})
+            return DRFResponse({'withdrawn': CheckInService.withdraw_no_shows(hackathon, request.user, request.data.get('team_ids'), session=request.data.get('session'))})
         raise HackathonError("Choose 'remind' or 'withdraw'.", 'INVALID', field='action')
 
 
@@ -579,7 +662,10 @@ class CheckInDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def delete(self, request, slug, user_id):
-        CheckInService.undo(_get_hackathon(request, slug), request.user, user_id)
+        params = request.query_params
+        CheckInService.undo(
+            _get_hackathon(request, slug), request.user, user_id, session=params.get('session'), cascade=params.get('cascade') == '1',
+        )
         return DRFResponse({'deleted': True, 'user_id': user_id})
 
 
@@ -622,8 +708,9 @@ class HackathonExportView(APIView):
     """
     GET /api/hackathons/{slug}/export/{kind}/?export_format=csv|xlsx|json (organizers and volunteers, by kind).
 
-    Kinds: teams, participants, ideas, submissions, rounds (needs ?round=), check-in. ``ids`` limits teams to a
-    selection and ``status`` / ``search`` narrow round results. Rendered by the shared export serializer.
+    Kinds: teams, participants, ideas, submissions, rounds (needs ?round=), check-in (``session`` picks which
+    session's list; blank is the arrival check-in). ``ids`` limits teams to a selection and ``status`` / ``search``
+    narrow round results. Rendered by the shared export serializer.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -643,7 +730,7 @@ class HackathonExportView(APIView):
             details={'kind': spec.key, 'format': fmt, 'rows': rows},
         )
         response = HttpResponse(data, content_type=content_type)
-        response['Content-Disposition'] = f'attachment; filename="{export_filename(hackathon.slug, spec.name, fmt)}"'
+        response['Content-Disposition'] = f'attachment; filename="{export_filename(hackathon.slug, file_part(hackathon, spec, request.query_params), fmt)}"'
         return response
 
 
@@ -717,7 +804,7 @@ def _idea_payload(idea: IdeaSubmission, *, payment: bool = False) -> dict:
 def _idea_config(hackathon) -> dict:
     """What the team's idea form needs to know about the organizers' choices."""
     return {
-        'fee_amount': hackathon.idea_fee_amount, 'payment_note': hackathon.idea_payment_note,
+        'fee_amount': hackathon.idea_fee_amount if hackathon.payment_stage == PaymentStage.IDEA else 0, 'payment_note': hackathon.idea_payment_note,
         'deck_required': hackathon.idea_deck_required, 'linkedin_required': hackathon.idea_linkedin_required,
         'files_available': idea_files.available(), 'payment_qr': idea_files.serialize_qr(hackathon),
         'edits_enabled': hackathon.idea_edits_enabled, 'edits_until': hackathon.idea_edits_until,
@@ -796,6 +883,72 @@ class MyIdeaFileView(APIView):
     def delete(self, request, slug, file_id):
         idea_files.discard_upload(self._team(request, slug), request.user, file_id)
         return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+
+class MyPaymentFilesView(APIView):
+    """POST /api/hackathons/{slug}/payment-files/ {name, size} - the screenshot of the fee paid to register, before the team exists."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug):
+        granted = payments.request_upload(_get_hackathon(request, slug), request.user, request.data.get('name'), request.data.get('size'))
+        return DRFResponse({
+            'file': idea_files.serialize(granted['file']), 'post': granted['post'],
+            'max_bytes': granted['max_bytes'], 'expires_in': granted['expires_in'],
+        }, status=status.HTTP_201_CREATED)
+
+
+class MyPaymentFileView(APIView):
+    """POST .../payment-files/{id}/ confirms a finished upload; DELETE removes one not yet used by a team."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug, file_id):
+        return DRFResponse({'file': idea_files.serialize(payments.complete_upload(_get_hackathon(request, slug), request.user, file_id))})
+
+    def delete(self, request, slug, file_id):
+        payments.discard_upload(_get_hackathon(request, slug), request.user, file_id)
+        return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+
+class PaymentsView(APIView):
+    """GET /api/hackathons/{slug}/payments/?status=&search= - the registration payments waiting for, or past, an organizer's check."""
+    permission_classes = [scoped('teams')]
+
+    def get(self, request, slug):
+        return DRFResponse(payments.queue(_get_hackathon(request, slug), request.user, request.query_params))
+
+
+class PaymentActionView(APIView):
+    """POST /api/hackathons/{slug}/payments/{id}/{verify|reject|reopen|remove}/ (reject takes an optional {reason})."""
+    permission_classes = [scoped('teams')]
+
+    def post(self, request, slug, pk, payment_action):
+        hackathon = _get_hackathon(request, slug)
+        if payment_action == 'verify':
+            payments.verify(hackathon, request.user, pk)
+        elif payment_action == 'reject':
+            payments.reject(hackathon, request.user, pk, request.data.get('reason', ''))
+        elif payment_action == 'reopen':
+            payments.reopen(hackathon, request.user, pk)
+        elif payment_action == 'remove':
+            payments.remove(hackathon, request.user, pk)
+            return DRFResponse({'removed': True})
+        else:
+            raise Http404
+        return DRFResponse({'payment': payments.row_of(hackathon, pk)})
+
+
+class PaymentLinkView(APIView):
+    """GET /api/hackathons/{slug}/payments/{id}/link/?inline=1 - a 60-second link to the screenshot: organizers and the team's leader."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def get(self, request, slug, pk):
+        return DRFResponse(payments.screenshot_link(_get_hackathon(request, slug), request.user, pk, inline=request.query_params.get('inline') == '1'))
 
 
 class IdeaQrView(APIView):

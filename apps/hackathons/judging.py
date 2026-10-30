@@ -11,7 +11,7 @@ from apps.audit.utils import log_audit_event
 from apps.core.permissions import _is_admin_or_club_lead
 
 from . import config_validation as validate
-from . import access
+from . import access, celebrate
 from .access import can_judge
 from .errors import HackathonError
 from .models import (
@@ -395,6 +395,7 @@ class ResultsService:
         hackathon.results_published_at = timezone.now()
         hackathon.save(update_fields=['results_published_at', 'updated_at'])
         log_audit_event(actor=actor, action='Published Hackathon Results', target_model='Hackathon', target_id=hackathon.slug, details={})
+        celebrate.winners(hackathon)
         if notify:
             members = [
                 m.user for m in hackathon.memberships.select_related('user')
@@ -410,4 +411,5 @@ class ResultsService:
         hackathon.results_published_at = None
         hackathon.save(update_fields=['results_published_at', 'updated_at'])
         log_audit_event(actor=actor, action='Unpublished Hackathon Results', target_model='Hackathon', target_id=hackathon.slug, details={})
+        celebrate.winners_withdrawn(hackathon)
         return hackathon

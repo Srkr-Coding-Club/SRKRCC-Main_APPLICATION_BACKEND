@@ -112,6 +112,19 @@ def issue_badge(response):
     return badge
 
 
+def celebrate_check_in(badge, session) -> None:
+    """A registrant was scanned in for the first time at an event: welcome them (once per event, whichever session)."""
+    from apps.celebrations import services as celebrations
+    from apps.events.models import Event
+
+    user = badge.response.user
+    event = Event.objects.filter(registration_form_id=session.form_id).first()
+    if user is not None and event is not None:
+        celebrations.award_after_commit(
+            [user], 'event.checked_in', f'event-check-in:{event.pk}', link_url=f'/events/{event.slug}', event=event.title,
+        )
+
+
 def resolve_display_name(response) -> str:
     """
     Best-effort registrant display name for a Response, used by the scan
