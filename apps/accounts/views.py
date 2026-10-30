@@ -15,6 +15,7 @@ from apps.core.permissions import IsAdminOrClubLead
 from apps.core import verification_gate
 from apps.core.throttling import LoginAttemptThrottle, ScopedRateThrottle
 from apps.audit.utils import log_audit_event
+from apps.celebrations import services as celebrations
 
 User = get_user_model()
 
@@ -194,6 +195,7 @@ class RegisterView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         user = serializer.save()
+        celebrations.award_after_commit([user], 'account.welcome', 'welcome')
         log_audit_event(
             actor=user,
             action="User Self-Registered",

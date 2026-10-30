@@ -32,6 +32,7 @@ urlpatterns = [
     path('api/blogs/', include('apps.blogs.urls')),
     path('api/announcements/', include('apps.announcements.urls')),
     path('api/notifications/', include('apps.notifications.urls')),
+    path('api/celebrations/', include('apps.celebrations.urls')),
     path('api/audit/', include('apps.audit.urls')),
     path('api/admin/dmc/', include('apps.core.dmc.urls')),
     path('api/admin/backups/', include('apps.core.urls_backup')),

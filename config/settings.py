@@ -243,6 +243,7 @@ INSTALLED_APPS = [
     'apps.audit',
     'apps.announcements',
     'apps.notifications',
+    'apps.celebrations',
 ]
 
 MIDDLEWARE = [

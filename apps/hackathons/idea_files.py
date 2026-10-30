@@ -113,7 +113,10 @@ def _issue(hackathon: Hackathon, team: Team | None, user, kind: str, name, size)
     content_type = _CONTENT_TYPE_FOR[ext]
 
     with transaction.atomic():
-        for earlier in IdeaFile.objects.select_for_update().filter(hackathon=hackathon, team=team, kind=kind, state__in=_ACTIVE):
+        earlier_files = IdeaFile.objects.select_for_update().filter(hackathon=hackathon, team=team, kind=kind, state__in=_ACTIVE)
+        if team is None and kind == IdeaFileKind.PAYMENT:
+            earlier_files = earlier_files.filter(uploader=user)  # a leader paying before their team exists must not discard someone else's screenshot
+        for earlier in earlier_files:
             _discard(earlier)  # a new pick replaces the one not yet saved with the idea
         pending = IdeaFile(
             hackathon=hackathon, team=team, kind=kind, uploader=user, original_name=cleaned, content_type=content_type,
@@ -321,9 +324,11 @@ def remove_qr(hackathon: Hackathon, user) -> None:
 
 def can_see_qr(hackathon: Hackathon, user) -> bool:
     """Organizers, and members of a registered team of this hackathon (the people who have to pay). Nobody else."""
-    from .models import TeamMember, TeamStatus
-    if access.has_any_permission(hackathon, user, ('settings', 'ideas')):
+    from .models import PaymentStage, TeamMember, TeamStatus
+    if access.has_any_permission(hackathon, user, ('settings', 'ideas', 'teams')):
         return True
+    if hackathon.payment_stage == PaymentStage.REGISTRATION and hackathon.idea_fee_amount:
+        return bool(user and user.is_authenticated)  # people paying to register have no team yet
     return bool(user and user.is_authenticated and TeamMember.objects.filter(
         hackathon=hackathon, user=user, team__status=TeamStatus.REGISTERED, team__is_waitlisted=False,
     ).exists())

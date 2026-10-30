@@ -5,7 +5,8 @@ from django.core import signing
 
 from .config_validation import certificate_settings
 from .errors import HackathonError
-from .models import CheckIn, Hackathon, HackathonWinner, TeamMember, TeamStatus
+from . import check_in_sessions
+from .models import Hackathon, HackathonWinner, TeamMember, TeamStatus
 
 CODE_SALT = 'hackathon-certificate'
 KIND_PARTICIPATION = 'PARTICIPATION'
@@ -31,7 +32,7 @@ def _earned(hackathon: Hackathon, membership: TeamMember) -> bool:
     if rule == 'SUBMITTED':
         return hasattr(team, 'submission')
     if rule == 'CHECKED_IN':
-        return CheckIn.objects.filter(hackathon=hackathon, user_id=membership.user_id).exists()
+        return check_in_sessions.has_arrived(hackathon, membership.user_id)
     return True
 
 

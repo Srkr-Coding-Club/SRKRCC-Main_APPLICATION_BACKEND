@@ -38,6 +38,7 @@ from apps.accounts.models import (
 )
 from apps.accounts.validators import EMAIL_MAX_LENGTH, EMAIL_REGEX, normalize_email
 from apps.audit.utils import log_audit_event
+from apps.celebrations import services as celebrations
 from apps.core.services.email_service import EmailNotificationService
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,7 @@ def mark_verified(user, via: str = 'link') -> bool:
     user.email_verified_at = timezone.now()
     user.save(update_fields=['email_verified_at', 'updated_at'])
     log_audit_event(actor=None, action='Email Verified', target_model='User', target_id=user.pk, details={'via': via})
+    celebrations.award_after_commit([user], 'account.email_verified', 'email-verified')
     return True
 
 
@@ -354,8 +356,11 @@ def confirm(raw: str) -> dict:
         if row.purpose == VerificationPurpose.VERIFY:
             if (user.email or '').lower() != row.email.lower():
                 raise VerificationError('EMAIL_CHANGED', 'The address on this account has changed since this link was sent. Request a new link.', 400)
+            first_time = user.email_verified_at is None
             user.email_verified_at = user.email_verified_at or now
             user.save(update_fields=['email_verified_at', 'updated_at'])
+            if first_time:
+                celebrations.award_after_commit([user], 'account.email_verified', 'email-verified')
         else:
             if User.objects.filter(email__iexact=row.email).exclude(pk=user.pk).exists():
                 raise VerificationError('EMAIL_TAKEN', 'Someone else now uses this address, so it cannot be added to this account.', 400)

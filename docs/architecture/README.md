@@ -45,4 +45,5 @@ flowchart LR
 - [backup-security.md](backup-security.md) — backups and security practices
 - [../admin/README.md](../admin/README.md) — admin panel overview
 - [../modules/notifications.md](../modules/notifications.md) — in-app notifications & multi-channel broadcast
+- [../modules/celebrations.md](../modules/celebrations.md) — one-time celebration cards for happy moments, kept on the account
 - [../features/](../features/) — every platform feature explained

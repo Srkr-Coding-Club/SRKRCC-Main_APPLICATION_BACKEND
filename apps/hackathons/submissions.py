@@ -7,7 +7,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from apps.audit.utils import log_audit_event
 
-from . import access, config_validation as validate
+from . import access, celebrate, config_validation as validate
 from .link_rules import clean_link
 from .config_validation import guard_field as field_guard
 from .ideas import project_gate
@@ -108,6 +108,7 @@ class SubmissionService:
             details={'hackathon': hackathon.slug, 'team': team.name, 'title': submission.project_title},
         )
         if created:
+            celebrate.project_submitted(team, submission)
             transaction.on_commit(lambda: _notify_users(
                 [m.user for m in team.memberships.select_related('user')],
                 f'{team.name}: submission received',
