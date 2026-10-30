@@ -261,6 +261,11 @@ class UserRoleUpdateSerializer(serializers.ModelSerializer):
             existing = existing.exclude(id=self.instance.id)
         if existing.exists():
             raise serializers.ValidationError(f"Club ID '{canonical}' is already assigned to another member.")
+        if self.instance is None or canonical.upper() != (self.instance.club_id or '').upper():
+            from apps.accounts.services import club_id_registry
+            reason = club_id_registry.why_unavailable(canonical, email=getattr(self.instance, 'email', ''), for_user_id=getattr(self.instance, 'id', None), allow_retired=True)
+            if reason:
+                raise serializers.ValidationError(reason)
         return canonical
 
     def to_internal_value(self, data):
@@ -728,6 +733,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         # runs after both validate_role() and validate_club_id() since DRF
         # calls per-field validators before this object-level one).
         reconcile_college_choice(attrs)
+        if attrs.get('club_id'):
+            from apps.accounts.services import club_id_registry
+            reason = club_id_registry.why_unavailable(attrs['club_id'], email=attrs.get('email', ''), allow_retired=True)
+            if reason:
+                raise serializers.ValidationError({'club_id': [reason]})
         if attrs.get('role') == 'AFFILIATE' and not attrs.get('club_id'):
             raise serializers.ValidationError({
                 'club_id': "Affiliate members must provide a valid Club ID. "
@@ -800,4 +810,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             if club_id and User.objects.filter(club_id__iexact=club_id).exists():
                 raise serializers.ValidationError({'club_id': [f"Club ID '{club_id}' is already assigned to another member."]})
             raise serializers.ValidationError("Registration failed due to a conflicting record. Please try again.")
+        if not club_id:
+            from apps.accounts.services.club_id_registry import attach_reserved
+            attach_reserved(user)
         return user

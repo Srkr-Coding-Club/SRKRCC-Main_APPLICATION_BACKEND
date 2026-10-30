@@ -178,6 +178,163 @@ class ClubIDSequence(TimeStampedModel):
         return f"ClubIDSequence({self.prefix}, {self.year} -> next={self.next_sequence})"
 
 
+class ReservationStatus(models.TextChoices):
+    RESERVED = 'RESERVED', 'Reserved'
+    CLAIMED = 'CLAIMED', 'Claimed'
+    RELEASED = 'RELEASED', 'Released'
+
+
+class ClubIdReservation(TimeStampedModel):
+    """A Club ID held for a person who has no account (yet): nobody else can be given it, and it is attached when they register."""
+    club_id = models.CharField(max_length=30, db_index=True)
+    reserved_for_email = models.EmailField(blank=True, default='', help_text='Lower-cased. Empty = held for later, not for a particular person.')
+    reason = models.CharField(max_length=300, blank=True, default='')
+    source = models.CharField(max_length=30, default='MANUAL', help_text='MANUAL or RECONCILIATION')
+    status = models.CharField(max_length=10, choices=ReservationStatus.choices, default=ReservationStatus.RESERVED, db_index=True)
+    created_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    claimed_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['club_id'], condition=models.Q(status='RESERVED'), name='uniq_active_reservation_per_club_id'),
+            models.UniqueConstraint(
+                fields=['reserved_for_email'], condition=models.Q(status='RESERVED') & ~models.Q(reserved_for_email=''), name='uniq_active_reservation_per_email',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.club_id} -> {self.reserved_for_email or 'held'} ({self.status})"
+
+
+class ClubIdEventKind(models.TextChoices):
+    ISSUED = 'ISSUED', 'Issued (next number)'
+    ASSIGNED = 'ASSIGNED', 'Assigned'
+    CHANGED = 'CHANGED', 'Changed'
+    REASSIGNED_OUT = 'REASSIGNED_OUT', 'Moved away'
+    REASSIGNED_IN = 'REASSIGNED_IN', 'Moved to'
+    CLEARED = 'CLEARED', 'Cleared (retired)'
+    RESERVED = 'RESERVED', 'Reserved'
+    RESERVATION_RELEASED = 'RESERVATION_RELEASED', 'Reservation released'
+    CLAIMED = 'CLAIMED', 'Reservation claimed'
+    COUNTER_SET = 'COUNTER_SET', 'Counter moved'
+
+
+class ClubIdEvent(TimeStampedModel):
+    """Every change to a Club ID: who held it, who changed it, why. A CLEARED id is retired and is never handed out again by itself."""
+    club_id = models.CharField(max_length=30, blank=True, default='', db_index=True)
+    kind = models.CharField(max_length=24, choices=ClubIdEventKind.choices, db_index=True)
+    user = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    user_email = models.EmailField(blank=True, default='')
+    other_email = models.EmailField(blank=True, default='', help_text='The previous or next holder, when the id moved.')
+    actor = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    actor_email = models.EmailField(blank=True, default='')
+    reason = models.CharField(max_length=300, blank=True, default='')
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['club_id', 'kind'])]
+
+    def __str__(self):
+        return f"{self.kind} {self.club_id} {self.user_email}"
+
+
+class ReconciliationOutcome(models.TextChoices):
+    MATCH = 'MATCH', 'Matches'
+    NAME_DIFFERS = 'NAME_DIFFERS', 'Matches, name differs'
+    ID_MISSING_IN_APP = 'ID_MISSING_IN_APP', 'Account has no Club ID'
+    ID_MISMATCH = 'ID_MISMATCH', 'Different Club ID in the app'
+    ID_HELD_BY_OTHER = 'ID_HELD_BY_OTHER', 'Club ID belongs to someone else'
+    EMAIL_MISMATCH = 'EMAIL_MISMATCH', 'Club ID is under another email'
+    ID_RESERVED = 'ID_RESERVED', 'Club ID is reserved for someone else'
+    ID_RETIRED = 'ID_RETIRED', 'Club ID was retired'
+    NO_ACCOUNT = 'NO_ACCOUNT', 'No account'
+    NO_ACCOUNT_NO_ID = 'NO_ACCOUNT_NO_ID', 'No account and no Club ID'
+    NO_ID_IN_SHEET = 'NO_ID_IN_SHEET', 'No Club ID in the sheet'
+    INVALID = 'INVALID', 'Cannot be read'
+    DUPLICATE = 'DUPLICATE', 'Repeated in the sheet'
+
+
+class ReconciliationResolution(models.TextChoices):
+    PENDING = 'PENDING', 'Open'
+    LINKED = 'LINKED', 'Club ID linked'
+    KEPT_APP = 'KEPT_APP', 'Kept the app value'
+    USED_SHEET = 'USED_SHEET', 'Used the sheet value'
+    FOLLOW_UP = 'FOLLOW_UP', 'Marked for follow-up'
+    INVITED = 'INVITED', 'Invited'
+    DISMISSED = 'DISMISSED', 'Dismissed'
+
+
+class ReconciliationRun(TimeStampedModel):
+    """One uploaded past-member sheet compared with the accounts. Rows keep what the sheet said and what was decided about each."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_filename = models.CharField(max_length=255)
+    sheet_name = models.CharField(max_length=255, blank=True, default='')
+    mapping = models.JSONField(default=dict, help_text='Which sheet column is the name, the email and the Club ID.')
+    total_rows = models.PositiveIntegerField(default=0)
+    created_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.source_filename} ({self.total_rows} rows)"
+
+
+class ReconciliationRow(models.Model):
+    run = models.ForeignKey(ReconciliationRun, on_delete=models.CASCADE, related_name='rows')
+    row_number = models.PositiveIntegerField(help_text='The row in the sheet (the header is row 1).')
+    sheet_name = models.CharField(max_length=200, blank=True, default='')
+    sheet_email = models.CharField(max_length=254, blank=True, default='')
+    sheet_club_id = models.CharField(max_length=60, blank=True, default='')
+    raw = models.JSONField(default=dict, blank=True)
+    outcome = models.CharField(max_length=20, choices=ReconciliationOutcome.choices, db_index=True)
+    detail = models.CharField(max_length=500, blank=True, default='')
+    matched_user = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    other_user = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    resolution = models.CharField(max_length=12, choices=ReconciliationResolution.choices, default=ReconciliationResolution.PENDING, db_index=True)
+    note = models.CharField(max_length=300, blank=True, default='')
+    resolved_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    invited_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['row_number']
+        constraints = [models.UniqueConstraint(fields=['run', 'row_number'], name='uniq_reconciliation_row_number')]
+        indexes = [models.Index(fields=['run', 'outcome', 'resolution'])]
+
+    def __str__(self):
+        return f"row {self.row_number}: {self.outcome}"
+
+
+class MembershipRequestStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Waiting for an organizer'
+    APPROVED = 'APPROVED', 'Approved'
+    REJECTED = 'REJECTED', 'Not approved'
+    CANCELLED = 'CANCELLED', 'Withdrawn'
+
+
+class ClubMembershipRequest(TimeStampedModel):
+    """Somebody asking to become a club member. Approving gives them the next Club ID (and the affiliate role)."""
+    user = models.ForeignKey('accounts.User', on_delete=models.CASCADE, related_name='membership_requests')
+    status = models.CharField(max_length=10, choices=MembershipRequestStatus.choices, default=MembershipRequestStatus.PENDING, db_index=True)
+    message = models.CharField(max_length=300, blank=True, default='')
+    note = models.CharField(max_length=300, blank=True, default='', help_text='The reason shown to the person when a request is not approved.')
+    club_id = models.CharField(max_length=30, blank=True, default='', help_text='The Club ID given when approved.')
+    decided_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [models.UniqueConstraint(fields=['user'], condition=models.Q(status='PENDING'), name='uniq_pending_membership_request_per_user')]
+
+    def __str__(self):
+        return f"{self.user_id}: {self.status}"
+
+
 class ImportJobStatus(models.TextChoices):
     PREVIEWED = 'PREVIEWED', 'Previewed'
     COMMITTED = 'COMMITTED', 'Committed'
