@@ -46,7 +46,7 @@ class CloneService:
         for name in SHIFTED_FIELDS:
             original = getattr(source, name)
             values[name] = original + delta if original else None
-        clone = Hackathon.objects.create(title=title, slug=slug, status=HackathonStatus.DRAFT, **values)
+        clone = Hackathon.objects.create(title=title, slug=slug, status=HackathonStatus.DRAFT, cloned_from=source, **values)
 
         for criterion in source.criteria.all():
             JudgingCriterion.objects.create(

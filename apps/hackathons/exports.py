@@ -17,8 +17,9 @@ from apps.core.dmc.contracts import ColumnDefinition
 from apps.core.dmc.export_service import serialize_records
 
 from .errors import HackathonError
-from . import check_in_sessions
+from . import check_in_sessions, finder_admin
 from . import payments as payments_module
+from .services import problem_label
 from .models import CheckIn, Hackathon, IdeaSubmission, PaymentStage, PaymentStatus, Submission, TeamMember, TeamStatus
 
 EXPORT_FORMATS = ('csv', 'xlsx', 'json')
@@ -271,6 +272,47 @@ def payment_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
 
 
 # ---------------------------------------------------------------------------
+# Team finder: people still looking for a team, and the teams recruiting
+# ---------------------------------------------------------------------------
+
+UNMATCHED_COLUMNS = [
+    _col('name', 'Name'), _col('email', 'Email', 'email'), _col('phone', 'Phone'), _col('branch', 'Branch'), _col('year', 'Year'),
+    _col('college', 'College'), _col('skills', 'Skills', 'multiline'), _col('note', 'Note', 'multiline'),
+    _col('listed_at', 'Listed At', 'datetime'), _col('pending_requests', 'Open Requests', 'number'),
+]
+
+RECRUITING_COLUMNS = [
+    _col('team', 'Team'), _col('looking_for', 'Looking For', 'multiline'), _col('members', 'Members', 'number'), _col('seats_open', 'Seats Open', 'number'),
+    _col('problem', 'Problem'), _col('leader', 'Leader'), _col('leader_email', 'Leader Email', 'email'), _col('leader_phone', 'Leader Phone'),
+    _col('pending_requests', 'Open Requests', 'number'),
+]
+
+
+def unmatched_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
+    waiting = finder_admin.waiting_seekers(hackathon).select_related('user', 'user__college').order_by('created_at')
+    open_requests = finder_admin.pending_by_user(hackathon)
+    for seeker in waiting:
+        user = seeker.user
+        yield {
+            'name': _full_name(user), 'email': user.email, 'phone': user.phone_number or '', 'branch': user.branch or '',
+            'year': user.year or '', 'college': _college(user), 'skills': seeker.skills, 'note': seeker.note,
+            'listed_at': seeker.created_at, 'pending_requests': open_requests.get(user.pk, 0),
+        }
+
+
+def recruiting_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
+    pending = finder_admin.pending_by_team(hackathon)
+    for team in finder_admin.recruiting_teams(hackathon).select_related('leader', 'problem_statement').prefetch_related('memberships').order_by('name'):
+        size = len(team.memberships.all())
+        leader = team.leader
+        yield {
+            'team': team.name, 'looking_for': team.looking_for, 'members': size, 'seats_open': max(hackathon.max_team_size - size, 0),
+            'problem': problem_label(team) or '', 'leader': _full_name(leader) if leader else '', 'leader_email': leader.email if leader else '',
+            'leader_phone': (leader.phone_number or '') if leader else '', 'pending_requests': pending.get(team.pk, 0),
+        }
+
+
+# ---------------------------------------------------------------------------
 # The catalogue
 # ---------------------------------------------------------------------------
 
@@ -297,6 +339,8 @@ EXPORT_KINDS: dict[str, ExportKind] = {kind.key: kind for kind in (
     ExportKind('rounds', 'round-results', ('rounds',), _fixed(ROUND_COLUMNS), round_rows),
     ExportKind('check-in', 'check-in', ('check_in',), _fixed(CHECK_IN_COLUMNS), check_in_rows),
     ExportKind('payments', 'payments', ('teams',), _fixed(PAYMENT_EXPORT_COLUMNS), payment_rows),
+    ExportKind('finder-seekers', 'unmatched-people', ('teams',), _fixed(UNMATCHED_COLUMNS), unmatched_rows),
+    ExportKind('finder-teams', 'recruiting-teams', ('teams',), _fixed(RECRUITING_COLUMNS), recruiting_rows),
 )}
 
 

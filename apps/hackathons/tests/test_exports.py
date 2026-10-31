@@ -10,7 +10,7 @@ from rest_framework.test import APIClient, APITestCase
 from apps.audit.models import AuditLog
 from apps.hackathons.exports import EXPORT_KINDS
 from apps.hackathons.models import (
-    CheckIn, HackathonStaff, IdeaSubmission, Round, RoundEntry, Submission, TeamMember, TeamPayment,
+    CheckIn, HackathonStaff, IdeaSubmission, Round, RoundEntry, Submission, Team, TeamMember, TeamPayment, TeamSeeker,
 )
 from .helpers import make_hackathon, make_ps, make_team, make_user
 
@@ -53,6 +53,8 @@ class ExportBase(APITestCase):
         RoundEntry.objects.get_or_create(round=round_obj, team=self.team)
         CheckIn.objects.create(hackathon=self.hack, user=self.leader, team=self.team, checked_in_by=self.admin)
         TeamPayment.objects.create(team=self.team, hackathon=self.hack, amount=200, transaction_id='UPI-1', team_name=self.team.name, leader_name='Asha Rao')
+        Team.objects.filter(pk=self.team.pk).update(looking_for_members=True, looking_for='A designer')
+        TeamSeeker.objects.create(hackathon=self.hack, user=make_user(), skills='Figma')
         return round_obj
 
     def params_for(self, kind, round_obj):

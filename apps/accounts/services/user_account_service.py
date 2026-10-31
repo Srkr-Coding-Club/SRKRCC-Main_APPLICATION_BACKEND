@@ -253,6 +253,10 @@ class UserAccountService:
                     f"Club ID '{incoming_club_id}' is already assigned to {existing_club_holder.email}. "
                     f"Cannot reassign to {email}."
                 )
+            from apps.accounts.services import club_id_registry
+            reserved_for_another = club_id_registry.why_unavailable(incoming_club_id, email=email, allow_retired=True)
+            if reserved_for_another and not existing_club_holder:
+                raise ClubIdConflictError(reserved_for_another)
 
         with transaction.atomic():
             user = cls.find_by_email(email)

@@ -118,7 +118,9 @@ class ClubIDService:
                 defaults={"next_sequence": 1}
             )
 
-            current_seq = seq_obj.next_sequence
+            # A number that is held, reserved or retired is skipped, so nobody is ever given someone else's id.
+            from apps.accounts.services.club_id_registry import next_free_sequence
+            current_seq = next_free_sequence(clean_prefix, target_year, seq_obj.next_sequence)
             # Increment and save
             seq_obj.next_sequence = current_seq + 1
             seq_obj.save(update_fields=["next_sequence", "updated_at"])

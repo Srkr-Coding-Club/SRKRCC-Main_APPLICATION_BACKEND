@@ -354,6 +354,21 @@ A solo participant can ask a recruiting team to take them in (the other directio
 - **Notifications can carry an action.** `Notification` has `action_kind` (`JOIN_REQUEST`), `action_ref` (`<hackathon slug>:<request id>`) and `action_outcome`. The bell shows Accept / Decline buttons for an unanswered request; once it is answered anywhere (bell, dashboard card, cancelled by the sender) every notification about it shows the outcome instead (`NotificationService.resolve_action`).
 - **UI.** The dashboard has a "Teams and people" card (teams that need people, people available, and the leader's pending requests); `/hackathons/{slug}/finder` shows everything with search.
 
+## Team finder: organizer side
+
+`finder_admin.py` gives organizers (hackathon permission `teams`) a view over the finder and the means to tidy and match. Contact details (email, phone) are shown to organizers only. All routes are under `/{slug}/finder/admin/`:
+
+| Route | What it does |
+|---|---|
+| `GET /` | `enabled`, `stats`, `seekers` (WAITING / MATCHED / WITHDRAWN, with team and open requests), recruiting `teams` (seats open, leader contact, open requests) and the 500 newest `requests` (`stuck` = pending 48 hours or more). Readable even when the finder module is off. Stats: `seekers_waiting`, `teams_recruiting` (with a seat), `requests_pending`, `requests_stuck`, `matched`, `median_hours_to_match`. |
+| `POST seekers/{id}/remove/ {reason}` | Takes a listing down, clears its skills and note, withdraws the person's open requests and tells them. They may list themselves again. |
+| `POST teams/{id}/stop-recruiting/ {reason}` | Switches the team's "looking for members" off, closes its waiting requests (senders told, leader's notification resolved) and tells the leader. Only off: switching it on is the leader's choice. |
+| `POST requests/{id}/cancel/` | Closes a stuck request (`409 REQUEST_NOT_PENDING` when already answered); the sender is told and may ask again. |
+| `POST place/ {seeker_id, team_id}` | Puts a listed person on a team through `services._admit(..., organizer=True)`: the team must be active (not payment-pending, withdrawn or disqualified), not full, edits unlocked, registration open, within the participant limit; the person must have a complete profile, be eligible and not be on a team. Only the rules acceptance and registration questions are skipped (they show as missing details until the person completes them). A waiting request to that team becomes ACCEPTED, the person's other requests are withdrawn, and the team and person are notified. |
+| `POST remind/ {audience: seekers\|teams}` | Seekers listed three days or more with at least one recruiting team with room get one in-app nudge; recruiting teams with room get one when people are waiting. Never more than once a day for the same person or team (`TeamSeeker.organizer_reminded_at`, `Team.finder_reminded_at`, migration 0035). Returns `{reminded}`. |
+
+Every write is audited (`Admin Removed Team Finder Listing`, `Admin Stopped Team Recruiting`, `Admin Cancelled Hackathon Join Request`, `Admin Placed Seeker On Hackathon Team`, `Reminded Team Finder`). Exports (`teams` permission): `finder-seekers` (unmatched people: name, email, phone, branch, year, college, skills, note, listed at, open requests) and `finder-teams` (recruiting teams with seats open and leader contact). Tests: `tests/test_finder_admin.py`.
+
 ## Idea scoring
 
 `JudgingCriterion.target` is `PROJECT` (default) or `IDEA`: the two rubrics are independent (`GET/PUT/POST /{slug}/criteria/?target=`). Judges score ideas on `GET /{slug}/judging/ideas/` and `POST /{slug}/judging/ideas/{id}/` (same rules as projects: own team excluded, locked once results are published); `IdeaSubmission.score` / `review_count` hold the average. `GET /{slug}/leaderboard/?target=IDEA` ranks ideas (rejected ones excluded) and `GET /{slug}/ideas/{id}/reviews/` shows each judge's scores. Changing a rubric re-totals its existing reviews.
