@@ -16,7 +16,7 @@ from apps.core.dmc.export_service import export_filename
 from apps.core.permissions import IsAdminOrClubLead
 from apps.core.throttling import ScopedRateThrottle
 
-from . import access, analytics, certificates, idea_files, payments, registration
+from . import access, analytics, certificates, overview as overview_parts, idea_files, payments, registration
 from .access import can_check_in, can_judge, scoped
 from . import check_in_sessions
 from .checkin import (
@@ -33,7 +33,7 @@ from .finder import FinderService
 from .judging import CriteriaService, JudgingService, ResultsService, StaffService, clean_target
 from .models import HackathonStaff, IdeaReview, IdeaStatus, IdeaSubmission, PaymentStage, Submission, SubmissionReview, Team, TeamMember, TeamStatus
 from .submissions import SubmissionService, window_state
-from .views import _get_hackathon
+from .views import _get_hackathon, stats_payload
 
 
 def _my_team(hackathon, user) -> Team | None:
@@ -796,6 +796,14 @@ class AnalyticsView(APIView):
 
     def get(self, request, slug):
         return DRFResponse(analytics.overview(_get_hackathon(request, slug)))
+
+
+class OverviewView(APIView):
+    """GET (organizer) /api/hackathons/{slug}/overview/ - the Overview's numbers in one response, each part only if allowed."""
+    permission_classes = [scoped('insights')]
+
+    def get(self, request, slug):
+        return DRFResponse(overview_parts.build(_get_hackathon(request, slug), request.user, stats_payload))
 
 
 class CloneView(APIView):

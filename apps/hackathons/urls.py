@@ -99,6 +99,7 @@ urlpatterns = [
     path('<slug:slug>/certificates/', views_ops.AdminCertificatesView.as_view(), name='hackathon-admin-certificates'),
     path('<slug:slug>/export/<str:kind>/', views_ops.HackathonExportView.as_view(), name='hackathon-export'),
     path('<slug:slug>/analytics/', views_ops.AnalyticsView.as_view(), name='hackathon-analytics'),
+    path('<slug:slug>/overview/', views_ops.OverviewView.as_view(), name='hackathon-overview'),
     path('<slug:slug>/clone/', views_ops.CloneView.as_view(), name='hackathon-clone'),
     path('<slug:slug>/problem-statements/', views.ProblemStatementListView.as_view(), name='hackathon-ps-list'),
     path('<slug:slug>/problem-statements/upload/', views.ProblemStatementUploadView.as_view(), name='hackathon-ps-upload'),

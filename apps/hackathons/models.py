@@ -69,6 +69,10 @@ class Hackathon(TimeStampedModel):
 
     # --- Team registration settings ------------------------------------------
     registration_opens_at = models.DateTimeField(blank=True, null=True)
+    cloned_from = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='next_editions',
+        help_text='The earlier edition this one was cloned from; the Overview compares sign-ups against it.',
+    )
     registration_closes_at = models.DateTimeField(blank=True, null=True)
     min_team_size = models.PositiveIntegerField(default=1)
     max_team_size = models.PositiveIntegerField(default=4)

@@ -1228,45 +1228,50 @@ class FormingTeamsReminderView(APIView):
         return DRFResponse({'reminded': TeamService.remind_forming_teams(hackathon, request.user)})
 
 
+def stats_payload(hackathon):
+    """The Overview's team, statement and round numbers; shared by /stats/ and /overview/."""
+    teams = hackathon.teams.all()
+    by_status = {s: 0 for s in TeamStatus.values}
+    for s in teams.values_list('status', flat=True):
+        by_status[s] += 1
+    participants = TeamMember.objects.filter(hackathon=hackathon, team__status__in=ACTIVE).count()
+    per_ps = [
+        {'id': ps.id, 'code': ps.code, 'title': ps.title, 'domain': ps.domain, 'teams': ps.active_team_count, 'max_teams': ps.max_teams}
+        for ps in _ps_queryset(hackathon)
+    ]
+    rounds = [
+        {'id': r.id, 'order': r.order, 'name': r.name, 'results_published': r.results_published,
+         **RoundSerializer().get_entry_counts(r)}
+        for r in hackathon.rounds.all()
+    ]
+    return {
+        'teams_by_status': by_status,
+        'teams_total': sum(by_status.values()),
+        'participants': participants,
+        'pending_invites': hackathon.team_invites.filter(status=InviteStatus.PENDING).count(),
+        'problem_statements': per_ps,
+        'open_innovation_teams': hackathon.teams.filter(is_open_innovation=True, status__in=ACTIVE).count(),
+        'rounds': rounds,
+        'forming_teams': [
+            {
+                'id': team.id, 'name': team.name, 'leader_email': team.leader.email if team.leader else None,
+                'members': team.member_total, 'needed': max(hackathon.min_team_size - team.member_total, 1),
+            }
+            for team in TeamService.forming_teams(hackathon)[:50]
+        ],
+        'min_team_size': hackathon.min_team_size,
+        'registration_closes_at': hackathon.registration_closes_at,
+        'is_registration_open': hackathon.is_registration_open,
+    }
+
+
 class HackathonStatsView(APIView):
     """GET (admin) /api/hackathons/{slug}/stats/"""
     permission_classes = [scoped('insights')]
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
-        teams = hackathon.teams.all()
-        by_status = {s: 0 for s in TeamStatus.values}
-        for s in teams.values_list('status', flat=True):
-            by_status[s] += 1
-        participants = TeamMember.objects.filter(hackathon=hackathon, team__status__in=ACTIVE).count()
-        per_ps = [
-            {'id': ps.id, 'code': ps.code, 'title': ps.title, 'teams': ps.active_team_count, 'max_teams': ps.max_teams}
-            for ps in _ps_queryset(hackathon)
-        ]
-        rounds = [
-            {'id': r.id, 'order': r.order, 'name': r.name, 'results_published': r.results_published,
-             **RoundSerializer().get_entry_counts(r)}
-            for r in hackathon.rounds.all()
-        ]
-        return DRFResponse({
-            'teams_by_status': by_status,
-            'teams_total': sum(by_status.values()),
-            'participants': participants,
-            'pending_invites': hackathon.team_invites.filter(status=InviteStatus.PENDING).count(),
-            'problem_statements': per_ps,
-            'open_innovation_teams': hackathon.teams.filter(is_open_innovation=True, status__in=ACTIVE).count(),
-            'rounds': rounds,
-            'forming_teams': [
-                {
-                    'id': team.id, 'name': team.name, 'leader_email': team.leader.email if team.leader else None,
-                    'members': team.member_total, 'needed': max(hackathon.min_team_size - team.member_total, 1),
-                }
-                for team in TeamService.forming_teams(hackathon)[:50]
-            ],
-            'min_team_size': hackathon.min_team_size,
-            'registration_closes_at': hackathon.registration_closes_at,
-            'is_registration_open': hackathon.is_registration_open,
-        })
+        return DRFResponse(stats_payload(hackathon))
 
 
 # ---------------------------------------------------------------------------
