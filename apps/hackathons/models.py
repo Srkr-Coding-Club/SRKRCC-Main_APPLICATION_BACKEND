@@ -69,6 +69,10 @@ class Hackathon(TimeStampedModel):
 
     # --- Team registration settings ------------------------------------------
     registration_opens_at = models.DateTimeField(blank=True, null=True)
+    cloned_from = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='next_editions',
+        help_text='The earlier edition this one was cloned from; the Overview compares sign-ups against it.',
+    )
     registration_closes_at = models.DateTimeField(blank=True, null=True)
     min_team_size = models.PositiveIntegerField(default=1)
     max_team_size = models.PositiveIntegerField(default=4)
@@ -242,6 +246,7 @@ class Team(TimeStampedModel):
     status_reason = models.CharField(max_length=300, blank=True, help_text='Shown to the team, e.g. why it was disqualified.')
     looking_for_members = models.BooleanField(default=False)
     looking_for = models.CharField(max_length=200, blank=True, help_text='Skills / roles the team wants, shown in the team finder.')
+    finder_reminded_at = models.DateTimeField(blank=True, null=True, help_text='When the organizers last nudged this recruiting team to look at the finder.')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
         help_text='Who created the team themselves (empty when an organizer created it). Counts toward the per-person team limit.',
@@ -773,6 +778,7 @@ class TeamSeeker(TimeStampedModel):
     skills = models.CharField(max_length=200, blank=True)
     note = models.CharField(max_length=300, blank=True)
     is_active = models.BooleanField(default=True)
+    organizer_reminded_at = models.DateTimeField(blank=True, null=True, help_text='When the organizers last nudged this person to look at the finder.')
 
     class Meta:
         ordering = ['-updated_at']

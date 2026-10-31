@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from collections import Counter
 
+from django.utils import timezone
+
 from django.db.models import Count
 from django.db.models.functions import TruncDate
 
 from . import check_in_sessions, payments
-from .models import EntryStatus, Hackathon, IdeaSubmission, PaymentStatus, RoundEntry, Submission, TeamStatus
+from .models import EntryStatus, Hackathon, IdeaStatus, IdeaSubmission, PaymentStatus, RoundEntry, Submission, TeamStatus
 
 TOP_BREAKDOWN_ITEMS = 12
 
@@ -19,6 +21,37 @@ def _college(user) -> str:
 def _breakdown(values) -> list[dict]:
     counts = Counter(value or 'Not given' for value in values)
     return [{'label': label, 'count': count} for label, count in counts.most_common(TOP_BREAKDOWN_ITEMS)]
+
+
+def previous_edition(hackathon: Hackathon, now=None) -> dict | None:
+    """How the edition this one was cloned from stood at the same point of its registration, and where it ended.
+
+    "The same point" is the time since registration opened, capped at that edition's own close. Teams that later withdrew
+    or were disqualified are not counted then or now, so the comparison errs a little low for the earlier edition.
+    """
+    source = hackathon.cloned_from
+    if source is None or not hackathon.registration_opens_at or not source.registration_opens_at:
+        return None
+    now = now or timezone.now()
+    if now < hackathon.registration_opens_at:
+        return None
+    point = source.registration_opens_at + (now - hackathon.registration_opens_at)
+    if source.registration_closes_at and point > source.registration_closes_at:
+        point = source.registration_closes_at
+
+    def counts(until=None):
+        teams = source.teams.exclude(status__in=payments.PAYMENT_STATUSES + (TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN)).filter(is_waitlisted=False)
+        members = source.memberships.filter(team__in=teams)
+        if until is not None:
+            teams, members = teams.filter(created_at__lte=until), members.filter(joined_at__lte=until)
+        return {'teams': teams.count(), 'participants': members.count()}
+
+    then, final = counts(point), counts()
+    return {
+        'title': source.title, 'slug': source.slug, 'point': point,
+        'teams_then': then['teams'], 'participants_then': then['participants'],
+        'teams_final': final['teams'], 'participants_final': final['participants'],
+    }
 
 
 def overview(hackathon: Hackathon) -> dict:
@@ -38,7 +71,9 @@ def overview(hackathon: Hackathon) -> dict:
         {'key': 'teams', 'label': 'Teams created', 'count': teams.count()},
         {'key': 'registered', 'label': 'Teams registered', 'count': registered},
         {'key': 'ideas', 'label': 'Teams submitted an idea', 'count': IdeaSubmission.objects.filter(team__hackathon=hackathon).count()},
+        {'key': 'ideas_approved', 'label': 'Teams with an approved idea', 'count': IdeaSubmission.objects.filter(team__hackathon=hackathon, status=IdeaStatus.APPROVED).count()},
         {'key': 'submitted', 'label': 'Teams submitted a project', 'count': submitted},
+        {'key': 'scored', 'label': 'Projects scored by a judge', 'count': Submission.objects.filter(team__hackathon=hackathon, review_count__gt=0).count()},
         {'key': 'shortlisted', 'label': 'Teams shortlisted in a round', 'count': shortlisted},
         {'key': 'winners', 'label': 'Teams with an award', 'count': hackathon.winners.values('team_id').distinct().count()},
     ]
@@ -47,6 +82,7 @@ def overview(hackathon: Hackathon) -> dict:
     )
     return {
         'funnel': funnel,
+        'previous_edition': previous_edition(hackathon),
         'checked_in': check_in_sessions.main_check_ins(hackathon).count(),
         'waitlisted_teams': teams.filter(is_waitlisted=True).count(),
         'payments': {status: hackathon.team_payments.filter(status=status).count() for status in payments.QUEUE_STATUSES},

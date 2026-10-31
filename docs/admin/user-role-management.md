@@ -51,3 +51,18 @@ Set a user's role back to **Member** / **Non-Affiliate** (or remove them from a 
 ## Related Docs
 - [../features/role-based-access.md](../features/role-based-access.md)
 - [audit-logs-monitoring.md](audit-logs-monitoring.md)
+
+## User directory (Users and Members pages)
+
+`apps/accounts/user_directory.py` and `views_directory.py` back the admin **Users** and **Members** pages. The older `GET /auth/users/` list is unchanged (it still serves create, search-as-you-type lookups and other callers); the pages use these routes (ADMIN or CLUB_LEAD unless noted):
+
+| Route | What it does |
+|---|---|
+| `GET /auth/users/directory/` | Paged (25 by default, at most 100) and filtered list. `scope=members` lists only people holding a Club ID. Filters: `q` (every word must match name, email, Club ID, roll number, phone, branch or referrer), `role`, `membership_status` and `email` (comma lists), `email` = `verified`, `unverified`, `overdue` (past the deadline) or `disputed`, `member=yes\|no`, `password_status`, `created_from`, `branch`, `year`, `college`, `joined_from`, `joined_to`, `ordering` (`newest`, `oldest`, `name`, `email`, `club_id`, `last_login`). An unknown value matches nothing. Each row carries `email_state` (VERIFIED, UNVERIFIED, OVERDUE, DISPUTED), `email_days_left`, `email_deadline`, `last_login` and `password_status`. |
+| `GET /auth/users/directory/summary/` | Counts for the tiles over the whole set (or the members set): total, verified, unverified, overdue, disputed, members, needs password, per role and per membership status. |
+| `GET /auth/users/directory/recipients/` | Id and email of everyone the current filters match (at most 5000, `truncated` says if more), used for export and email broadcasts. |
+| `POST /auth/users/{id}/verification/extend/ {days}` (ADMIN) | Gives an unverified person 1-60 more days, counted from the later of now and the current deadline. A verified person gets `409 ALREADY_VERIFIED`. Audited. |
+| `POST /auth/users/{id}/verification/resend/` (ADMIN) | Sends the verification link again (same limits as the person's own button). Audited. |
+| `POST /auth/users/{id}/verify-email/` (ADMIN) | Existing: vouch for a person. |
+
+"Overdue" uses the stored `email_verify_deadline`, or the sign-up date plus `EMAIL_VERIFY_GRACE_DAYS` when none is stored, exactly as the verification gate does. Tests: `apps/accounts/tests/test_user_directory.py`.

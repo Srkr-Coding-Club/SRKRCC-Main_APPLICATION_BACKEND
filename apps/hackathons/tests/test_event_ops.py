@@ -412,12 +412,34 @@ class FinderCloneAnalyticsTests(APITestCase):
         self.assertEqual((clone.status, clone.rules, clone.problem_statements.count()), ('DRAFT', 'Rules', 1))
         self.assertEqual(clone.submission_deadline, self.hack.submission_deadline + timezone.timedelta(days=365))
         self.assertEqual(clone.teams.count(), 0)
+        self.assertEqual(clone.cloned_from_id, self.hack.id)
+
+    def test_analytics_compare_with_the_edition_it_was_cloned_from(self):
+        now = timezone.now()
+        last = make_hackathon(min_team_size=1, registration_opens_at=now - 100 * 24 * HOUR, registration_closes_at=now - 80 * 24 * HOUR)
+        early, late = make_team(last, make_user(), name='Early'), make_team(last, make_user(), name='Late')
+        make_team(last, make_user(), name='Dropped', status=TeamStatus.WITHDRAWN)
+        Team.objects.filter(pk=early.pk).update(created_at=last.registration_opens_at + 2 * 24 * HOUR)
+        TeamMember.objects.filter(team=early).update(joined_at=last.registration_opens_at + 2 * 24 * HOUR)
+        Team.objects.filter(pk=late.pk).update(created_at=last.registration_opens_at + 15 * 24 * HOUR)
+        TeamMember.objects.filter(team=late).update(joined_at=last.registration_opens_at + 15 * 24 * HOUR)
+        self.hack.cloned_from, self.hack.registration_opens_at = last, now - 5 * 24 * HOUR
+        self.hack.save()
+        admin = _api(make_user(role='ADMIN'))
+        prev = admin.get(f'{self.base}/analytics/').data['previous_edition']
+        self.assertEqual((prev['slug'], prev['teams_then'], prev['teams_final'], prev['participants_final']), (last.slug, 1, 2, 2))
+        self.hack.cloned_from = None
+        self.hack.save()
+        self.assertIsNone(admin.get(f'{self.base}/analytics/').data['previous_edition'])
 
     def test_analytics_and_exports_are_organizer_only(self):
         make_team(self.hack, make_user(), name='Counted')
         admin = _api(make_user(role='ADMIN'))
         data = admin.get(f'{self.base}/analytics/').data
         self.assertEqual({row['key']: row['count'] for row in data['funnel']}['registered'], 1)
+        steps = [row['key'] for row in data['funnel']]
+        self.assertEqual(steps, ['participants', 'teams', 'registered', 'ideas', 'ideas_approved', 'submitted', 'scored', 'shortlisted', 'winners'])
+        self.assertTrue(all(row['count'] == 0 for row in data['funnel'] if row['key'] in ('ideas_approved', 'scored')))
         self.assertEqual(admin.get(f'{self.base}/export/participants/').status_code, 200)
         self.assertEqual(_api(make_user()).get(f'{self.base}/analytics/').status_code, 403)
         self.assertEqual(_api(make_user()).get(f'{self.base}/export/participants/').status_code, 403)
