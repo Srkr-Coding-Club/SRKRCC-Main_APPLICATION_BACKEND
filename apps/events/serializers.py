@@ -1,8 +1,10 @@
+import re
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 from apps.core.image_urls import normalize_image_url
-from .models import Event
+from .feedback import person_name
+from .models import Event, EventFeedback
 from .quick_registration import (
     QUICK_FIELDS,
     apply_quick_registration,
@@ -40,7 +42,7 @@ class EventSerializer(serializers.ModelSerializer):
             'visible_from', 'visible_until', 'is_hidden', 'registration_form',
             'form_slug', 'form_title', 'registration_opens_at', 'registration_closes_at',
             'registration_count', 'quick_registration_fields', 'is_quick_registration',
-            'registration_profile_fields', 'created_at', 'updated_at',
+            'registration_profile_fields', 'cancellation_locked', 'cancellation_cutoff_hours', 'created_at', 'updated_at',
         ]
         read_only_fields = ['status']
 
@@ -96,3 +98,43 @@ class EventSerializer(serializers.ModelSerializer):
         if obj.visible_until and obj.visible_until <= now:
             return True
         return False
+
+
+class EventFeedbackSerializer(serializers.ModelSerializer):
+    """What an attendee sends and gets back; the person and the event come from the request."""
+    rating = serializers.IntegerField(min_value=1, max_value=5)
+
+    class Meta:
+        model = EventFeedback
+        fields = ['rating', 'would_recommend', 'went_well', 'to_improve']
+        extra_kwargs = {
+            'went_well': {'required': False, 'trim_whitespace': True},
+            'to_improve': {'required': False, 'trim_whitespace': True},
+        }
+
+
+class EventFeedbackCommentSerializer(serializers.ModelSerializer):
+    """One answer as the organizers read it."""
+    name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventFeedback
+        fields = ['id', 'name', 'rating', 'would_recommend', 'went_well', 'to_improve', 'created_at']
+
+    def get_name(self, obj) -> str:
+        return person_name(obj.user)
+
+
+class EventCertificateSettingsSerializer(serializers.ModelSerializer):
+    """What an organizer controls about an event's attendance certificates."""
+    ALLOWED_PLACEHOLDERS = {'name', 'event'}
+
+    class Meta:
+        model = Event
+        fields = ['certificates_released', 'certificate_body', 'certificate_signatory_name', 'certificate_signatory_title']
+
+    def validate_certificate_body(self, value):
+        unknown = set(re.findall(r'\{(\w+)\}', value)) - self.ALLOWED_PLACEHOLDERS
+        if unknown:
+            raise serializers.ValidationError(f"Unknown placeholder(s): {', '.join(sorted(unknown))}. Use {{name}} and {{event}}.")
+        return value.strip()

@@ -37,6 +37,7 @@ Indexes: `['recipient', 'is_read', '-created_at']`
 | `POST` | `/api/notifications/{id}/read/` | Mark single notification as read. |
 | `POST` | `/api/notifications/mark-all-read/` | Mark all caller's notifications as read. |
 | `DELETE` | `/api/notifications/{id}/` | Delete / dismiss notification for caller. |
+| `GET` / `PATCH` | `/api/notifications/preferences/` | The caller's choices: `{ event_reminder_emails }` (default `true`; no stored `NotificationPreference` row means on). Event reminders in the bell are always sent; this only controls the email. |
 
 ### Admin Endpoints (`IsAdminOrClubLead`)
 | Method | Path | Description |

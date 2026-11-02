@@ -40,7 +40,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'form_slug', 'form_title', 'registration_count', 'team_count', 'registered_team_count',
             'mode', 'venue', 'organizer_name', 'logo_image', 'tags', 'prizes', 'problem_domains',
             'registration_opens_at', 'registration_closes_at', 'min_team_size', 'max_team_size',
-            'team_edits_locked', 'allow_open_innovation', 'required_profile_fields', 'faq', 'is_registration_open',
+            'team_edits_locked', 'withdrawal_policy', 'withdrawal_deadline', 'allow_open_innovation', 'required_profile_fields', 'faq', 'is_registration_open',
             'features', 'max_teams', 'max_participants', 'waitlist_enabled', 'eligibility', 'rules',
             'require_rules_acceptance', 'registration_questions', 'problem_statements_reveal_at',
             'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'check_in_opens_at', 'check_in_closes_at', 'check_in_days', 'check_in_slots_per_day', 'idea_review_required',

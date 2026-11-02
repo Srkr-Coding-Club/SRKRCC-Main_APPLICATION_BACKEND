@@ -29,6 +29,12 @@ class HackathonMode(models.TextChoices):
     HYBRID = 'HYBRID', 'Hybrid'
 
 
+class WithdrawalPolicy(models.TextChoices):
+    INSTANT = 'INSTANT', 'Instant'
+    APPROVAL = 'APPROVAL', 'Needs approval'
+    LOCKED = 'LOCKED', 'Locked'
+
+
 class Hackathon(TimeStampedModel):
     title = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
@@ -79,6 +85,14 @@ class Hackathon(TimeStampedModel):
     team_edits_locked = models.BooleanField(
         default=False,
         help_text="Freeze team name / problem statement / membership changes by participants (admins can still edit).",
+    )
+    withdrawal_policy = models.CharField(
+        max_length=10, choices=WithdrawalPolicy.choices, default=WithdrawalPolicy.APPROVAL,
+        help_text="How a team that holds a place withdraws: at once, with an organizer's approval (the default), or not at all.",
+    )
+    withdrawal_deadline = models.DateTimeField(
+        blank=True, null=True,
+        help_text='Teams cannot start a withdrawal after this. Blank = until the hackathon ends.',
     )
     allow_open_innovation = models.BooleanField(
         default=True,
