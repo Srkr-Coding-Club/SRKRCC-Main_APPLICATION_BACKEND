@@ -1,11 +1,12 @@
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import permissions, status
+from rest_framework import permissions, serializers, status
 from rest_framework.response import Response as DRFResponse
 from rest_framework.views import APIView
 
 from apps.core.permissions import IsAdminOrClubLead
 from apps.core.models import EmailJob
+from . import preferences
 from .models import Notification
 from .serializers import NotificationSerializer, BroadcastNotificationSerializer
 from .services import NotificationService
@@ -152,3 +153,18 @@ class AdminBroadcastHistoryView(APIView):
             for j in jobs
         ]
         return DRFResponse(data)
+
+
+class NotificationPreferencesView(APIView):
+    """GET / PATCH /api/notifications/preferences/ {event_reminder_emails} - what the caller wants to be emailed about."""
+    permission_classes = [permissions.IsAuthenticated]
+    verification_exempt = True
+
+    def get(self, request):
+        return DRFResponse({'event_reminder_emails': preferences.event_reminder_emails_enabled(request.user)})
+
+    def patch(self, request):
+        enabled = request.data.get('event_reminder_emails')
+        if not isinstance(enabled, bool):
+            raise serializers.ValidationError({'event_reminder_emails': 'Send true or false.'})
+        return DRFResponse({'event_reminder_emails': preferences.set_event_reminder_emails(request.user, enabled)})

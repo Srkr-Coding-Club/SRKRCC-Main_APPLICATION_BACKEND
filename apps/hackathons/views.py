@@ -548,6 +548,7 @@ class MyTeamView(APIView):
             'team': TeamSerializer(team).data if team else None,
             'payment': payments.summary(team) if team else None,
             'withdrawal_request': _withdrawal_payload(team),
+            'withdrawal_window': withdrawals.team_window(team) if team else None,
             'team_limits': {
                 'max_teams': withdrawals.MAX_SELF_CREATED_TEAMS,
                 'cooldown_minutes': int(withdrawals.WITHDRAW_COOLDOWN.total_seconds() // 60),
@@ -749,6 +750,8 @@ class MyTeamsView(APIView):
         for team in teams:
             item = TeamSerializer(team).data
             item['hackathon_title'] = team.hackathon.title
+            item['hackathon_start'] = team.hackathon.start_date
+            item['hackathon_end'] = team.hackathon.end_date
             item['is_leader'] = team.leader_id == request.user.id
             data.append(item)
         return DRFResponse(data)

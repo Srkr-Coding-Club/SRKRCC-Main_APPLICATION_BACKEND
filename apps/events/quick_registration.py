@@ -14,6 +14,8 @@ from django.utils.text import slugify
 
 from apps.forms.models import FieldType, Form, FormField, FormStatus, ProfileField
 
+from . import capacity
+
 # Display order of the details an admin can pick: profile key -> (field type, label).
 QUICK_FIELDS: dict[str, tuple[str, str]] = {
     ProfileField.FULL_NAME.value: (FieldType.TEXT, 'Full Name'),
@@ -115,12 +117,14 @@ def apply_quick_registration(event, keys, actor=None) -> Form:
         if not is_quick_form(form):
             form = _create_form(event, actor)
 
+        was_full = capacity.is_full(form)
         fields_changed = _sync_fields(form, selected)
         form.title = event.title[:200]
         form.max_total_responses = event.capacity or None
         if fields_changed:
             form.version += 1
         form.save()
+        capacity.reopen_if_room(form, was_full)
     # A fresh instance: the one passed in may carry prefetched fields from before the sync.
     return Form.objects.get(pk=form.pk)
 
@@ -132,6 +136,8 @@ def sync_quick_form_details(event) -> None:
         return
     title, cap = event.title[:200], event.capacity or None
     if form.title != title or form.max_total_responses != cap:
+        was_full = capacity.is_full(form)
         form.title = title
         form.max_total_responses = cap
         form.save(update_fields=['title', 'max_total_responses', 'updated_at'])
+        capacity.reopen_if_room(form, was_full)
