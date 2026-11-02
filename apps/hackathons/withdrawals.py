@@ -19,7 +19,7 @@ from apps.audit.utils import log_audit_event
 
 from .errors import HackathonError
 from .models import (
-    Hackathon, InviteStatus, Team, TeamAllowance, TeamStatus, WithdrawalRequest, WithdrawalStatus,
+    CheckIn, Hackathon, InviteStatus, Team, TeamAllowance, TeamStatus, WithdrawalPolicy, WithdrawalRequest, WithdrawalStatus,
 )
 
 MAX_SELF_CREATED_TEAMS = 2
@@ -36,11 +36,77 @@ def clean_reason(reason) -> str:
     return ' '.join(str(reason or '').split())[:MAX_REASON_LENGTH]
 
 
+WITHDRAWAL_LOCKED = 'WITHDRAWAL_LOCKED'
+WITHDRAWAL_CLOSED = 'WITHDRAWAL_CLOSED'
+REASON_ENDED, REASON_LOCKED, REASON_DEADLINE = 'ENDED', 'LOCKED', 'DEADLINE'
+# A team that is only forming (or waiting for its payment to be confirmed) holds no place, so leaving it is never refused.
+PLACE_HOLDING = (TeamStatus.REGISTERED,)
+
+
 def needs_approval(team: Team) -> bool:
-    """A team that holds a place (registered, or in a round) cannot just disappear: an organizer decides."""
+    """
+    A team that holds a place (registered, or in a round) cannot just disappear: an organizer decides, unless the
+    organizers chose instant withdrawals. Even then a team that is in a round or has checked in stays under approval.
+    """
+    if team.hackathon.withdrawal_policy == WithdrawalPolicy.INSTANT:
+        return team.round_entries.exists() or CheckIn.objects.filter(team=team).exists()
     if team.status == TeamStatus.REGISTERED and not team.is_waitlisted:
         return True
     return team.round_entries.exists()
+
+
+def holds_place(team: Team) -> bool:
+    return team.status in PLACE_HOLDING or team.round_entries.exists()
+
+
+def window(hackathon: Hackathon, now=None) -> dict:
+    """Whether teams can still start a withdrawal: ``open``, and when not, the ``reason`` (ENDED, LOCKED or DEADLINE)."""
+    now = now or timezone.now()
+    deadline = hackathon.withdrawal_deadline
+    if hackathon.end_date and hackathon.end_date <= now:
+        reason = REASON_ENDED
+    elif hackathon.withdrawal_policy == WithdrawalPolicy.LOCKED:
+        reason = REASON_LOCKED
+    elif deadline is not None and deadline <= now:
+        reason = REASON_DEADLINE
+    else:
+        reason = None
+    return {
+        'open': reason is None, 'reason': reason, 'policy': hackathon.withdrawal_policy,
+        'deadline': deadline,
+    }
+
+
+def _closed_message(state: dict) -> tuple[str, str]:
+    if state['reason'] == REASON_ENDED:
+        return 'This hackathon has ended, so teams can no longer withdraw.', WITHDRAWAL_CLOSED
+    if state['reason'] == REASON_LOCKED:
+        return 'The organizers have closed withdrawals. Ask them if you need to leave.', WITHDRAWAL_LOCKED
+    when = timezone.localtime(state['deadline']).strftime('%d %b %Y, %I:%M %p')
+    return f'Withdrawals closed on {when} IST. Ask the organizers if you need to leave.', WITHDRAWAL_CLOSED
+
+
+def check_open(team: Team, now=None) -> None:
+    """Raise unless this team may start a withdrawal now. A team that holds no place can always leave, except after the event."""
+    state = window(team.hackathon, now)
+    if state['open']:
+        return
+    if state['reason'] != REASON_ENDED and not holds_place(team):
+        return
+    message, code = _closed_message(state)
+    raise HackathonError(message, code, reason=state['reason'])
+
+
+def team_window(team: Team, now=None) -> dict:
+    """What the leader's dashboard needs: whether withdrawing is possible, why not, until when, and whether it needs approval."""
+    state = window(team.hackathon, now)
+    closed = not state['open'] and (state['reason'] == REASON_ENDED or holds_place(team))
+    message = _closed_message(state)[0] if closed else ''
+    return {
+        'open': not closed, 'reason': state['reason'] if closed else None, 'message': message,
+        'policy': state['policy'], 'closes_at': state['deadline'] if not closed else None,
+        'needs_approval': needs_approval(team),
+    }
 
 
 def allowance_for(hackathon: Hackathon, user) -> int:
@@ -112,6 +178,7 @@ class WithdrawalService:
         reason = clean_reason(reason)
         if not reason:
             raise HackathonError('Tell the organizers why you are withdrawing.', 'REASON_REQUIRED', field='reason')
+        check_open(team)
         if not needs_approval(team):
             return _finish_withdrawal(team, user, user, reason), None
         try:

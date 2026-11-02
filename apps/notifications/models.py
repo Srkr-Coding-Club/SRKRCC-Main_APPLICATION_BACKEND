@@ -73,3 +73,12 @@ class Notification(TimeStampedModel):
 
     def __str__(self):
         return f"[{self.type}] {self.title} -> {self.recipient.email} ({'READ' if self.is_read else 'UNREAD'})"
+
+
+class NotificationPreference(TimeStampedModel):
+    """What a person wants to be told about. No row means every default (all on)."""
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notification_preference')
+    event_reminder_emails = models.BooleanField(default=True, help_text='Email reminders before events they registered for; in-app reminders are always sent.')
+
+    def __str__(self):
+        return f'NotificationPreference(user={self.user_id})'

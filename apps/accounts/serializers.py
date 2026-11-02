@@ -476,7 +476,18 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
         events_list = []
         try:
             from apps.forms.models import Response
-            user_responses = Response.objects.filter(user=obj, is_test_submission=False).select_related('form').order_by('-submitted_at')
+            from apps.events.feedback import has_ended
+            from apps.events.registration import cancellation_state, has_started
+
+            def _cancellation(event):
+                if event is None:
+                    return None
+                state = cancellation_state(event)
+                return {'allowed': state['allowed'], 'reason': state['reason'], 'closes_at': state['closes_at']}
+
+            from apps.events.models import Event
+            user_responses = list(Response.objects.filter(user=obj, is_test_submission=False).select_related('form').order_by('-submitted_at'))
+            events_by_form = {e.registration_form_id: e for e in Event.objects.filter(registration_form_id__in={r.form_id for r in user_responses})}
             for resp in user_responses:
                 form = resp.form
                 events_list.append({
@@ -494,6 +505,15 @@ class UserProfileDetailSerializer(serializers.ModelSerializer):
                     # the form page, so the profile needs to know which
                     # registrations actually have a badge to show.
                     'attendance_enabled': bool(form.attendance_enabled),
+                    # The Event this registration belongs to (None for a plain form) and whether it is over;
+                    # the profile uses them to offer post-event feedback.
+                    'event_slug': events_by_form[form.id].slug if form.id in events_by_form else None,
+                    'event_ended': form.id in events_by_form and has_ended(events_by_form[form.id]),
+                    'certificates_released': form.id in events_by_form and events_by_form[form.id].certificates_released,
+                    'event_started': form.id in events_by_form and has_started(events_by_form[form.id]),
+                    'cancellation': _cancellation(events_by_form.get(form.id)),
+                    'start_time': events_by_form[form.id].start_time if form.id in events_by_form else None,
+                    'end_time': events_by_form[form.id].end_time if form.id in events_by_form else None,
                 })
         except Exception:
             pass

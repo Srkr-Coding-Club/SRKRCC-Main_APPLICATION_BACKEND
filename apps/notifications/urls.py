@@ -9,6 +9,7 @@ urlpatterns = [
     path('mark-all-read/', views.NotificationMarkAllReadView.as_view(), name='mark-all-read'),
     path('<int:pk>/read/', views.NotificationDetailView.as_view(), name='read'),
     path('<int:pk>/', views.NotificationDetailView.as_view(), name='detail'),
+    path('preferences/', views.NotificationPreferencesView.as_view(), name='preferences'),
     path('broadcast/', views.AdminBroadcastView.as_view(), name='broadcast'),
     path('broadcast-history/', views.AdminBroadcastHistoryView.as_view(), name='broadcast-history'),
 ]
