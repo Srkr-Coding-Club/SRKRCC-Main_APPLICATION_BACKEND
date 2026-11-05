@@ -5,6 +5,7 @@ from rest_framework import serializers
 from apps.core.image_urls import normalize_image_url
 from apps.forms.models import ProfileField
 from . import check_in_sessions, config_validation as config, idea_files
+from .link_rules import clean_link
 from .models import (
     AnnouncementAudience, EntryStatus, Hackathon, HackathonAnnouncement, HackathonStage, InviteStatus,
     PaymentStage, ProblemStatement, Round, RoundEntry, Submission, Team, TeamInvite, TeamMember, TeamStatus,
@@ -44,7 +45,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'features', 'max_teams', 'max_participants', 'waitlist_enabled', 'eligibility', 'rules',
             'require_rules_acceptance', 'registration_questions', 'problem_statements_reveal_at',
             'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'check_in_opens_at', 'check_in_closes_at', 'check_in_days', 'check_in_slots_per_day', 'idea_review_required',
-            'payment_stage', 'payment_qr_id', 'idea_fee_amount', 'idea_payment_note', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
+            'payment_stage', 'payment_qr_id', 'idea_fee_amount', 'idea_payment_note', 'idea_template_url', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
             'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
             'certificate_config', 'mentors', 'judges', 'sponsors', 'contacts', 'community_links', 'venue_map_url',
             'waitlisted_team_count', 'is_full', 'submissions_open', 'results_published', 'problems_revealed',
@@ -131,6 +132,9 @@ class HackathonSerializer(serializers.ModelSerializer):
 
     def validate_banner_image(self, value):
         return normalize_image_url(value)
+
+    def validate_idea_template_url(self, value):
+        return clean_link(value, 'The template link', kind='drive')
 
     def validate_logo_image(self, value):
         return normalize_image_url(value)

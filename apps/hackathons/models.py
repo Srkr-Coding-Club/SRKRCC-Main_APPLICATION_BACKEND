@@ -142,6 +142,8 @@ class Hackathon(TimeStampedModel):
     idea_fee_amount = models.PositiveIntegerField(default=0, help_text='Rupees a team pays (0 = no payment), at the stage above. The payment screenshot is then required.')
     idea_payment_qr = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='QR code teams scan to pay (image uploaded by the organizers).')
     idea_payment_note = models.TextField(blank=True, help_text='How to pay (UPI id, QR instructions...), shown to teams with the idea form.')
+    idea_template = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='A file teams download and follow when writing their idea (uploaded by the organizers).')
+    idea_template_url = models.URLField(max_length=200, blank=True, default='', help_text='A Google Drive / Docs link to the idea template, shown to teams when no template file was uploaded.')
     idea_deck_required = models.BooleanField(default=False, help_text='Teams must upload a .ppt / .pptx with their idea.')
     idea_linkedin_required = models.BooleanField(default=False, help_text='Teams must share the link of their LinkedIn post about the hackathon.')
     idea_edits_enabled = models.BooleanField(default=True, help_text='Teams may edit an idea they already submitted. Off = locked after the first submission (changes the organizers ask for are still allowed).')
@@ -812,6 +814,7 @@ class IdeaFileKind(models.TextChoices):
     DECK = 'DECK', 'Slides (.ppt / .pptx)'
     PAYMENT = 'PAYMENT', 'Payment screenshot'
     QR = 'QR', 'Payment QR code (set by the organizers)'
+    TEMPLATE = 'TEMPLATE', 'Idea template (set by the organizers)'
 
 
 class IdeaFile(TimeStampedModel):

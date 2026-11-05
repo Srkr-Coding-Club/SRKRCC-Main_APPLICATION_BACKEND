@@ -872,7 +872,7 @@ def _idea_config(hackathon) -> dict:
         'fee_amount': hackathon.idea_fee_amount if hackathon.payment_stage == PaymentStage.IDEA else 0, 'payment_note': hackathon.idea_payment_note,
         'deck_required': hackathon.idea_deck_required, 'linkedin_required': hackathon.idea_linkedin_required,
         'files_available': idea_files.available(), 'payment_qr': idea_files.serialize_qr(hackathon),
-        'edits_enabled': hackathon.idea_edits_enabled, 'edits_until': hackathon.idea_edits_until,
+        'template': idea_files.serialize_template(hackathon), 'template_url': hackathon.idea_template_url, 'edits_enabled': hackathon.idea_edits_enabled, 'edits_until': hackathon.idea_edits_until,
     }
 
 
@@ -1059,6 +1059,51 @@ class IdeaQrLinkView(APIView):
 
     def get(self, request, slug):
         return DRFResponse(idea_files.qr_link(_get_hackathon(request, slug), request.user))
+
+
+class IdeaTemplateView(APIView):
+    """
+    The template teams follow when writing their idea (organizers with the settings permission).
+    POST /api/hackathons/{slug}/idea-template/ {name, size, type} - ask for a signed upload form;
+    DELETE /api/hackathons/{slug}/idea-template/ - remove the current one.
+    """
+    permission_classes = [scoped('settings')]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        granted = idea_files.request_template_upload(hackathon, request.user, request.data.get('name'), request.data.get('size'))
+        return DRFResponse({
+            'file': idea_files.serialize(granted['file']), 'post': granted['post'],
+            'max_bytes': granted['max_bytes'], 'expires_in': granted['expires_in'],
+        }, status=status.HTTP_201_CREATED)
+
+    def delete(self, request, slug):
+        idea_files.remove_template(_get_hackathon(request, slug), request.user)
+        return DRFResponse(status=status.HTTP_204_NO_CONTENT)
+
+
+class IdeaTemplateFileView(APIView):
+    """POST /api/hackathons/{slug}/idea-template/{id}/ - the upload arrived: check it and make it the idea template."""
+    permission_classes = [scoped('settings')]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def post(self, request, slug, file_id):
+        hackathon = _get_hackathon(request, slug)
+        file = idea_files.complete_template_upload(hackathon, request.user, file_id)
+        return DRFResponse({'file': idea_files.serialize(file), 'template': idea_files.serialize_template(hackathon)})
+
+
+class IdeaTemplateLinkView(APIView):
+    """GET /api/hackathons/{slug}/idea-template/link/?inline=1 - a 60-second link to the template: any signed-in user."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def get(self, request, slug):
+        return DRFResponse(idea_files.template_link(_get_hackathon(request, slug), inline=request.query_params.get('inline') == '1'))
 
 
 class IdeaFileLinkView(APIView):
