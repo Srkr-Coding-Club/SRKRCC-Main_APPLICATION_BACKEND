@@ -717,7 +717,8 @@ class CheckInSession(TimeStampedModel):
     """
     hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='check_in_sessions')
     day_index = models.PositiveSmallIntegerField(help_text='0 is the first day.')
-    slot = models.PositiveSmallIntegerField(choices=CheckInSlot.choices)
+    slot = models.PositiveSmallIntegerField(choices=CheckInSlot.choices, null=True, blank=True, help_text='Empty for a session an organizer added by hand.')
+    is_custom = models.BooleanField(default=False, help_text='Added by an organizer with its own title and time; never generated or removed by the days and slots schedule.')
     date = models.DateField()
     name = models.CharField(max_length=80, blank=True, help_text='Shown to volunteers and people; empty = "Day 2 Afternoon".')
     opens_at = models.DateTimeField(blank=True, null=True)
@@ -732,7 +733,7 @@ class CheckInSession(TimeStampedModel):
     class Meta:
         ordering = ['day_index', 'slot']
         constraints = [
-            models.UniqueConstraint(fields=['hackathon', 'day_index', 'slot'], name='uniq_check_in_session_slot'),
+            models.UniqueConstraint(fields=['hackathon', 'day_index', 'slot'], condition=Q(is_custom=False), name='uniq_check_in_session_slot'),
             models.UniqueConstraint(fields=['hackathon'], condition=Q(is_main=True), name='uniq_main_check_in_session'),
         ]
 
@@ -741,7 +742,9 @@ class CheckInSession(TimeStampedModel):
 
     @property
     def label(self) -> str:
-        return self.name or f'Day {self.day_index + 1} {CheckInSlot(self.slot).label}'
+        if self.name:
+            return self.name
+        return f'Day {self.day_index + 1} {CheckInSlot(self.slot).label}' if self.slot is not None else f'Day {self.day_index + 1}'
 
     @property
     def is_scannable(self) -> bool:

@@ -95,6 +95,7 @@ urlpatterns = [
     path('<slug:slug>/check-in/sessions/<int:pk>/', views_ops.CheckInSessionDetailView.as_view(), name='hackathon-check-in-session'),
     path('<slug:slug>/check-in/sessions/', views_ops.CheckInSessionsView.as_view(), name='hackathon-check-in-sessions'),
     path('<slug:slug>/check-in/stats/', views_ops.CheckInStatsView.as_view(), name='hackathon-check-in-stats'),
+    path('<slug:slug>/check-in/by-team/', views_ops.CheckInByTeamView.as_view(), name='hackathon-check-in-by-team'),
     path('<slug:slug>/check-in/no-shows/', views_ops.NoShowsView.as_view(), name='hackathon-check-in-no-shows'),
     path('<slug:slug>/submissions/', views_ops.AdminSubmissionsView.as_view(), name='hackathon-admin-submissions'),
     path('<slug:slug>/submissions/remind/', views_ops.SubmissionRemindView.as_view(), name='hackathon-submissions-remind'),

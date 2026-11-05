@@ -620,6 +620,16 @@ class CheckInSessionsView(APIView):
             raise PermissionDenied('You are not allowed to check participants in.')
         return DRFResponse(check_in_sessions_overview(hackathon))
 
+    def post(self, request, slug):
+        """An organizer (teams permission) adds a session of their own: {name, date, opens_at?, closes_at?, scan_mode?, needs_arrival?, counts_for_certificate?}."""
+        hackathon = _get_hackathon(request, slug)
+        if not hackathon.feature('check_in'):
+            raise HackathonError('Check-in is not enabled for this hackathon.', 'FEATURE_OFF')
+        if not access.has_permission(hackathon, request.user, 'teams'):
+            raise PermissionDenied('You are not allowed to add check-in sessions.')
+        session = check_in_sessions.create(hackathon, request.user, request.data)
+        return DRFResponse({**session_summary(session), 'checked_in': 0}, status=status.HTTP_201_CREATED)
+
 
 def _int_param(raw, default: int) -> int:
     try:
@@ -639,6 +649,14 @@ class CheckInSessionDetailView(APIView):
             raise Http404
         session = check_in_sessions.update(session, request.user, request.data)
         return DRFResponse(session_summary(session))
+
+    def delete(self, request, slug, pk):
+        """Remove a session you added (retired instead when people are already checked in to it)."""
+        hackathon = _get_hackathon(request, slug)
+        session = hackathon.check_in_sessions.filter(pk=pk).first()
+        if session is None:
+            raise Http404
+        return DRFResponse({'outcome': check_in_sessions.delete(session, request.user)})
 
 
 class WithdrawalsView(APIView):
@@ -696,6 +714,17 @@ class CheckInStatsView(APIView):
 
     def get(self, request, slug):
         return DRFResponse(CheckInService.stats(_get_hackathon(request, slug), request.user, session=request.query_params.get('session')))
+
+
+class CheckInByTeamView(APIView):
+    """GET /api/hackathons/{slug}/check-in/by-team/?session=&state=present|partial|absent&q= - one session's check-in grouped by team (organizers)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, slug):
+        params = request.query_params
+        return DRFResponse(CheckInService.by_team(
+            _get_hackathon(request, slug), request.user, session=params.get('session'), query=params.get('q', ''), state=params.get('state', ''),
+        ))
 
 
 class NoShowsView(APIView):
