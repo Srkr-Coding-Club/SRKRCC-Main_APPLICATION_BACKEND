@@ -30,6 +30,7 @@ VIDEO_HOSTS = (
     'onedrive.live.com', 'sharepoint.com', 'linkedin.com', 'lnkd.in', 'instagram.com', 'facebook.com', 'fb.watch', 'x.com', 'twitter.com',
 )
 LINKEDIN_HOSTS = ('linkedin.com', 'lnkd.in')
+GOOGLE_DRIVE_HOSTS = ('drive.google.com', 'docs.google.com')
 
 _https_validator = URLValidator(schemes=['https'])
 _PRIVATE_SUFFIXES = ('.local', '.localhost', '.internal', '.lan', '.home', '.corp', '.intranet')
@@ -50,7 +51,7 @@ def _is_private_host(host: str) -> bool:
 
 
 def clean_link(value, label: str, *, kind: str = 'any', required: bool = False) -> str:
-    """The cleaned link, '' when optional and empty. ``kind`` is 'any', 'repo', 'video' or 'linkedin'."""
+    """The cleaned link, '' when optional and empty. ``kind`` is 'any', 'repo', 'video', 'drive' or 'linkedin'."""
     text = str(value or '').strip()
     if not text:
         if required:
@@ -81,6 +82,8 @@ def clean_link(value, label: str, *, kind: str = 'any', required: bool = False) 
             raise serializers.ValidationError(f'{label} must point at the repository itself (for example https://github.com/owner/repo).')
     elif kind == 'video' and not _host_matches(host, VIDEO_HOSTS):
         raise serializers.ValidationError(f'{label} must be on a video site such as YouTube, Vimeo, Loom or Google Drive.')
+    elif kind == 'drive' and not _host_matches(host, GOOGLE_DRIVE_HOSTS):
+        raise serializers.ValidationError(f'{label} must be a Google Drive or Google Docs link.')
     elif kind == 'linkedin' and not _host_matches(host, LINKEDIN_HOSTS):
         raise serializers.ValidationError(f'{label} must be a LinkedIn link (linkedin.com).')
     return text

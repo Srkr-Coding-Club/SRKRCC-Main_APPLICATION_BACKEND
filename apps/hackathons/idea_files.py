@@ -34,14 +34,19 @@ RULES = {
     IdeaFileKind.DECK: (('.ppt', '.pptx', '.pdf'), None, 25),
     IdeaFileKind.PAYMENT: (('.png', '.jpg', '.jpeg', '.webp'), ('image/png', 'image/jpeg', 'image/webp'), 5),
     IdeaFileKind.QR: (('.png', '.jpg', '.jpeg', '.webp'), ('image/png', 'image/jpeg', 'image/webp'), 5),
+    IdeaFileKind.TEMPLATE: (('.ppt', '.pptx', '.pdf', '.doc', '.docx'), None, 25),
 }
-LABEL = {IdeaFileKind.DECK: 'slides', IdeaFileKind.PAYMENT: 'payment screenshot', IdeaFileKind.QR: 'QR code'}
+LABEL = {IdeaFileKind.DECK: 'slides', IdeaFileKind.PAYMENT: 'payment screenshot', IdeaFileKind.QR: 'QR code', IdeaFileKind.TEMPLATE: 'template'}
+#: Kinds that belong to the hackathon (set by organizers), never to a team's idea.
+HACKATHON_FILE_KINDS = (IdeaFileKind.QR, IdeaFileKind.TEMPLATE)
 #: The request field each kind is sent in, so errors point at the right input.
-FIELD = {IdeaFileKind.DECK: 'deck_file_id', IdeaFileKind.PAYMENT: 'payment_file_id', IdeaFileKind.QR: 'file'}
+FIELD = {IdeaFileKind.DECK: 'deck_file_id', IdeaFileKind.PAYMENT: 'payment_file_id', IdeaFileKind.QR: 'file', IdeaFileKind.TEMPLATE: 'file'}
 _CONTENT_TYPE_FOR = {
     '.ppt': 'application/vnd.ms-powerpoint',
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
 }
 
@@ -84,7 +89,7 @@ def request_upload(team: Team, user, kind: str, name, size, content_type) -> dic
     """A team's slides or payment screenshot: check the file against the rules for its kind and return a signed form to post to."""
     from . import ideas
     ideas.ensure_can_edit(team, user)
-    if kind == IdeaFileKind.QR:
+    if kind in HACKATHON_FILE_KINDS:
         raise HackathonError('Unknown file kind.', 'INVALID', field='kind')
     return _issue(team.hackathon, team, user, kind, name, size)
 
@@ -272,8 +277,14 @@ def serialize(file: IdeaFile | None) -> dict | None:
         return None
     return {'id': str(file.pk), 'name': file.original_name, 'size': file.size or file.declared_size, 'type': file.content_type, 'state': file.state}
 
+# --- files the organizers set for the whole hackathon: the payment QR code and the idea template -----------
 
-# --- the payment QR code (set by the organizers, shown to teams) ---------------------------------------
+#: kind -> (Hackathon field holding the file, audit wording)
+_HACKATHON_FILE = {
+    IdeaFileKind.QR: ('idea_payment_qr', 'Hackathon Payment QR'),
+    IdeaFileKind.TEMPLATE: ('idea_template', 'Hackathon Idea Template'),
+}
+
 
 def _require_settings(hackathon: Hackathon, user) -> None:
     if not access.has_permission(hackathon, user, 'settings'):
@@ -281,45 +292,65 @@ def _require_settings(hackathon: Hackathon, user) -> None:
         raise PermissionDenied('You are not allowed to change this hackathon.')
 
 
-def request_qr_upload(hackathon: Hackathon, user, name, size) -> dict:
+def _request_hackathon_upload(hackathon: Hackathon, user, kind: str, name, size) -> dict:
     _require_settings(hackathon, user)
-    return _issue(hackathon, None, user, IdeaFileKind.QR, name, size)
+    return _issue(hackathon, None, user, kind, name, size)
 
 
-def complete_qr_upload(hackathon: Hackathon, user, file_id) -> IdeaFile:
-    """Check the uploaded image and make it the hackathon's payment QR code, replacing the earlier one."""
+def _complete_hackathon_upload(hackathon: Hackathon, user, kind: str, file_id) -> IdeaFile:
+    """Check the uploaded file and make it the hackathon's file of this kind, replacing the earlier one."""
     _require_settings(hackathon, user)
-    current = hackathon.idea_payment_qr
+    field, audit = _HACKATHON_FILE[kind]
+    current = getattr(hackathon, field)
     if current is not None and str(current.pk) == str(file_id):
         return current   # confirming again is harmless
     file = _verify(hackathon, None, file_id)
-    if file.kind != IdeaFileKind.QR:
+    if file.kind != kind:
         raise HackathonError('That upload was not found.', 'NOT_FOUND', status=404)
     with transaction.atomic():
         locked = Hackathon.objects.select_for_update().get(pk=hackathon.pk)
-        previous = locked.idea_payment_qr
+        previous = getattr(locked, field)
         if previous is not None and previous.pk == file.pk:
             return file
         attach(file, previous)
-        locked.idea_payment_qr = file
-        locked.save(update_fields=['idea_payment_qr', 'updated_at'])
-        log_audit_event(actor=user, action='Set Hackathon Payment QR', target_model='Hackathon', target_id=hackathon.slug, details={'file': file.original_name})
-    hackathon.idea_payment_qr = file
+        setattr(locked, field, file)
+        locked.save(update_fields=[field, 'updated_at'])
+        log_audit_event(actor=user, action=f'Set {audit}', target_model='Hackathon', target_id=hackathon.slug, details={'file': file.original_name})
+    setattr(hackathon, field, file)
     return file
 
 
-def remove_qr(hackathon: Hackathon, user) -> None:
+def _remove_hackathon_file(hackathon: Hackathon, user, kind: str) -> None:
     _require_settings(hackathon, user)
+    field, audit = _HACKATHON_FILE[kind]
     with transaction.atomic():
         locked = Hackathon.objects.select_for_update().get(pk=hackathon.pk)
-        previous = locked.idea_payment_qr
+        previous = getattr(locked, field)
         if previous is None:
             return
-        locked.idea_payment_qr = None
-        locked.save(update_fields=['idea_payment_qr', 'updated_at'])
+        setattr(locked, field, None)
+        locked.save(update_fields=[field, 'updated_at'])
         attach(None, previous)
-        log_audit_event(actor=user, action='Removed Hackathon Payment QR', target_model='Hackathon', target_id=hackathon.slug, details={'file': previous.original_name})
-    hackathon.idea_payment_qr = None
+        log_audit_event(actor=user, action=f'Removed {audit}', target_model='Hackathon', target_id=hackathon.slug, details={'file': previous.original_name})
+    setattr(hackathon, field, None)
+
+
+def _serialize_hackathon_file(file: IdeaFile | None) -> dict | None:
+    return {'id': str(file.pk), 'name': file.original_name} if file is not None and file.state == UploadState.ATTACHED else None
+
+
+# --- the payment QR code (set by the organizers, shown to teams) ---------------------------------------
+
+def request_qr_upload(hackathon: Hackathon, user, name, size) -> dict:
+    return _request_hackathon_upload(hackathon, user, IdeaFileKind.QR, name, size)
+
+
+def complete_qr_upload(hackathon: Hackathon, user, file_id) -> IdeaFile:
+    return _complete_hackathon_upload(hackathon, user, IdeaFileKind.QR, file_id)
+
+
+def remove_qr(hackathon: Hackathon, user) -> None:
+    _remove_hackathon_file(hackathon, user, IdeaFileKind.QR)
 
 
 def can_see_qr(hackathon: Hackathon, user) -> bool:
@@ -342,5 +373,34 @@ def qr_link(hackathon: Hackathon, user) -> dict:
 
 
 def serialize_qr(hackathon: Hackathon) -> dict | None:
-    file = hackathon.idea_payment_qr
-    return {'id': str(file.pk), 'name': file.original_name} if file is not None and file.state == UploadState.ATTACHED else None
+    return _serialize_hackathon_file(hackathon.idea_payment_qr)
+
+
+# --- the idea template (set by the organizers, downloaded by anyone signed in) -------------------------
+
+def request_template_upload(hackathon: Hackathon, user, name, size) -> dict:
+    return _request_hackathon_upload(hackathon, user, IdeaFileKind.TEMPLATE, name, size)
+
+
+def complete_template_upload(hackathon: Hackathon, user, file_id) -> IdeaFile:
+    return _complete_hackathon_upload(hackathon, user, IdeaFileKind.TEMPLATE, file_id)
+
+
+def remove_template(hackathon: Hackathon, user) -> None:
+    _remove_hackathon_file(hackathon, user, IdeaFileKind.TEMPLATE)
+
+
+def template_link(hackathon: Hackathon, *, inline: bool = False) -> dict:
+    """A 60-second link to the template. Any signed-in user may open it: it is a blank guide, not private."""
+    file = hackathon.idea_template
+    if file is None or file.state != UploadState.ATTACHED:
+        raise HackathonError('That file was not found.', 'NOT_FOUND', status=404)
+    return _signed_link(file, inline=inline)
+
+
+def serialize_template(hackathon: Hackathon) -> dict | None:
+    brief = _serialize_hackathon_file(hackathon.idea_template)
+    if brief is None:
+        return None
+    file = hackathon.idea_template
+    return {**brief, 'size': file.size or file.declared_size, 'type': file.content_type}

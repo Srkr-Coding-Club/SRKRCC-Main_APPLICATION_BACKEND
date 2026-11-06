@@ -625,3 +625,117 @@ class PaymentQr(IdeaCase):
         reply = api(self.admin).post(f"/api/hackathons/{self.hack.slug}/clone/", {"title": "Copy", "start_date": (timezone.now() + 30 * HOUR).isoformat()}, format="json")
         self.assertEqual(reply.status_code, 201, reply.data)
         self.assertIsNone(type(self.hack).objects.get(slug=reply.data["slug"]).idea_payment_qr)
+
+
+class IdeaTemplate(IdeaCase):
+    """The template organizers upload for teams to follow when writing their idea."""
+
+    def setUp(self):
+        super().setUp()
+        self.template_url = f"/api/hackathons/{self.hack.slug}/idea-template/"
+
+    def upload_template(self, user=None, name="idea-template.pptx", body=PPTX):
+        client = api(user or self.admin)
+        asked = client.post(self.template_url, {"name": name, "size": len(body), "type": "x"}, format="json")
+        self.assertEqual(asked.status_code, 201, asked.data)
+        file_id = asked.data["file"]["id"]
+        self.storage.put(IdeaFile.objects.get(pk=file_id).key, body)
+        return file_id, client.post(f"{self.template_url}{file_id}/")
+
+    def link(self, user):
+        return api(user).get(f"{self.template_url}link/")
+
+    def test_an_admin_uploads_it_and_it_becomes_the_idea_template(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            file_id, done = self.upload_template()
+        self.assertEqual(done.status_code, 200, done.data)
+        self.assertEqual(done.data["template"], {"id": file_id, "name": "idea-template.pptx", "size": len(PPTX), "type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"})
+        file = IdeaFile.objects.get(pk=file_id)
+        self.assertEqual((file.kind, file.state, file.team_id), ("TEMPLATE", UploadState.ATTACHED, None))
+        self.hack.refresh_from_db()
+        self.assertEqual(self.hack.idea_template_id, file.pk)
+        self.assertTrue(AuditLog.objects.filter(action="Set Hackathon Idea Template", actor=self.admin).exists())
+
+    def test_the_config_names_the_template_but_never_its_storage_key(self):
+        self.upload_template()
+        for data in (api(self.leader).get(self.url).data["config"], api(self.admin).get(f"/api/hackathons/{self.hack.slug}/ideas/").data["config"]):
+            self.assertEqual(data["template"]["name"], "idea-template.pptx")
+            self.assertNotIn("hackathon-ideas/", str(data))
+
+    def test_without_a_template_the_config_says_none(self):
+        self.assertIsNone(api(self.leader).get(self.url).data["config"]["template"])
+
+    def test_word_and_pdf_files_are_accepted_and_others_are_not(self):
+        self.assertEqual(self.upload_template(name="guide.docx")[1].status_code, 200)
+        self.assertEqual(self.upload_template(name="guide.pdf", body=b"%PDF" + b"0" * 64)[1].status_code, 200)
+        refused = api(self.admin).post(self.template_url, {"name": "guide.exe", "size": 10, "type": "x"}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(refused.data["code"], "FILE_TYPE_NOT_ALLOWED")
+
+    def test_a_file_that_is_not_what_its_name_says_is_refused(self):
+        _, done = self.upload_template(name="fake.pptx", body=b"not a presentation at all")
+        self.assertEqual(done.status_code, 400)
+        self.assertEqual(done.data["code"], "FILE_CONTENT_MISMATCH")
+
+    def test_only_organizers_with_the_settings_permission_may_change_it(self):
+        self.assertEqual(self.upload_template(self.staff("ORGANIZER"))[1].status_code, 200)
+        for user in (self.staff("ORGANIZER", ["ideas"]), self.staff("JUDGE"), self.leader, make_user()):
+            reply = api(user).post(self.template_url, {"name": "t.pptx", "size": 10, "type": "x"}, format="json")
+            self.assertEqual(reply.status_code, 403, user.username)
+        self.assertEqual(api().post(self.template_url, {}, format="json").status_code, 401)
+        self.assertEqual(api(self.leader).delete(self.template_url).status_code, 403)
+
+    def test_any_signed_in_user_can_download_it_but_not_a_visitor(self):
+        self.upload_template()
+        for user in (self.leader, make_user(), self.staff("JUDGE"), self.admin):
+            reply = self.link(user)
+            self.assertEqual(reply.status_code, 200, user.username)
+            self.assertEqual((reply.data["expires_in"], reply.data["inline"]), (60, False))
+        self.assertEqual(api().get(f"{self.template_url}link/").status_code, 401)
+
+    def test_there_is_a_404_until_one_is_uploaded(self):
+        self.assertEqual(self.link(self.leader).status_code, 404)
+
+    def test_it_is_not_a_team_file_kind(self):
+        reply = api(self.leader).post(self.files_url, {"kind": "TEMPLATE", "name": "t.pptx", "size": 10, "type": "x"}, format="json")
+        self.assertEqual(reply.status_code, 400)
+
+    def test_a_qr_upload_cannot_be_confirmed_as_the_template(self):
+        qr = api(self.admin).post(f"/api/hackathons/{self.hack.slug}/idea-qr/", {"name": "q.png", "size": len(PNG), "type": "x"}, format="json")
+        file_id = qr.data["file"]["id"]
+        self.storage.put(IdeaFile.objects.get(pk=file_id).key, PNG)
+        self.assertEqual(api(self.admin).post(f"{self.template_url}{file_id}/").status_code, 404)
+
+    def test_replacing_releases_the_old_file_and_removing_clears_it(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            first, _ = self.upload_template()
+        with self.captureOnCommitCallbacks(execute=True):
+            second, done = self.upload_template(name="new.pptx")
+        self.assertEqual(done.data["template"]["name"], "new.pptx")
+        self.assertEqual(IdeaFile.objects.get(pk=first).state, UploadState.DELETED)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(api(self.admin).delete(self.template_url).status_code, 204)
+        self.hack.refresh_from_db()
+        self.assertIsNone(self.hack.idea_template)
+        self.assertEqual(IdeaFile.objects.get(pk=second).state, UploadState.DELETED)
+        self.assertEqual(self.storage.objects, {})
+
+    def test_a_google_drive_link_is_saved_and_shown_in_the_config(self):
+        hack_url = f"/api/hackathons/{self.hack.slug}/"
+        reply = api(self.admin).patch(hack_url, {"idea_template_url": "https://drive.google.com/file/d/abc/view"}, format="json")
+        self.assertEqual(reply.status_code, 200, reply.data)
+        self.assertEqual(api(self.leader).get(self.url).data["config"]["template_url"], "https://drive.google.com/file/d/abc/view")
+        self.assertEqual(api(self.admin).patch(hack_url, {"idea_template_url": ""}, format="json").status_code, 200)
+        self.assertEqual(api(self.leader).get(self.url).data["config"]["template_url"], "")
+
+    def test_the_template_link_must_be_a_google_drive_or_docs_https_link(self):
+        hack_url = f"/api/hackathons/{self.hack.slug}/"
+        for bad in ("https://example.com/t.pptx", "http://drive.google.com/file/d/abc", "drive.google.com/x", "https://localhost/x"):
+            reply = api(self.admin).patch(hack_url, {"idea_template_url": bad}, format="json")
+            self.assertEqual(reply.status_code, 400, bad)
+        self.assertEqual(api(self.admin).patch(hack_url, {"idea_template_url": "https://docs.google.com/presentation/d/abc/edit"}, format="json").status_code, 200)
+
+    def test_only_organizers_with_the_settings_permission_may_set_the_link(self):
+        reply = api(self.leader).patch(f"/api/hackathons/{self.hack.slug}/", {"idea_template_url": "https://drive.google.com/file/d/abc"}, format="json")
+        self.assertIn(reply.status_code, (403, 404))
+

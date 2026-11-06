@@ -259,3 +259,77 @@ class FormAutomationService:
         from apps.core.tasks import run_in_background
         run_in_background(_send)
 
+
+def evaluate_form_restrictions(user, restrictions: dict) -> list[str]:
+    """
+    Returns a list of rejection reasons if user violates any restriction.
+    Returns an empty list if user is eligible.
+    """
+    if not restrictions or not restrictions.get('enabled', True):
+        return []
+
+    reasons = []
+
+    # 1. Club Members Only
+    if restrictions.get('club_members_only'):
+        has_club_id = bool(getattr(user, 'club_id', None) and str(user.club_id).strip())
+        is_affiliate = getattr(user, 'role', '') in ['AFFILIATE', 'CLUB_LEAD', 'ADMIN']
+        if not has_club_id and not is_affiliate:
+            reasons.append("This form is open exclusively to registered Club Members.")
+
+    # 2. Allowed Roles
+    allowed_roles = restrictions.get('allowed_roles') or []
+    if allowed_roles and getattr(user, 'role', '') not in allowed_roles:
+        reasons.append(f"Restricted to specific roles: {', '.join(allowed_roles)}.")
+
+    # 3. Academic Years
+    allowed_years = restrictions.get('allowed_years') or []
+    if allowed_years:
+        user_year = getattr(user, 'year', None)
+        try:
+            user_year_int = int(user_year) if user_year is not None else None
+        except (ValueError, TypeError):
+            user_year_int = None
+
+        if user_year_int not in allowed_years:
+            reasons.append(f"Restricted to academic years: {allowed_years}.")
+
+    # 4. Branches
+    allowed_branches = [str(b).strip().upper() for b in (restrictions.get('allowed_branches') or []) if str(b).strip()]
+    if allowed_branches:
+        user_branch = (getattr(user, 'branch', '') or '').strip().upper()
+        if not user_branch or user_branch not in allowed_branches:
+            reasons.append(f"Restricted to branches: {', '.join(allowed_branches)}.")
+
+    # 5. Colleges
+    college_name = ''
+    if getattr(user, 'college', None):
+        college_name = getattr(user.college, 'name', '') or ''
+    if not college_name:
+        college_name = getattr(user, 'other_college_name', '') or ''
+
+    if restrictions.get('home_college_only'):
+        # Empty college defaults to home college in this app
+        if college_name and 'srkr' not in college_name.lower():
+            reasons.append("Restricted to students of SRKR Engineering College.")
+    elif restrictions.get('allowed_colleges'):
+        allowed_colleges = [str(c).strip().lower() for c in restrictions.get('allowed_colleges') if str(c).strip()]
+        if allowed_colleges and not any(ac in college_name.lower() for ac in allowed_colleges):
+            reasons.append(f"Restricted to colleges: {', '.join(restrictions.get('allowed_colleges'))}.")
+
+    # 6. Specific Member Whitelist
+    whitelist = [str(w).strip() for w in (restrictions.get('allowed_members') or []) if str(w).strip()]
+    if whitelist:
+        user_email = (getattr(user, 'email', '') or '').strip().lower()
+        user_roll = (getattr(user, 'roll_number', '') or '').strip().lower()
+        user_club_id = (getattr(user, 'club_id', '') or '').strip().upper()
+
+        matched = any(
+            w.lower() == user_email or w.lower() == user_roll or w.upper() == user_club_id
+            for w in whitelist
+        )
+        if not matched:
+            reasons.append("This form is restricted to pre-approved invited members.")
+
+    return reasons
+
