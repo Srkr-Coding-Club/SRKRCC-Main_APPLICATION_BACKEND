@@ -62,32 +62,38 @@ def _require_judging_on(hackathon: Hackathon):
 class CriteriaService:
 
     @staticmethod
+    def clean_item(item: dict) -> tuple[str, str, int, int]:
+        """(name, description, max_score, weight) of one criterion, validated."""
+        name = _guard(lambda: validate._text(item.get('name'), 'Criterion name', 100, required=True))
+        description = _guard(lambda: validate._text(item.get('description'), 'Description', 300))
+        try:
+            max_score, weight = int(item.get('max_score', 10)), int(item.get('weight', 1))
+        except (TypeError, ValueError):
+            raise HackathonError('Max score and weight must be whole numbers.', 'INVALID')
+        if not 1 <= max_score <= 100 or not 1 <= weight <= 10:
+            raise HackathonError('Max score must be 1-100 and weight 1-10.', 'INVALID')
+        return name, description, max_score, weight
+
+    @staticmethod
     @transaction.atomic
     def replace(hackathon: Hackathon, actor, items, target: str = CriterionTarget.PROJECT) -> list[JudgingCriterion]:
         """Set one rubric (project or idea). Items with an ``id`` keep it (and their scores); anything omitted is removed."""
         target = clean_target(target)
         if not isinstance(items, list) or len(items) > MAX_CRITERIA:
             raise HackathonError(f'Send a list of at most {MAX_CRITERIA} criteria.', 'INVALID')
-        existing = {c.id: c for c in hackathon.criteria.filter(target=target)}
+        existing = {c.id: c for c in hackathon.criteria.filter(target=target, round__isnull=True)}
         kept_ids, result = set(), []
         for order, item in enumerate(items):
             if not isinstance(item, dict):
                 raise HackathonError('Every criterion must be an object.', 'INVALID')
-            name = _guard(lambda: validate._text(item.get('name'), 'Criterion name', 100, required=True))
-            description = _guard(lambda: validate._text(item.get('description'), 'Description', 300))
-            try:
-                max_score, weight = int(item.get('max_score', 10)), int(item.get('weight', 1))
-            except (TypeError, ValueError):
-                raise HackathonError('Max score and weight must be whole numbers.', 'INVALID')
-            if not 1 <= max_score <= 100 or not 1 <= weight <= 10:
-                raise HackathonError('Max score must be 1-100 and weight 1-10.', 'INVALID')
+            name, description, max_score, weight = CriteriaService.clean_item(item)
             criterion = existing.get(item.get('id')) or JudgingCriterion(hackathon=hackathon, target=target)
             criterion.name, criterion.description = name, description
             criterion.max_score, criterion.weight, criterion.order = max_score, weight, order
             criterion.save()
             kept_ids.add(criterion.id)
             result.append(criterion)
-        hackathon.criteria.filter(target=target).exclude(id__in=kept_ids).delete()
+        hackathon.criteria.filter(target=target, round__isnull=True).exclude(id__in=kept_ids).delete()
         JudgingService.recalculate_all(hackathon, target)
         log_audit_event(
             actor=actor, action='Updated Judging Criteria', target_model='Hackathon', target_id=hackathon.slug,
@@ -98,7 +104,7 @@ class CriteriaService:
     @staticmethod
     def seed_defaults(hackathon: Hackathon, actor, target: str = CriterionTarget.PROJECT) -> list[JudgingCriterion]:
         target = clean_target(target)
-        if hackathon.criteria.filter(target=target).exists():
+        if hackathon.criteria.filter(target=target, round__isnull=True).exists():
             raise HackathonError('This hackathon already has this rubric.', 'ALREADY_CONFIGURED')
         return CriteriaService.replace(hackathon, actor, [
             {'name': name, 'description': description, 'max_score': max_score, 'weight': weight}
@@ -240,7 +246,7 @@ class JudgingService:
             raise HackathonError('Results are published, so scores are final. Ask the organizers to unpublish first.', 'RESULTS_PUBLISHED')
         if is_member(submission.team, judge):
             raise HackathonError('You cannot score your own team.', 'CONFLICT_OF_INTEREST')
-        criteria = list(hackathon.criteria.filter(target=CriterionTarget.PROJECT))
+        criteria = list(hackathon.criteria.filter(target=CriterionTarget.PROJECT, round__isnull=True))
         if not criteria:
             raise HackathonError('The organizers have not set judging criteria yet.', 'NO_CRITERIA')
         comment = str(comment or '').strip()
@@ -265,7 +271,7 @@ class JudgingService:
     @transaction.atomic
     def recalculate_all(hackathon: Hackathon, target: str = CriterionTarget.PROJECT) -> None:
         """Re-total every review of one rubric after the rubric changed."""
-        criteria = list(hackathon.criteria.filter(target=target))
+        criteria = list(hackathon.criteria.filter(target=target, round__isnull=True))
         if target == CriterionTarget.IDEA:
             reviews, owners = IdeaReview.objects.filter(idea__team__hackathon=hackathon), IdeaSubmission.objects.filter(team__hackathon=hackathon)
         else:
@@ -292,7 +298,7 @@ class JudgingService:
             raise HackathonError('Results are published, so scores are final. Ask the organizers to unpublish first.', 'RESULTS_PUBLISHED')
         if is_member(idea.team, judge):
             raise HackathonError('You cannot score your own team.', 'CONFLICT_OF_INTEREST')
-        criteria = list(hackathon.criteria.filter(target=CriterionTarget.IDEA))
+        criteria = list(hackathon.criteria.filter(target=CriterionTarget.IDEA, round__isnull=True))
         if not criteria:
             raise HackathonError('The organizers have not set the idea scoring criteria yet.', 'NO_CRITERIA')
         comment = str(comment or '').strip()

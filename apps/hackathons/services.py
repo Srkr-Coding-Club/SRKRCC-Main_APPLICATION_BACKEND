@@ -1181,6 +1181,8 @@ class RoundService:
         ]
         RoundEntry.objects.bulk_create(new_entries, ignore_conflicts=True)
         if new_entries:
+            from .round_judging import RoundJudgingService
+            RoundJudgingService.on_entries_added(round_obj)
             log_audit_event(
                 actor=actor, action='Populated Hackathon Round', target_model='HackathonRound',
                 target_id=round_obj.pk, details={'round': round_obj.name, 'added': len(new_entries)},
@@ -1433,6 +1435,9 @@ class RoundService:
             round=round_obj, team=team,
             defaults={'status': EntryStatus.PENDING}
         )
+        if created:
+            from .round_judging import RoundJudgingService
+            RoundJudgingService.on_entries_added(round_obj)
         log_audit_event(
             actor=actor, action='Added Team to Hackathon Round',
             target_model='HackathonRound', target_id=round_obj.pk,
@@ -1443,6 +1448,8 @@ class RoundService:
     @staticmethod
     @transaction.atomic
     def remove_team_entry(round_obj: Round, team: Team, actor=None) -> bool:
+        from .round_judging import RoundJudgingService
+        RoundJudgingService.guard_remove(round_obj, team)
         deleted_count, _ = round_obj.entries.filter(team=team).delete()
         log_audit_event(
             actor=actor, action='Removed Team from Hackathon Round',

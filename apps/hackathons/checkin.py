@@ -464,6 +464,66 @@ class CheckInService:
         }
 
     @staticmethod
+    def team_attendance(hackathon: Hackathon, session, *, query='', state='') -> list[dict]:
+        """
+        Every placed team with its members and who of them is checked in to ``session``: the check-in grouped by team.
+        ``state`` keeps ``present`` (everyone in), ``partial`` or ``absent`` (nobody in) teams; ``query`` matches a team
+        name or any member's name / email (the whole team is still shown).
+        """
+        session = check_in_sessions.resolve(hackathon, session)
+        arrived = {c.user_id: c for c in CheckIn.objects.filter(session=session).select_related('checked_in_by')}
+        placed = _placed_members(hackathon)
+        search = _search_filter(query)
+        wanted_teams = set(placed.filter(search).values_list('team_id', flat=True)) if search else None
+        teams: dict[int, dict] = {}
+        for membership in placed.select_related('user', 'team').order_by('team__name', 'role', 'user__first_name', 'id'):
+            if wanted_teams is not None and membership.team_id not in wanted_teams:
+                continue
+            record = arrived.get(membership.user_id)
+            team = teams.setdefault(membership.team_id, {
+                'team_id': membership.team_id, 'name': membership.team.name, 'members': [], 'present': 0, 'total': 0,
+                'first_at': None, 'last_at': None, 'leader_name': '', 'leader_email': '', 'leader_phone': '',
+            })
+            user = membership.user
+            team['members'].append({
+                'user_id': user.id, 'name': _full_name(user), 'email': user.email, 'phone': user.phone_number or '', 'role': membership.role,
+                'checked_in': record is not None, 'checked_in_at': record.checked_in_at if record else None,
+                'checked_in_by': (_full_name(record.checked_in_by) if record and record.checked_in_by else None),
+                'via': record.via if record else None, 'override_reason': record.override_reason if record else '',
+            })
+            team['total'] += 1
+            if membership.role == 'LEADER':
+                team['leader_name'], team['leader_email'], team['leader_phone'] = _full_name(user), user.email, user.phone_number or ''
+            if record is not None:
+                team['present'] += 1
+                when = record.checked_in_at
+                team['first_at'] = when if team['first_at'] is None else min(team['first_at'], when)
+                team['last_at'] = when if team['last_at'] is None else max(team['last_at'], when)
+        rows = list(teams.values())
+        for row in rows:
+            row['state'] = 'present' if row['present'] == row['total'] else 'absent' if row['present'] == 0 else 'partial'
+        if state in ('present', 'partial', 'absent'):
+            rows = [row for row in rows if row['state'] == state]
+        return rows
+
+    @staticmethod
+    def by_team(hackathon: Hackathon, actor, *, session=None, query='', state='') -> dict:
+        """The check-in of one session grouped by team (organizers): totals, then each team with its members."""
+        CheckInService._require_organizer(hackathon, actor)
+        session = check_in_sessions.resolve(hackathon, session)
+        everyone = CheckInService.team_attendance(hackathon, session)
+        teams = CheckInService.team_attendance(hackathon, session, query=query, state=state) if (query or state) else everyone
+        counts = Counter(team['state'] for team in everyone)
+        return {
+            'session': session_summary(session),
+            'totals': {
+                'teams': len(everyone), 'present': counts['present'], 'partial': counts['partial'], 'absent': counts['absent'],
+                'people': sum(team['total'] for team in everyone), 'people_in': sum(team['present'] for team in everyone),
+            },
+            'teams': teams,
+        }
+
+    @staticmethod
     def stats(hackathon: Hackathon, actor, session=None) -> dict:
         """Who scanned how many people, and when people arrived (gaps between the first and last arrival are zero-filled)."""
         CheckInService._require_organizer(hackathon, actor)
@@ -567,7 +627,7 @@ def session_summary(session: CheckInSession) -> dict:
     """What the screens need to name a session and know whether it can be scanned right now."""
     opens, closes = session.window()
     return {
-        'id': session.id, 'name': session.label, 'day_index': session.day_index, 'slot': CheckInSlot(session.slot).name, 'date': session.date,
+        'id': session.id, 'name': session.label, 'day_index': session.day_index, 'slot': CheckInSlot(session.slot).name if session.slot is not None else None, 'is_custom': session.is_custom, 'date': session.date,
         'is_main': session.is_main, 'needs_arrival': session.needs_arrival, 'counts_for_certificate': session.counts_for_certificate,
         'scan_mode': session.scan_mode, 'is_active': session.is_active, 'outside_schedule': session.outside_schedule,
         'opens_at': opens, 'closes_at': closes, 'window': check_in_sessions.window_state(session),
@@ -588,7 +648,7 @@ def sessions_overview(hackathon: Hackathon) -> list[dict]:
     from django.db.models import Count
 
     hackathon.main_check_in_session()
-    rows = hackathon.check_in_sessions.annotate(checked_in=Count('check_ins')).order_by('day_index', 'slot')
+    rows = check_in_sessions.ordered(hackathon.check_in_sessions.annotate(checked_in=Count('check_ins')))
     return [{**session_summary(session), 'checked_in': session.checked_in} for session in rows]
 
 
@@ -596,7 +656,7 @@ def my_sessions(hackathon: Hackathon, user) -> list[dict]:
     """The sessions as one participant sees them: scannable ones, with whether and when they were checked in."""
     mine = {c.session_id: c for c in CheckIn.objects.filter(hackathon=hackathon, user=user)}
     rows = []
-    for session in hackathon.check_in_sessions.order_by('day_index', 'slot'):
+    for session in check_in_sessions.ordered(hackathon.check_in_sessions.all()):
         record = mine.get(session.id)
         if not session.is_scannable and record is None:
             continue

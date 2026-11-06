@@ -113,7 +113,7 @@ PARTICIPANT_COLUMNS = [
 def _later_sessions(hackathon: Hackathon):
     """The sessions after arrival that are worth a column: ones that take scans, or kept because people were checked in."""
     return [
-        session for session in hackathon.check_in_sessions.annotate(taken=Count('check_ins')).order_by('day_index', 'slot')
+        session for session in check_in_sessions.ordered(hackathon.check_in_sessions.annotate(taken=Count('check_ins')))
         if not session.is_main and (session.is_scannable or session.taken)
     ]
 
@@ -240,6 +240,84 @@ def check_in_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
         }
 
 
+TEAM_STATE_LABEL = {'present': 'Everyone in', 'partial': 'Some in', 'absent': 'Nobody in'}
+
+CHECK_IN_TEAM_COLUMNS = [
+    _col('team', 'Team'), _col('state', 'Status'), _col('present', 'Checked In', 'number'), _col('total', 'Members', 'number'),
+    _col('absent', 'Not Checked In', 'number'), _col('first_at', 'First Check-in', 'datetime'), _col('last_at', 'Last Check-in', 'datetime'),
+    _col('leader', 'Leader'), _col('leader_email', 'Leader Email', 'email'), _col('leader_phone', 'Leader Phone'),
+]
+
+
+def _team_attendance(hackathon: Hackathon, params: QuerySlice) -> list[dict]:
+    from .checkin import CheckInService
+
+    return CheckInService.team_attendance(
+        hackathon, params.get('session'), query=params.get('search', ''), state=params.get('state', ''),
+    )
+
+
+def check_in_team_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
+    """One row per team for one session: how many of its people are in."""
+    for team in _team_attendance(hackathon, params):
+        yield {
+            'team': team['name'], 'state': TEAM_STATE_LABEL[team['state']], 'present': team['present'], 'total': team['total'],
+            'absent': team['total'] - team['present'], 'first_at': team['first_at'] or '', 'last_at': team['last_at'] or '',
+            'leader': team['leader_name'], 'leader_email': team['leader_email'], 'leader_phone': team['leader_phone'],
+        }
+
+
+CHECK_IN_BY_TEAM_COLUMNS = [
+    _col('team', 'Team'), _col('team_state', 'Team Status'), _col('team_present', 'Team Checked In', 'number'), _col('team_total', 'Team Size', 'number'),
+    _col('name', 'Name'), _col('email', 'Email', 'email'), _col('phone', 'Phone'), _col('role', 'Role'), _col('checked_in', 'Checked In', 'boolean'),
+    _col('checked_in_at', 'Checked In At', 'datetime'), _col('checked_in_by', 'Checked In By'), _col('via', 'How'),
+]
+
+
+def check_in_by_team_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
+    """One row per person for one session, kept together under their team."""
+    for team in _team_attendance(hackathon, params):
+        for member in team['members']:
+            yield {
+                'team': team['name'], 'team_state': TEAM_STATE_LABEL[team['state']], 'team_present': team['present'], 'team_total': team['total'],
+                'name': member['name'], 'email': member['email'], 'phone': member['phone'], 'role': member['role'],
+                'checked_in': member['checked_in'], 'checked_in_at': member['checked_in_at'] or '', 'checked_in_by': member['checked_in_by'] or '',
+                'via': member['via'] or '',
+            }
+
+
+def _scannable_sessions(hackathon: Hackathon):
+    """Every session worth a column: those that take scans, and any kept because people were checked in."""
+    return [s for s in check_in_sessions.ordered(hackathon.check_in_sessions.annotate(taken=Count('check_ins'))) if s.is_scannable or s.taken]
+
+
+def check_in_matrix_columns(hackathon: Hackathon) -> list[ColumnDefinition]:
+    return [
+        _col('team', 'Team'), _col('name', 'Name'), _col('email', 'Email', 'email'), _col('role', 'Role'),
+        *[_col(f'session_{s.id}', s.label, 'boolean') for s in _scannable_sessions(hackathon)],
+        _col('sessions_attended', 'Sessions Attended', 'number'),
+    ]
+
+
+def check_in_matrix_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
+    """Every placed person with a yes or no for each session: who came to what."""
+    sessions = _scannable_sessions(hackathon)
+    attended: dict[int, set[int]] = {s.id: set() for s in sessions}
+    for session_id, user_id in CheckIn.objects.filter(hackathon=hackathon, session_id__in=attended).values_list('session_id', 'user_id'):
+        attended[session_id].add(user_id)
+    placed = hackathon.memberships.filter(team__status=TeamStatus.REGISTERED, team__is_waitlisted=False)
+    for membership in placed.select_related('user', 'team').order_by('team__name', 'role', 'user__first_name', 'id'):
+        user = membership.user
+        row = {'team': membership.team.name, 'name': _full_name(user), 'email': user.email, 'role': membership.role}
+        came = 0
+        for session in sessions:
+            here = user.id in attended[session.id]
+            row[f'session_{session.id}'] = here
+            came += here
+        row['sessions_attended'] = came
+        yield row
+
+
 # ---------------------------------------------------------------------------
 # Registration payments: every payment ever made, including those of teams that no longer exist
 # ---------------------------------------------------------------------------
@@ -338,6 +416,9 @@ EXPORT_KINDS: dict[str, ExportKind] = {kind.key: kind for kind in (
     ExportKind('submissions', 'submissions', ('submissions',), _fixed(SUBMISSION_COLUMNS), submission_rows),
     ExportKind('rounds', 'round-results', ('rounds',), _fixed(ROUND_COLUMNS), round_rows),
     ExportKind('check-in', 'check-in', ('check_in',), _fixed(CHECK_IN_COLUMNS), check_in_rows),
+    ExportKind('check-in-teams', 'check-in-by-team-summary', ('check_in',), _fixed(CHECK_IN_TEAM_COLUMNS), check_in_team_rows),
+    ExportKind('check-in-by-team', 'check-in-by-team', ('check_in',), _fixed(CHECK_IN_BY_TEAM_COLUMNS), check_in_by_team_rows),
+    ExportKind('check-in-matrix', 'check-in-all-sessions', ('check_in',), check_in_matrix_columns, check_in_matrix_rows),
     ExportKind('payments', 'payments', ('teams',), _fixed(PAYMENT_EXPORT_COLUMNS), payment_rows),
     ExportKind('finder-seekers', 'unmatched-people', ('teams',), _fixed(UNMATCHED_COLUMNS), unmatched_rows),
     ExportKind('finder-teams', 'recruiting-teams', ('teams',), _fixed(RECRUITING_COLUMNS), recruiting_rows),
@@ -346,7 +427,7 @@ EXPORT_KINDS: dict[str, ExportKind] = {kind.key: kind for kind in (
 
 def file_part(hackathon: Hackathon, kind: ExportKind, params: QuerySlice) -> str:
     """The kind's name in the file name; a check-in list of a session other than arrival says which one."""
-    if kind.key == 'check-in':
+    if kind.key in ('check-in', 'check-in-teams', 'check-in-by-team'):
         session = check_in_sessions.resolve(hackathon, params.get('session'))
         if not session.is_main:
             return f"{kind.name}-{slugify(session.label) or 'session'}"

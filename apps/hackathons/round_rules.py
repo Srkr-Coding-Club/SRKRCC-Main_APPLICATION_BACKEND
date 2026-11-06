@@ -8,7 +8,7 @@ from collections import Counter
 
 from .errors import HackathonError
 from . import check_in_sessions
-from .models import IdeaStatus, RoundEntry, TeamMember
+from .models import EvaluationMode, EvaluationStatus, IdeaStatus, RoundEntry, TeamMember
 
 TOP, MIN, FLAG = 'top', 'min', 'flag'
 
@@ -20,6 +20,8 @@ RULES: dict[str, tuple[str, str, str]] = {
     'IDEA_SCORE_MIN': (MIN, 'Idea score at least', 'Minimum score out of 100'),
     'IDEA_APPROVED': (FLAG, 'Idea approved', ''),
     'HAS_PROJECT': (FLAG, 'Submitted a project', ''),
+    'ROUND_SCORE_TOP': (TOP, 'Best scores in this round', 'How many teams go through'),
+    'ROUND_SCORE_MIN': (MIN, 'Score in this round at least', 'Minimum score out of 100'),
     'CHECKED_IN': (FLAG, 'At least one member checked in', ''),
     'ALL_CHECKED_IN': (FLAG, 'Every member checked in', ''),
 }
@@ -33,6 +35,8 @@ def _related(team, name):
 def _metric(entry: RoundEntry, rule: str, checked_in_teams: set[int], fully_checked_in_teams: set[int] = frozenset()):
     """(passes_flag_or_None, number_or_None) for one entry under a rule."""
     team = entry.team
+    if rule.startswith('ROUND_SCORE'):
+        return None, (entry.score if entry.review_count else None)
     if rule.startswith('PROJECT_SCORE'):
         project = _related(team, 'submission')
         return None, (project.score if project and project.review_count else None)
@@ -61,6 +65,10 @@ def evaluate(round_obj, rule: str, value) -> list[dict]:
     if rule not in RULES:
         raise HackathonError(f"Unknown rule. Choose one of: {', '.join(RULES)}.", 'INVALID', field='rule')
     kind = RULES[rule][0]
+    if rule.startswith('ROUND_SCORE') and not (
+        round_obj.evaluation_mode == EvaluationMode.JUDGED and round_obj.evaluation_status == EvaluationStatus.CLOSED
+    ):
+        raise HackathonError('Close this round\'s judging first: its scores are final only then.', 'EVALUATION_NOT_CLOSED')
     number = None
     if kind in (TOP, MIN):
         try:

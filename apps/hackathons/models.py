@@ -113,7 +113,7 @@ class Hackathon(TimeStampedModel):
     # --- Event operations: every one of these is admin-controlled ---------------
     features = models.JSONField(
         default=dict, blank=True,
-        help_text='Switches for optional modules: {submissions, judging, check_in, certificates, team_finder, showcase}. Missing = off.',
+        help_text='Switches for optional modules: {submissions, judging, round_judging, check_in, certificates, team_finder, showcase}. Missing = off.',
     )
     max_teams = models.PositiveIntegerField(blank=True, null=True, help_text='Teams allowed to register. Blank = unlimited.')
     max_participants = models.PositiveIntegerField(blank=True, null=True, help_text='Total participants allowed. Blank = unlimited.')
@@ -142,6 +142,8 @@ class Hackathon(TimeStampedModel):
     idea_fee_amount = models.PositiveIntegerField(default=0, help_text='Rupees a team pays (0 = no payment), at the stage above. The payment screenshot is then required.')
     idea_payment_qr = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='QR code teams scan to pay (image uploaded by the organizers).')
     idea_payment_note = models.TextField(blank=True, help_text='How to pay (UPI id, QR instructions...), shown to teams with the idea form.')
+    idea_template = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='A file teams download and follow when writing their idea (uploaded by the organizers).')
+    idea_template_url = models.URLField(max_length=200, blank=True, default='', help_text='A Google Drive / Docs link to the idea template, shown to teams when no template file was uploaded.')
     idea_deck_required = models.BooleanField(default=False, help_text='Teams must upload a .ppt / .pptx with their idea.')
     idea_linkedin_required = models.BooleanField(default=False, help_text='Teams must share the link of their LinkedIn post about the hackathon.')
     idea_edits_enabled = models.BooleanField(default=True, help_text='Teams may edit an idea they already submitted. Off = locked after the first submission (changes the organizers ask for are still allowed).')
@@ -454,6 +456,34 @@ class RoundKind(models.TextChoices):
     FINAL = 'FINAL', 'Final'
 
 
+class EvaluationMode(models.TextChoices):
+    NONE = 'NONE', 'Shortlisting only'
+    JUDGED = 'JUDGED', 'Judged by a panel'
+
+
+class ScoringTarget(models.TextChoices):
+    IDEA = 'IDEA', 'Ideas'
+    PROJECT = 'PROJECT', 'Projects'
+    PITCH = 'PITCH', 'Live pitch or demo'
+
+
+class AssignmentMode(models.TextChoices):
+    ALL = 'ALL', 'Every judge scores every team'
+    BALANCED = 'BALANCED', 'Each team gets a few judges, shared evenly'
+    MANUAL = 'MANUAL', 'The organizer assigns judges to teams'
+
+
+class EvaluationStatus(models.TextChoices):
+    NOT_STARTED = 'NOT_STARTED', 'Not started'
+    IN_PROGRESS = 'IN_PROGRESS', 'Judges are scoring'
+    CLOSED = 'CLOSED', 'Closed'
+
+
+class TieBreak(models.TextChoices):
+    CRITERIA = 'CRITERIA', 'Higher score on the most heavily weighted criterion wins'
+    SHARED = 'SHARED', 'Equal scores share a rank'
+
+
 class Round(TimeStampedModel):
     hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='rounds')
     order = models.PositiveIntegerField()
@@ -471,6 +501,22 @@ class Round(TimeStampedModel):
         help_text="Form shortlisted teams' leaders fill in to (re-)submit details for this round.",
     )
     results_published = models.BooleanField(default=False)
+
+    # --- Judging this round (features.round_judging). evaluation_mode NONE = a plain shortlisting round. ----------------------
+    evaluation_mode = models.CharField(max_length=8, choices=EvaluationMode.choices, default=EvaluationMode.NONE)
+    scoring_target = models.CharField(max_length=8, choices=ScoringTarget.choices, default=ScoringTarget.PROJECT, help_text='What the judges look at in this round.')
+    assignment_mode = models.CharField(max_length=8, choices=AssignmentMode.choices, default=AssignmentMode.BALANCED)
+    judges_per_team = models.PositiveSmallIntegerField(default=3, help_text='Balanced mode: how many judges score each team.')
+    min_reviews_per_team = models.PositiveSmallIntegerField(default=1, help_text='A round cannot be closed while a team has fewer reviews than this.')
+    evaluation_status = models.CharField(max_length=12, choices=EvaluationStatus.choices, default=EvaluationStatus.NOT_STARTED)
+    evaluation_started_at = models.DateTimeField(blank=True, null=True)
+    evaluation_closed_at = models.DateTimeField(blank=True, null=True)
+    scoring_deadline = models.DateTimeField(blank=True, null=True, help_text='Judges cannot score after this. Blank = until the round is closed.')
+    blind = models.BooleanField(default=False, help_text='Judges see a team code instead of the team and member names.')
+    tie_break = models.CharField(max_length=8, choices=TieBreak.choices, default=TieBreak.CRITERIA)
+
+    def deadline_passed(self) -> bool:
+        return bool(self.scoring_deadline and timezone.now() > self.scoring_deadline)
 
     class Meta:
         ordering = ['order', 'id']
@@ -552,6 +598,10 @@ class RoundEntry(TimeStampedModel):
     details_response = models.ForeignKey(
         FormResponse, on_delete=models.SET_NULL, null=True, blank=True, related_name='hackathon_round_entries',
     )
+    # Filled when the round's evaluation is closed (judged rounds only).
+    score = models.FloatField(default=0.0, help_text="Average of the judges' weighted totals, out of 100.")
+    review_count = models.PositiveIntegerField(default=0)
+    final_rank = models.PositiveIntegerField(blank=True, null=True)
 
     class Meta:
         ordering = ['round__order', 'team__name']
@@ -651,6 +701,10 @@ class CriterionTarget(models.TextChoices):
 
 class JudgingCriterion(models.Model):
     hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='criteria')
+    round = models.ForeignKey(
+        Round, on_delete=models.CASCADE, null=True, blank=True, related_name='criteria',
+        help_text='Set when this criterion belongs to one round\'s own rubric. Empty = the hackathon-wide rubric.',
+    )
     target = models.CharField(max_length=8, choices=CriterionTarget.choices, default=CriterionTarget.PROJECT)
     name = models.CharField(max_length=100)
     description = models.CharField(max_length=300, blank=True)
@@ -715,7 +769,8 @@ class CheckInSession(TimeStampedModel):
     """
     hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='check_in_sessions')
     day_index = models.PositiveSmallIntegerField(help_text='0 is the first day.')
-    slot = models.PositiveSmallIntegerField(choices=CheckInSlot.choices)
+    slot = models.PositiveSmallIntegerField(choices=CheckInSlot.choices, null=True, blank=True, help_text='Empty for a session an organizer added by hand.')
+    is_custom = models.BooleanField(default=False, help_text='Added by an organizer with its own title and time; never generated or removed by the days and slots schedule.')
     date = models.DateField()
     name = models.CharField(max_length=80, blank=True, help_text='Shown to volunteers and people; empty = "Day 2 Afternoon".')
     opens_at = models.DateTimeField(blank=True, null=True)
@@ -730,7 +785,7 @@ class CheckInSession(TimeStampedModel):
     class Meta:
         ordering = ['day_index', 'slot']
         constraints = [
-            models.UniqueConstraint(fields=['hackathon', 'day_index', 'slot'], name='uniq_check_in_session_slot'),
+            models.UniqueConstraint(fields=['hackathon', 'day_index', 'slot'], condition=Q(is_custom=False), name='uniq_check_in_session_slot'),
             models.UniqueConstraint(fields=['hackathon'], condition=Q(is_main=True), name='uniq_main_check_in_session'),
         ]
 
@@ -739,7 +794,9 @@ class CheckInSession(TimeStampedModel):
 
     @property
     def label(self) -> str:
-        return self.name or f'Day {self.day_index + 1} {CheckInSlot(self.slot).label}'
+        if self.name:
+            return self.name
+        return f'Day {self.day_index + 1} {CheckInSlot(self.slot).label}' if self.slot is not None else f'Day {self.day_index + 1}'
 
     @property
     def is_scannable(self) -> bool:
@@ -812,6 +869,7 @@ class IdeaFileKind(models.TextChoices):
     DECK = 'DECK', 'Slides (.ppt / .pptx)'
     PAYMENT = 'PAYMENT', 'Payment screenshot'
     QR = 'QR', 'Payment QR code (set by the organizers)'
+    TEMPLATE = 'TEMPLATE', 'Idea template (set by the organizers)'
 
 
 class IdeaFile(TimeStampedModel):
@@ -931,3 +989,83 @@ class IdeaReview(TimeStampedModel):
         constraints = [
             models.UniqueConstraint(fields=['idea', 'judge'], name='uniq_idea_review_per_judge'),
         ]
+
+
+# --- Judging a round: the panel, who scores whom, and what they scored -------------------------------------------------
+
+class RoundJudge(TimeStampedModel):
+    """A judge on one round's panel."""
+    round = models.ForeignKey(Round, on_delete=models.CASCADE, related_name='panel')
+    judge = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='judged_rounds')
+    added_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['id']
+        constraints = [
+            models.UniqueConstraint(fields=['round', 'judge'], name='uniq_judge_per_round'),
+        ]
+
+
+class RoundAssignment(TimeStampedModel):
+    """One judge asked to score one team in one round. A judge can step aside (recuse) with a reason."""
+    round = models.ForeignKey(Round, on_delete=models.CASCADE, related_name='assignments')
+    entry = models.ForeignKey(RoundEntry, on_delete=models.CASCADE, related_name='assignments')
+    judge = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='round_assignments')
+    recused = models.BooleanField(default=False)
+    recused_reason = models.CharField(max_length=300, blank=True)
+    recused_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['entry_id', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['round', 'entry', 'judge'], name='uniq_assignment_per_judge_and_team'),
+        ]
+        indexes = [models.Index(fields=['round', 'judge'])]
+
+
+class RoundReview(TimeStampedModel):
+    """What a judge scored for one assignment: {criterion_id: score}, the weighted total out of 100 and a comment."""
+    assignment = models.OneToOneField(RoundAssignment, on_delete=models.CASCADE, related_name='review')
+    scores = models.JSONField(default=dict)
+    comment = models.TextField(blank=True)
+    total = models.FloatField(default=0.0, help_text="This judge's weighted total out of 100.")
+    submitted_at = models.DateTimeField(default=timezone.now)
+
+
+class JudgeInviteState(models.TextChoices):
+    INVITED = 'INVITED', 'Invited'
+    ACTIVE = 'ACTIVE', 'Active'
+    EXPIRED = 'EXPIRED', 'Link expired'
+    REVOKED = 'REVOKED', 'Revoked'
+
+
+class JudgeInvite(TimeStampedModel):
+    """An organizer's invitation to judge. New people get an account with no password and a one-time set-password link."""
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='judge_invites')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='judge_invites')
+    email = models.EmailField()
+    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    account_created = models.BooleanField(default=False, help_text='The invitation made this account (it had none).')
+    last_sent_at = models.DateTimeField(blank=True, null=True)
+    resend_count = models.PositiveSmallIntegerField(default=0)
+    link_expires_at = models.DateTimeField(blank=True, null=True)
+    accepted_at = models.DateTimeField(blank=True, null=True)
+    revoked_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['hackathon', 'user'], name='uniq_judge_invite_per_user'),
+        ]
+
+    @property
+    def state(self) -> str:
+        if self.revoked_at:
+            return JudgeInviteState.REVOKED
+        user = self.user
+        if self.accepted_at or (user.password_status == 'ACTIVE' and user.has_usable_password()):
+            return JudgeInviteState.ACTIVE
+        if self.link_expires_at and self.link_expires_at <= timezone.now():
+            return JudgeInviteState.EXPIRED
+        return JudgeInviteState.INVITED
+

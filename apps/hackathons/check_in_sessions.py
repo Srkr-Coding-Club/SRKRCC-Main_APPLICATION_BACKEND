@@ -1,15 +1,18 @@
 """
 Check-in sessions: the days and slots of an event people can be scanned into (Day 1 Morning, Day 2 Afternoon, ...).
 
-The hackathon's ``check_in_days`` and ``check_in_slots_per_day`` generate them. The main session is the arrival check-in
+The hackathon's ``check_in_days`` and ``check_in_slots_per_day`` generate them; organizers can also add sessions by hand
+(``is_custom``: their own title, date and time), which the schedule never touches. The main session is the arrival check-in
 and what the rest of the app means by "checked in" (certificates, round rules, no-shows, analytics). Sessions that have
 people checked in are never deleted: when the schedule shrinks they are kept as ``outside_schedule``.
 """
 from __future__ import annotations
 
+import datetime
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -21,6 +24,12 @@ from .models import CheckIn, CheckInScanMode, CheckInSession, CheckInSlot, Hacka
 MAX_DAYS = 14
 SLOT_ORDER = (CheckInSlot.MORNING, CheckInSlot.AFTERNOON, CheckInSlot.EVENING)
 DEFAULT_NAME = 'Check-in'
+MAX_CUSTOM_SESSIONS = 60
+
+
+def ordered(queryset):
+    """Sessions in the order the event happens: by day, then slot, then opening time (hand-made sessions have no slot and follow it)."""
+    return queryset.order_by(F('day_index').asc(), F('slot').asc(nulls_last=True), F('opens_at').asc(nulls_last=True), 'id')
 
 
 def clamp_schedule(days, slots) -> tuple[int, int]:
@@ -49,7 +58,7 @@ def sync(hackathon: Hackathon) -> list[CheckInSession]:
     main = hackathon.main_check_in_session()
     wanted = {(day, slot) for day in range(days) for slot in SLOT_ORDER[:slots]}
     wanted.add((main.day_index, main.slot))
-    existing = {(s.day_index, s.slot): s for s in hackathon.check_in_sessions.all()}
+    existing = {(s.day_index, s.slot): s for s in hackathon.check_in_sessions.filter(is_custom=False)}
     start = first_day(hackathon)
 
     for day, slot in sorted(wanted, key=lambda key: (key[0], SLOT_ORDER.index(key[1]))):
@@ -77,7 +86,7 @@ def sync(hackathon: Hackathon) -> list[CheckInSession]:
                 session.save(update_fields=['outside_schedule', 'updated_at'])
         else:
             session.delete()
-    return list(hackathon.check_in_sessions.all())
+    return list(ordered(hackathon.check_in_sessions.all()))
 
 
 MAX_NAME_LENGTH = 80
@@ -113,6 +122,15 @@ def update(session: CheckInSession, actor, data: dict) -> CheckInSession:
             if not isinstance(data[flag], bool):
                 raise HackathonError('This must be on or off.', 'INVALID', field=flag)
             changes[flag] = data[flag]
+    if 'outside_schedule' in data and session.is_custom:
+        if data['outside_schedule'] is not False:
+            raise HackathonError('A session can only be brought back; deleting it is what retires it.', 'INVALID', field='outside_schedule')
+        changes['outside_schedule'] = False
+    if 'date' in data and session.is_custom:
+        date = _clean_date(hackathon, data['date'])
+        changes['date'], changes['day_index'] = date, _day_index(hackathon, date)
+    if 'name' in changes and session.is_custom:
+        changes['name'] = _clean_title(hackathon, changes['name'], changes.get('date', session.date), exclude_id=session.pk)
     if 'scan_mode' in data:
         if data['scan_mode'] not in CheckInScanMode.values:
             raise HackathonError(f"Choose one of: {', '.join(CheckInScanMode.values)}.", 'INVALID', field='scan_mode')
@@ -142,6 +160,90 @@ def update(session: CheckInSession, actor, data: dict) -> CheckInSession:
         details={'session': session.label, 'changes': sorted(set(changes) | ({'opens_at', 'closes_at'} & set(data)))},
     )
     return session
+
+
+def _day_index(hackathon: Hackathon, date) -> int:
+    return (date - first_day(hackathon)).days
+
+
+def _clean_date(hackathon: Hackathon, value):
+    """A session's date: a real date on a day of the event."""
+    if isinstance(value, str):
+        try:
+            date = datetime.date.fromisoformat(value.strip())
+        except ValueError:
+            raise HackathonError('Give the date as YYYY-MM-DD.', 'INVALID', field='date')
+    elif isinstance(value, datetime.date):
+        date = value
+    else:
+        raise HackathonError('Choose the day this session happens.', 'INVALID', field='date')
+    last = timezone.localtime(hackathon.end_date).date() if hackathon.end_date else first_day(hackathon)
+    if date < first_day(hackathon) or date > last:
+        raise HackathonError('Choose a day the event runs.', 'INVALID', field='date')
+    return date
+
+
+def _clean_title(hackathon: Hackathon, value, date, *, exclude_id=None) -> str:
+    title = ' '.join(str(value or '').split())
+    if not title:
+        raise HackathonError('Give the session a title.', 'INVALID', field='name')
+    if len(title) > MAX_NAME_LENGTH:
+        raise HackathonError(f'Keep the name under {MAX_NAME_LENGTH} characters.', 'INVALID', field='name')
+    same_day = hackathon.check_in_sessions.filter(date=date).exclude(pk=exclude_id)
+    if any(item.label.lower() == title.lower() for item in same_day):
+        raise HackathonError('A session with that title already exists on that day.', 'DUPLICATE', field='name')
+    return title
+
+
+@transaction.atomic
+def create(hackathon: Hackathon, actor, data: dict) -> CheckInSession:
+    """An organizer's own session (Lunch, Prize ceremony, ...): title and day required, window and rules optional."""
+    hackathon.main_check_in_session()
+    if hackathon.check_in_sessions.filter(is_custom=True).count() >= MAX_CUSTOM_SESSIONS:
+        raise HackathonError(f'A hackathon can have at most {MAX_CUSTOM_SESSIONS} sessions of your own.', 'TOO_MANY')
+    date = _clean_date(hackathon, data.get('date'))
+    title = _clean_title(hackathon, data.get('name'), date)
+    opens, closes = _moment(data.get('opens_at'), 'opens_at'), _moment(data.get('closes_at'), 'closes_at')
+    if opens and closes and closes <= opens:
+        raise HackathonError('It must close after it opens.', 'INVALID', field='closes_at')
+    scan_mode = data.get('scan_mode', CheckInScanMode.BOTH)
+    if scan_mode not in CheckInScanMode.values:
+        raise HackathonError(f"Choose one of: {', '.join(CheckInScanMode.values)}.", 'INVALID', field='scan_mode')
+    flags = {}
+    for flag, default in (('needs_arrival', True), ('counts_for_certificate', False)):
+        value = data.get(flag, default)
+        if not isinstance(value, bool):
+            raise HackathonError('This must be on or off.', 'INVALID', field=flag)
+        flags[flag] = value
+    session = hackathon.check_in_sessions.create(
+        is_custom=True, slot=None, day_index=_day_index(hackathon, date), date=date, name=title,
+        opens_at=opens, closes_at=closes, scan_mode=scan_mode, **flags,
+    )
+    log_audit_event(
+        actor=actor, action='Added Check-in Session', target_model='Hackathon', target_id=hackathon.slug,
+        details={'session': session.label, 'date': str(date), 'scan_mode': scan_mode},
+    )
+    return session
+
+
+@transaction.atomic
+def delete(session: CheckInSession, actor) -> str:
+    """Remove a session an organizer added. One that already has people checked in is retired instead; returns which."""
+    if not session.is_custom:
+        raise HackathonError('Only sessions you added yourself can be deleted. Change the days and slots to remove the others.', 'NOT_CUSTOM')
+    label, hackathon = session.label, session.hackathon
+    if session.check_ins.exists():
+        session.outside_schedule = True
+        session.save(update_fields=['outside_schedule', 'updated_at'])
+        outcome = 'retired'
+    else:
+        session.delete()
+        outcome = 'deleted'
+    log_audit_event(
+        actor=actor, action='Removed Check-in Session', target_model='Hackathon', target_id=hackathon.slug,
+        details={'session': label, 'outcome': outcome},
+    )
+    return outcome
 
 
 def main_check_ins(hackathon: Hackathon):

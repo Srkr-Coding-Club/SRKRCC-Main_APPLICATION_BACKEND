@@ -9,7 +9,7 @@ from django.core.validators import URLValidator
 from django.utils.text import slugify
 from rest_framework import serializers
 
-FEATURE_KEYS = ('ideas', 'submissions', 'judging', 'check_in', 'certificates', 'team_finder', 'showcase')
+FEATURE_KEYS = ('ideas', 'submissions', 'judging', 'check_in', 'certificates', 'team_finder', 'showcase', 'round_judging')
 QUESTION_TYPES = ('text', 'textarea', 'select', 'checkbox', 'url', 'number')
 CERTIFICATE_ELIGIBILITY = ('REGISTERED', 'SUBMITTED', 'CHECKED_IN')
 DEFAULT_CERTIFICATE_CONFIG = {
