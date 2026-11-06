@@ -1471,6 +1471,29 @@ class ResponseViewSet(viewsets.ModelViewSet):
         except PermissionDenied as ex:
             return DRFResponse({"error": str(ex.detail), "code": "ROUND_FORM_RESTRICTED"}, status=status.HTTP_403_FORBIDDEN)
 
+        # Enforce audience and access restrictions (year, branch, college, club member, whitelist)
+        if form_obj.restrictions_enabled and form_obj.restrictions:
+            if not user_to_assign:
+                return DRFResponse(
+                    {
+                        "error": "Please sign in to verify your eligibility for this form.",
+                        "code": "AUTH_REQUIRED",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            from .services import evaluate_form_restrictions
+            reasons = evaluate_form_restrictions(user_to_assign, form_obj.restrictions)
+            if reasons:
+                custom_msg = (form_obj.restrictions or {}).get("custom_restriction_message")
+                return DRFResponse(
+                    {
+                        "error": custom_msg or "You do not meet the eligibility criteria to register for this form.",
+                        "reasons": reasons,
+                        "code": "ACCESS_RESTRICTED",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         resp_status = status.HTTP_201_CREATED
         resolved_user = None
         response_obj = None

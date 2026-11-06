@@ -179,6 +179,57 @@ class Form(TimeStampedModel):
         help_text="Ask the respondent to pass a Cloudflare Turnstile check before submitting (needs TURNSTILE_SECRET_KEY).",
     )
 
+    # --- Audience & Access Restrictions --------------------------------------
+    restrictions_enabled = models.BooleanField(
+        default=False,
+        help_text="When True, enforce eligibility criteria (year, club member, branch, college, role, whitelist).",
+    )
+    restrictions = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Eligibility criteria: {"
+            "'club_members_only': bool, "
+            "'allowed_roles': list, "
+            "'allowed_years': list[int], "
+            "'allowed_branches': list[str], "
+            "'allowed_colleges': list[str], "
+            "'home_college_only': bool, "
+            "'allowed_members': list[str], "
+            "'custom_restriction_message': str"
+            "}"
+        ),
+    )
+
+    # --- Pre-Submission Rule / Note Acceptance Modal --------------------------
+    submission_note_enabled = models.BooleanField(
+        default=False,
+        help_text="Prompt respondents with an agreement modal displaying rules before final submit.",
+    )
+    submission_note_title = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text="Modal title, e.g. 'Review & Confirm Submission'.",
+    )
+    submission_note_content = models.TextField(
+        blank=True,
+        default="",
+        help_text="Markdown guidelines or declaration that the respondent must accept.",
+    )
+    submission_note_confirm_label = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Button text to confirm submission, e.g. 'Yes, I Agree & Submit'.",
+    )
+    submission_note_cancel_label = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+        help_text="Button text to go back, e.g. 'No, Go Back'.",
+    )
+
     # --- QR-code attendance automation ---------------------------------------
     attendance_enabled = models.BooleanField(
         default=False,
