@@ -48,7 +48,7 @@ class CloneService:
             values[name] = original + delta if original else None
         clone = Hackathon.objects.create(title=title, slug=slug, status=HackathonStatus.DRAFT, cloned_from=source, **values)
 
-        for criterion in source.criteria.all():
+        for criterion in source.criteria.filter(round__isnull=True):
             JudgingCriterion.objects.create(
                 hackathon=clone, target=criterion.target, name=criterion.name, description=criterion.description,
                 max_score=criterion.max_score, weight=criterion.weight, order=criterion.order,

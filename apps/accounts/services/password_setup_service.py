@@ -73,6 +73,25 @@ class PasswordSetupService:
             cache.set(ip_key, cache.get(ip_key, 0) + 1, timeout=3600)
 
     @classmethod
+    def issue_token(cls, user, *, request_ip: str | None = None, expiry_hours: int = TOKEN_EXPIRY_HOURS) -> tuple[PasswordSetupToken, str]:
+        """
+        A fresh single-use setup token for ``user``; every earlier unused one stops working. Only the SHA-256 hash is stored,
+        so the raw value exists in the returned tuple and nowhere else: the caller puts it in the email and forgets it.
+        """
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        expires_at = timezone.now() + timedelta(hours=expiry_hours)
+        with transaction.atomic():
+            PasswordSetupToken.objects.filter(user=user, is_used=False).update(is_used=True, used_at=timezone.now())
+            token_obj = PasswordSetupToken.objects.create(user=user, token_hash=token_hash, expires_at=expires_at, created_ip=request_ip)
+        return token_obj, raw_token
+
+    @classmethod
+    def revoke_tokens(cls, user) -> int:
+        """Make every unused setup link of this user stop working."""
+        return PasswordSetupToken.objects.filter(user=user, is_used=False).update(is_used=True, used_at=timezone.now())
+
+    @classmethod
     def request_setup_link(cls, email: str, request_ip: str | None = None) -> tuple[bool, str]:
         """
         Requests a one-time password setup link for an imported or eligible member.
@@ -95,25 +114,8 @@ class PasswordSetupService:
         # else is a first-time setup. Both use the same single-use token and endpoints.
         is_reset = user.password_status == PasswordStatus.ACTIVE and user.has_usable_password()
 
-        # Generate cryptographic single-use token
-        raw_token = secrets.token_urlsafe(32)
-        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-        expires_at = timezone.now() + timedelta(hours=TOKEN_EXPIRY_HOURS)
-
         # Commit DB token creation FIRST to ensure resilient transactional state
-        with transaction.atomic():
-            # Invalidate any prior unused setup tokens for this user
-            PasswordSetupToken.objects.filter(user=user, is_used=False).update(
-                is_used=True,
-                used_at=timezone.now()
-            )
-
-            token_obj = PasswordSetupToken.objects.create(
-                user=user,
-                token_hash=token_hash,
-                expires_at=expires_at,
-                created_ip=request_ip,
-            )
+        token_obj, raw_token = cls.issue_token(user, request_ip=request_ip)
 
         # Audit log (ZERO raw token / credential logging invariant)
         logger.info(

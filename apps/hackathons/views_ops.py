@@ -54,7 +54,7 @@ def _submission_payload(submission: Submission) -> dict:
 def _criteria_payload(hackathon, target: str = 'PROJECT') -> list[dict]:
     return [
         {'id': c.id, 'name': c.name, 'description': c.description, 'max_score': c.max_score, 'weight': c.weight, 'order': c.order}
-        for c in hackathon.criteria.filter(target=target)
+        for c in hackathon.criteria.filter(target=target, round__isnull=True)
     ]
 
 
@@ -377,7 +377,7 @@ class JudgingListView(APIView):
         return DRFResponse({
             'enabled': hackathon.feature('judging'), 'criteria': _criteria_payload(hackathon), 'submissions': rows,
             'reviewed': len(mine), 'total': len(rows),
-            'ideas_scoring': hackathon.feature('ideas') and hackathon.criteria.filter(target='IDEA').exists(),
+            'ideas_scoring': hackathon.feature('ideas') and hackathon.criteria.filter(target='IDEA', round__isnull=True).exists(),
         })
 
 

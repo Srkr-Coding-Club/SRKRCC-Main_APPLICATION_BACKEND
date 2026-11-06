@@ -631,9 +631,9 @@ class RoundSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'order', 'name', 'kind', 'shortlist_limit', 'description', 'starts_at', 'ends_at', 'status', 'effective_status',
             'details_form', 'details_form_slug', 'details_form_title',
-            'results_published', 'entry_counts', 'created_at', 'updated_at',
+            'results_published', 'evaluation_mode', 'evaluation_status', 'entry_counts', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['results_published']
+        read_only_fields = ['results_published', 'evaluation_mode', 'evaluation_status']
         extra_kwargs = {'order': {'required': False}}
 
     def get_entry_counts(self, obj):

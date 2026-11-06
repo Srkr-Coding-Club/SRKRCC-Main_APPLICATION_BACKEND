@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from . import views, views_ops
+from . import views, views_ops, views_round_judging
 
 router = DefaultRouter()
 router.register(r'submissions', views.SubmissionViewSet, basename='hackathon-submission')
@@ -113,6 +113,20 @@ urlpatterns = [
     path('<slug:slug>/rounds/', views.RoundListView.as_view(), name='hackathon-round-list'),
     path('<slug:slug>/rounds/reorder/', views.RoundReorderView.as_view(), name='hackathon-round-reorder'),
     path('<slug:slug>/rounds/<int:pk>/', views.RoundDetailView.as_view(), name='hackathon-round-detail'),
+    path('<slug:slug>/rounds/<int:pk>/evaluation/', views_round_judging.RoundEvaluationView.as_view(), name='hackathon-round-evaluation'),
+    path('<slug:slug>/rounds/<int:pk>/evaluation/criteria/', views_round_judging.RoundEvaluationCriteriaView.as_view(), name='hackathon-round-evaluation-criteria'),
+    path('<slug:slug>/rounds/<int:pk>/evaluation/panel/', views_round_judging.RoundEvaluationPanelView.as_view(), name='hackathon-round-evaluation-panel'),
+    path('<slug:slug>/rounds/<int:pk>/evaluation/assign/', views_round_judging.RoundEvaluationAssignView.as_view(), name='hackathon-round-evaluation-assign'),
+    path('<slug:slug>/rounds/<int:pk>/evaluation/progress/', views_round_judging.RoundEvaluationProgressView.as_view(), name='hackathon-round-evaluation-progress'),
+    path('<slug:slug>/rounds/<int:pk>/evaluation/results/', views_round_judging.RoundEvaluationResultsView.as_view(), name='hackathon-round-evaluation-results'),
+    path('<slug:slug>/rounds/<int:pk>/evaluation/<str:action>/', views_round_judging.RoundEvaluationActionView.as_view(), name='hackathon-round-evaluation-action'),
+    path('<slug:slug>/my-judging/', views_round_judging.MyJudgingView.as_view(), name='hackathon-my-judging'),
+    path('<slug:slug>/my-judging/<int:pk>/', views_round_judging.MyJudgingRoundView.as_view(), name='hackathon-my-judging-round'),
+    path('<slug:slug>/my-judging/<int:pk>/teams/<int:entry_id>/', views_round_judging.MyJudgingTeamView.as_view(), name='hackathon-my-judging-team'),
+    path('<slug:slug>/my-judging/<int:pk>/teams/<int:entry_id>/recuse/', views_round_judging.MyJudgingRecuseView.as_view(), name='hackathon-my-judging-recuse'),
+    path('<slug:slug>/judge-invites/', views_round_judging.JudgeInvitesView.as_view(), name='hackathon-judge-invites'),
+    path('<slug:slug>/judge-invites/<int:pk>/', views_round_judging.JudgeInviteDetailView.as_view(), name='hackathon-judge-invite-detail'),
+    path('<slug:slug>/judge-invites/<int:pk>/resend/', views_round_judging.JudgeInviteResendView.as_view(), name='hackathon-judge-invite-resend'),
     path('<slug:slug>/rounds/<int:pk>/entries/', views.RoundEntriesView.as_view(), name='hackathon-round-entries'),
     path('<slug:slug>/rounds/<int:pk>/<str:round_action>/', views.RoundActionView.as_view(), name='hackathon-round-action'),
 
