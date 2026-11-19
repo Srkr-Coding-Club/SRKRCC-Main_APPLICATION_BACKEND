@@ -170,6 +170,16 @@ class Summary(DirectoryCase):
         data = self.numbers(scope='members')
         self.assertEqual((data['total'], data['verified'], data['unverified']), (2, 1, 1))
 
+    def test_groups_sign_ups_by_month_and_people_by_branch(self):
+        User.objects.update(branch='CSE')
+        User.objects.filter(pk=self.meena.pk).update(branch='')
+        User.objects.filter(pk=self.ravi.pk).update(date_joined=timezone.now() - timedelta(days=400))
+        data = self.numbers()
+        this_month = timezone.localtime(timezone.now()).strftime('%Y-%m')
+        self.assertEqual(data['by_branch'], {'CSE': 5, '': 1})
+        self.assertEqual(sum(data['joined_by_month'].values()), 5)
+        self.assertEqual(data['joined_by_month'][this_month], 5)
+
     def test_club_leads_may_see_it_and_others_may_not(self):
         self.assertEqual(api(self.lead).get(BASE + 'summary/').status_code, 200)
         self.assertEqual(api(self.sita).get(BASE + 'summary/').status_code, 403)
