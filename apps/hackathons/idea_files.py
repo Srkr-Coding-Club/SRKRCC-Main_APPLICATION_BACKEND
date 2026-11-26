@@ -7,7 +7,6 @@ The payment screenshot and the transaction id are for organizers only: judges ne
 from __future__ import annotations
 
 import logging
-import re
 from datetime import timedelta
 
 from django.conf import settings
@@ -37,12 +36,20 @@ RULES = {
     IdeaFileKind.PAYMENT: (('.png', '.jpg', '.jpeg', '.webp'), ('image/png', 'image/jpeg', 'image/webp'), 5),
     IdeaFileKind.QR: (('.png', '.jpg', '.jpeg', '.webp'), ('image/png', 'image/jpeg', 'image/webp'), 5),
     IdeaFileKind.TEMPLATE: (('.ppt', '.pptx', '.pdf', '.doc', '.docx'), None, 25),
+    IdeaFileKind.STEP_PAYMENT: (('.png', '.jpg', '.jpeg', '.webp'), ('image/png', 'image/jpeg', 'image/webp'), 5),
+    IdeaFileKind.STEP_QR: (('.png', '.jpg', '.jpeg', '.webp'), ('image/png', 'image/jpeg', 'image/webp'), 5),
 }
-LABEL = {IdeaFileKind.DECK: 'slides', IdeaFileKind.PAYMENT: 'payment screenshot', IdeaFileKind.QR: 'QR code', IdeaFileKind.TEMPLATE: 'template'}
+LABEL = {
+    IdeaFileKind.DECK: 'slides', IdeaFileKind.PAYMENT: 'payment screenshot', IdeaFileKind.QR: 'QR code', IdeaFileKind.TEMPLATE: 'template',
+    IdeaFileKind.STEP_PAYMENT: 'payment screenshot', IdeaFileKind.STEP_QR: 'QR code',
+}
 #: Kinds that belong to the hackathon (set by organizers), never to a team's idea.
-HACKATHON_FILE_KINDS = (IdeaFileKind.QR, IdeaFileKind.TEMPLATE)
+HACKATHON_FILE_KINDS = (IdeaFileKind.QR, IdeaFileKind.TEMPLATE, IdeaFileKind.STEP_QR)
 #: The request field each kind is sent in, so errors point at the right input.
-FIELD = {IdeaFileKind.DECK: 'deck_file_id', IdeaFileKind.PAYMENT: 'payment_file_id', IdeaFileKind.QR: 'file', IdeaFileKind.TEMPLATE: 'file'}
+FIELD = {
+    IdeaFileKind.DECK: 'deck_file_id', IdeaFileKind.PAYMENT: 'payment_file_id', IdeaFileKind.QR: 'file', IdeaFileKind.TEMPLATE: 'file',
+    IdeaFileKind.STEP_PAYMENT: 'payment_file_id', IdeaFileKind.STEP_QR: 'file',
+}
 _CONTENT_TYPE_FOR = {
     '.ppt': 'application/vnd.ms-powerpoint',
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -98,7 +105,7 @@ def request_upload(team: Team, user, kind: str, name, size, content_type) -> dic
     """A team's slides or payment screenshot: check the file against the rules for its kind and return a signed form to post to."""
     from . import ideas
     ideas.ensure_can_edit(team, user)
-    if kind in HACKATHON_FILE_KINDS:
+    if kind not in (IdeaFileKind.DECK, IdeaFileKind.PAYMENT):
         raise HackathonError('Unknown file kind.', 'INVALID', field='kind')
     return _issue(team.hackathon, team, user, kind, name, size)
 
@@ -128,7 +135,9 @@ def _issue(hackathon: Hackathon, team: Team | None, user, kind: str, name, size)
 
     with transaction.atomic():
         earlier_files = IdeaFile.objects.select_for_update().filter(hackathon=hackathon, team=team, kind=kind, state__in=_ACTIVE)
-        if team is None and kind == IdeaFileKind.PAYMENT:
+        if kind == IdeaFileKind.STEP_PAYMENT:
+            earlier_files = earlier_files.none()  # unused ones expire with the maintenance sweep
+        elif team is None and kind == IdeaFileKind.PAYMENT:
             earlier_files = earlier_files.filter(uploader=user)  # a leader paying before their team exists must not discard someone else's screenshot
         for earlier in earlier_files:
             _discard(earlier)  # a new pick replaces the one not yet saved with the idea
@@ -262,7 +271,7 @@ def link(hackathon: Hackathon, user, idea: IdeaSubmission, kind: str, *, inline:
     file = idea.deck_file if kind == IdeaFileKind.DECK else idea.payment_proof
     if kind not in IdeaFileKind.values or file is None or file.state != UploadState.ATTACHED or not can_see(hackathon, user, idea, kind):
         raise HackathonError('That file was not found.', 'NOT_FOUND', status=404)
-    result = _signed_link(file, inline=inline)
+    result = _signed_link(file, inline=inline, filename=None if _sees_team(hackathon, user, idea) else _neutral_name(file))
     if kind == IdeaFileKind.PAYMENT:
         log_audit_event(actor=user, action='Viewed Idea Payment Proof', target_model='IdeaSubmission', target_id=idea.pk, details={'hackathon': hackathon.slug, 'team': idea.team.name})
     return result
@@ -282,8 +291,8 @@ def office_view_token(hackathon: Hackathon, user, idea: IdeaSubmission) -> tuple
         raise HackathonError('Only PowerPoint slides open in the Office viewer.', 'NOT_OFFICE_FILE', status=400)
     _ensure_scanned(file)
     token = signing.dumps(str(file.pk), salt=_OFFICE_VIEW_SALT)
-    stem = re.sub(r'[^A-Za-z0-9_-]+', '-', file.original_name[: -len(ext)]).strip('-')[:60] or 'slides'
-    return token, f'{stem}{ext}'
+    # Always a neutral name: the URL reaches judges and Microsoft's viewer shows it, and the original can name the team.
+    return token, _neutral_name(file)
 
 
 def office_view_redirect(token: str) -> str:
@@ -297,7 +306,7 @@ def office_view_redirect(token: str) -> str:
         raise HackathonError('That file was not found.', 'NOT_FOUND', status=404)
     _ensure_scanned(file)
     return upload_storage.get_upload_storage().presign_get(
-        key=file.key, filename=file.original_name, content_type=file.content_type, inline=False, expires=OFFICE_VIEW_SECONDS,
+        key=file.key, filename=_neutral_name(file), content_type=file.content_type, inline=False, expires=OFFICE_VIEW_SECONDS,
     )
 
 
@@ -307,13 +316,24 @@ def _ensure_scanned(file: IdeaFile) -> None:
         raise HackathonError('This file is still being checked for viruses. Try again in a minute.', 'SCAN_PENDING', status=423)
 
 
-def _signed_link(file: IdeaFile, *, inline: bool) -> dict:
+def _neutral_name(file: IdeaFile) -> str:
+    """'slides.pptx': the file's type without its name."""
+    return f'slides{extension(file.original_name)}'
+
+
+def _sees_team(hackathon: Hackathon, user, idea: IdeaSubmission) -> bool:
+    """Organizers and the team's own members may see the original file name; judges get a neutral one."""
+    from .models import TeamMember
+    return access.has_permission(hackathon, user, 'ideas') or TeamMember.objects.filter(team_id=idea.team_id, user=user).exists()
+
+
+def _signed_link(file: IdeaFile, *, inline: bool, filename: str | None = None) -> dict:
     """A 60-second link to one stored file; held back while a virus scan is still pending."""
     _ensure_scanned(file)
     from apps.forms.upload_admin import INLINE_TYPES
     show_here = inline and file.content_type in INLINE_TYPES
     url = upload_storage.get_upload_storage().presign_get(
-        key=file.key, filename=file.original_name, content_type=file.content_type, inline=show_here, expires=60,
+        key=file.key, filename=filename or file.original_name, content_type=file.content_type, inline=show_here, expires=60,
     )
     return {'url': url, 'expires_in': 60, 'inline': show_here}
 

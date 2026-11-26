@@ -46,12 +46,13 @@ class HackathonSerializer(serializers.ModelSerializer):
             'require_rules_acceptance', 'registration_questions', 'problem_statements_reveal_at',
             'submission_opens_at', 'submission_deadline', 'idea_opens_at', 'idea_deadline', 'check_in_opens_at', 'check_in_closes_at', 'check_in_days', 'check_in_slots_per_day', 'idea_review_required',
             'payment_stage', 'payment_qr_id', 'idea_fee_amount', 'idea_payment_note', 'idea_template_url', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
-            'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
+            'idea_round', 'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
             'certificate_config', 'mentors', 'judges', 'sponsors', 'contacts', 'community_links', 'venue_map_url',
             'waitlisted_team_count', 'is_full', 'submissions_open', 'results_published', 'problems_revealed',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['status', 'results_published_at']
+        # idea_round is set through POST /{slug}/ideas/link-round/, which also copies the decisions already made.
+        read_only_fields = ['status', 'results_published_at', 'idea_round']
         extra_kwargs = {
             'check_in_days': {'min_value': 1, 'max_value': check_in_sessions.MAX_DAYS},
             'check_in_slots_per_day': {'min_value': 1, 'max_value': len(check_in_sessions.SLOT_ORDER)},
@@ -625,16 +626,21 @@ class RoundSerializer(serializers.ModelSerializer):
     details_form_title = serializers.CharField(source='details_form.title', read_only=True)
     entry_counts = serializers.SerializerMethodField()
     effective_status = serializers.SerializerMethodField()
+    linked_to_ideas = serializers.SerializerMethodField()
 
     class Meta:
         model = Round
         fields = [
             'id', 'order', 'name', 'kind', 'shortlist_limit', 'description', 'starts_at', 'ends_at', 'status', 'effective_status',
             'details_form', 'details_form_slug', 'details_form_title',
-            'results_published', 'evaluation_mode', 'evaluation_status', 'entry_counts', 'created_at', 'updated_at',
+            'results_published', 'evaluation_mode', 'evaluation_status', 'entry_counts', 'linked_to_ideas', 'created_at', 'updated_at',
         ]
         read_only_fields = ['results_published', 'evaluation_mode', 'evaluation_status']
         extra_kwargs = {'order': {'required': False}}
+
+    def get_linked_to_ideas(self, obj) -> bool:
+        """Idea reviews set this round's results (``Hackathon.idea_round``)."""
+        return obj.hackathon.idea_round_id == obj.pk
 
     def get_entry_counts(self, obj):
         counts = {status_value: 0 for status_value in EntryStatus.values}

@@ -395,7 +395,7 @@ class OfficeViewer(IdeaCase):
             self.assertEqual(reply.status_code, 200, user.username)
             self.assertEqual(reply.data["expires_in"], 600)
             self.assertTrue(reply.data["url"].startswith("http://testserver/api/hackathons/office-view/"))
-            self.assertTrue(reply.data["url"].endswith("/Our-Deck-final.pptx"))
+            self.assertTrue(reply.data["url"].endswith("/slides.pptx"))  # never the original name: it can name the team
 
     def test_other_people_get_no_link(self):
         for user in (make_user(), self.staff("VOLUNTEER")):
@@ -409,7 +409,7 @@ class OfficeViewer(IdeaCase):
         self.assertEqual(reply.status_code, 302)
         self.assertEqual(reply["Location"], f"https://bucket.example/{self.idea.deck_file.key}?signed=1")
         self.assertEqual({k: self.storage.links[-1][k] for k in ("filename", "inline", "expires")},
-                         {"filename": "Our Deck (final).pptx", "inline": False, "expires": 600})
+                         {"filename": "slides.pptx", "inline": False, "expires": 600})
 
     def test_a_forged_expired_or_removed_link_is_not_found(self):
         url = self.office_link(self.leader).data["url"].replace("http://testserver", "")
@@ -429,6 +429,14 @@ class OfficeViewer(IdeaCase):
     def test_slides_still_being_scanned_are_held_back(self):
         reply = self.office_link(self.admin)
         self.assertEqual((reply.status_code, reply.data["code"]), (423, "SCAN_PENDING"))
+
+    def test_judges_never_get_the_original_file_name(self):
+        judge = self.staff('JUDGE')
+        self.assertTrue(self.office_link(judge).data['url'].endswith('/slides.pptx'))
+        api(judge).get(f'/api/hackathons/{self.hack.slug}/ideas/{self.idea.pk}/files/deck/link/')
+        self.assertEqual(self.storage.links[-1]['filename'], 'slides.pptx')
+        api(self.leader).get(f'/api/hackathons/{self.hack.slug}/ideas/{self.idea.pk}/files/deck/link/')
+        self.assertEqual(self.storage.links[-1]['filename'], 'Our Deck (final).pptx')
 
 
 class EditingControl(IdeaCase):
@@ -791,4 +799,3 @@ class IdeaTemplate(IdeaCase):
     def test_only_organizers_with_the_settings_permission_may_set_the_link(self):
         reply = api(self.leader).patch(f"/api/hackathons/{self.hack.slug}/", {"idea_template_url": "https://drive.google.com/file/d/abc"}, format="json")
         self.assertIn(reply.status_code, (403, 404))
-

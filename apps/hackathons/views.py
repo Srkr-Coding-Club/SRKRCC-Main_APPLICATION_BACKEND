@@ -1045,6 +1045,8 @@ class RoundActionView(APIView):
             RoundService.publish_results(
                 round_obj, request.user, announce=bool(data.get('announce')), message=data.get('message', ''),
                 email=bool(data.get('email')),
+                email_shortlisted=bool(data['email_shortlisted']) if 'email_shortlisted' in data else None,
+                email_rejected=bool(data['email_rejected']) if 'email_rejected' in data else None,
                 announce_rejected=bool(data.get('announce_rejected')),
                 rejected_message=data.get('rejected_message', ''),
             )

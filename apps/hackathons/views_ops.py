@@ -17,7 +17,7 @@ from apps.core.dmc.export_service import export_filename
 from apps.core.permissions import IsAdminOrClubLead
 from apps.core.throttling import ScopedRateThrottle
 
-from . import access, analytics, certificates, cohorts, overview as overview_parts, idea_files, payments, registration
+from . import access, analytics, certificates, cohorts, idea_round, overview as overview_parts, idea_files, payments, registration
 from .access import can_check_in, can_judge, scoped
 from . import check_in_sessions
 from .checkin import (
@@ -925,7 +925,7 @@ class MyIdeaView(APIView):
         return {
             'state': state, 'opens_at': hackathon.idea_opens_at, 'deadline': hackathon.idea_deadline,
             'review_required': hackathon.idea_review_required, 'project_requires_idea': hackathon.project_requires_approved_idea,
-            'idea': _idea_payload(idea, payment=True) if idea else None, 'config': _idea_config(hackathon),
+            'idea': {**_idea_payload(idea, payment=True), **idea_round.team_view(idea)} if idea else None, 'config': _idea_config(hackathon),
             'can_edit': bool(team and team.leader_id == self.request.user.id and editable
                              and team.status == TeamStatus.REGISTERED and not team.is_waitlisted),
             'edit_blocked_reason': why_not if (team and team.leader_id == self.request.user.id and idea) else '',
@@ -1222,8 +1222,27 @@ class IdeaReviewView(APIView):
         idea = _idea_related(IdeaSubmission.objects).filter(pk=pk, team__hackathon=hackathon).first()
         if idea is None:
             raise Http404
-        IdeaService.review(idea, request.user, request.data.get('status', ''), request.data.get('feedback', ''))
-        return DRFResponse(_idea_payload(idea, payment=True))
+        IdeaService.review(
+            idea, request.user, request.data.get('status', ''), request.data.get('feedback', ''),
+            confirm_published=bool(request.data.get('confirm_published')), confirm_over_limit=bool(request.data.get('confirm_over_limit')),
+        )
+        return DRFResponse({**_idea_payload(idea, payment=True), 'result_held': idea_round.is_held(idea)})
+
+
+class IdeaRoundLinkView(APIView):
+    """POST /api/hackathons/{slug}/ideas/link-round/ {round: id|null, preview?, confirm_published?, confirm_over_limit?}
+    - link the round that idea reviews decide (copying the ideas already reviewed into it), or unlink it."""
+    permission_classes = [scoped('rounds')]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        if not access.has_permission(hackathon, request.user, 'ideas'):
+            raise PermissionDenied('Linking idea review to a round needs the ideas permission too.')
+        data = request.data
+        return DRFResponse(idea_round.link(
+            hackathon, data.get('round'), request.user, preview=bool(data.get('preview')),
+            confirm_published=bool(data.get('confirm_published')), confirm_over_limit=bool(data.get('confirm_over_limit')),
+        ))
 
 
 class IdeaRemindView(APIView):
