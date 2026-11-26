@@ -37,7 +37,7 @@ TIMELINE_FINE_SPAN_HOURS = 48
 UNKNOWN_VOLUNTEER = 'Removed account'
 NO_SHOW_WITHDRAW_REASON = 'No-show at check-in.'
 # A walk-in override may bring in a team that is still forming or waitlisted, never one that was removed.
-REMOVED_TEAM_STATUSES = (TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN)
+from .cohorts import REMOVED_STATUSES as REMOVED_TEAM_STATUSES  # noqa: E402
 
 
 def window_state(hackathon: Hackathon, at=None, session: CheckInSession | None = None) -> str:

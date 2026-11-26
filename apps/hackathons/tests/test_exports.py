@@ -10,6 +10,7 @@ from rest_framework.test import APIClient, APITestCase
 from apps.audit.models import AuditLog
 from apps.hackathons.exports import EXPORT_KINDS
 from apps.hackathons.models import (
+    PaymentStep,
     CheckIn, HackathonStaff, IdeaSubmission, Round, RoundEntry, Submission, Team, TeamMember, TeamPayment, TeamSeeker,
 )
 from .helpers import make_hackathon, make_ps, make_team, make_user
@@ -55,9 +56,15 @@ class ExportBase(APITestCase):
         TeamPayment.objects.create(team=self.team, hackathon=self.hack, amount=200, transaction_id='UPI-1', team_name=self.team.name, leader_name='Asha Rao')
         Team.objects.filter(pk=self.team.pk).update(looking_for_members=True, looking_for='A designer')
         TeamSeeker.objects.create(hackathon=self.hack, user=make_user(), skills='Figma')
+        # A payment step owed by the team: its own published round, so the other exports' round stays as it is.
+        paid_round = Round.objects.create(hackathon=self.hack, name='Idea round', order=2, results_published=True)
+        RoundEntry.objects.create(round=paid_round, team=self.team, status='SHORTLISTED')
+        self.step = PaymentStep.objects.create(hackathon=self.hack, round=paid_round, name='Phase 2 fee', fee_per_person=200, affiliate_fee_per_person=100)
         return round_obj
 
     def params_for(self, kind, round_obj):
+        if kind == 'step-payments':
+            return {'step': self.step.id}
         return {'round': round_obj.id} if kind == 'rounds' else {}
 
 

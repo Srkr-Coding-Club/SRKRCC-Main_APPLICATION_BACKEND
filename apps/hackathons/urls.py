@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from . import views, views_ops, views_round_judging
+from . import views, views_ops, views_payment_steps, views_round_judging
 
 router = DefaultRouter()
 router.register(r'submissions', views.SubmissionViewSet, basename='hackathon-submission')
@@ -13,6 +13,8 @@ urlpatterns = [
     path('certificates/verify/<str:code>/', views_ops.CertificateVerifyView.as_view(), name='hackathon-certificate-verify'),
     path('upload-asset/', views.HackathonAssetUploadView.as_view(), name='hackathon-general-upload-asset'),
     path('asset-presigned-url/', views.HackathonAssetPresignedUrlView.as_view(), name='hackathon-general-asset-presigned-url'),
+    # No trailing slash: Microsoft's Office viewer reads the file type from the extension at the end of the URL.
+    path('office-view/<str:token>/<str:name>', views_ops.IdeaDeckOfficeViewRedirect.as_view(), name='hackathon-idea-office-view'),
     path('my-invites/', views.MyInvitesView.as_view(), name='hackathon-my-invites'),
     path('my-teams/', views.MyTeamsView.as_view(), name='hackathon-my-teams'),
     path('invites/<int:pk>/<str:decision>/', views.InviteRespondView.as_view(), name='hackathon-invite-respond'),
@@ -47,13 +49,28 @@ urlpatterns = [
     path('<slug:slug>/idea-template/<uuid:file_id>/', views_ops.IdeaTemplateFileView.as_view(), name='hackathon-idea-template-file'),
     path('<slug:slug>/payment-files/', views_ops.MyPaymentFilesView.as_view(), name='hackathon-payment-files'),
     path('<slug:slug>/payment-files/<uuid:file_id>/', views_ops.MyPaymentFileView.as_view(), name='hackathon-payment-file'),
+    path('<slug:slug>/payment-steps/', views_payment_steps.PaymentStepsView.as_view(), name='hackathon-payment-steps'),
+    path('<slug:slug>/payment-steps/<int:pk>/', views_payment_steps.PaymentStepDetailView.as_view(), name='hackathon-payment-step'),
+    path('<slug:slug>/payment-steps/<int:pk>/queue/', views_payment_steps.PaymentStepQueueView.as_view(), name='hackathon-payment-step-queue'),
+    path('<slug:slug>/payment-steps/<int:pk>/remind/', views_payment_steps.PaymentStepRemindView.as_view(), name='hackathon-payment-step-remind'),
+    path('<slug:slug>/payment-steps/<int:pk>/qr/', views_payment_steps.PaymentStepQrView.as_view(), name='hackathon-payment-step-qr'),
+    path('<slug:slug>/payment-steps/<int:pk>/qr/link/', views_payment_steps.PaymentStepQrLinkView.as_view(), name='hackathon-payment-step-qr-link'),
+    path('<slug:slug>/payment-steps/<int:pk>/qr/<uuid:file_id>/', views_payment_steps.PaymentStepQrFileView.as_view(), name='hackathon-payment-step-qr-file'),
+    path('<slug:slug>/payment-steps/<int:pk>/files/', views_payment_steps.MyStepPaymentFilesView.as_view(), name='hackathon-payment-step-files'),
+    path('<slug:slug>/payment-steps/<int:pk>/files/<uuid:file_id>/', views_payment_steps.MyStepPaymentFileView.as_view(), name='hackathon-payment-step-file'),
+    path('<slug:slug>/payment-steps/<int:pk>/pay/', views_payment_steps.PayStepView.as_view(), name='hackathon-payment-step-pay'),
+    path('<slug:slug>/my-payment-steps/', views_payment_steps.MyPaymentStepsView.as_view(), name='hackathon-my-payment-steps'),
+    path('<slug:slug>/step-payments/<int:pk>/screenshot/', views_payment_steps.StepPaymentScreenshotView.as_view(), name='hackathon-step-payment-screenshot'),
+    path('<slug:slug>/step-payments/<int:pk>/<str:action>/', views_payment_steps.StepPaymentActionView.as_view(), name='hackathon-step-payment-action'),
     path('<slug:slug>/payments/', views_ops.PaymentsView.as_view(), name='hackathon-payments'),
     path('<slug:slug>/payments/<int:pk>/link/', views_ops.PaymentLinkView.as_view(), name='hackathon-payment-link'),
     path('<slug:slug>/payments/<int:pk>/<str:payment_action>/', views_ops.PaymentActionView.as_view(), name='hackathon-payment-action'),
     path('<slug:slug>/my-idea/files/', views_ops.MyIdeaFilesView.as_view(), name='hackathon-my-idea-files'),
     path('<slug:slug>/my-idea/files/<uuid:file_id>/', views_ops.MyIdeaFileView.as_view(), name='hackathon-my-idea-file'),
-    path('<slug:slug>/ideas/<int:pk>/files/<str:kind>/link/', views_ops.IdeaFileLinkView.as_view(), name='hackathon-idea-file-link'),
+    path('<slug:slug>/ideas/<int:pk>/files/deck/office-link/', views_ops.IdeaDeckOfficeLinkView.as_view(), name='hackathon-idea-office-link'),
+    path('<slug:slug>/ideas/<int:pk>/files/<str:kind>/link/',views_ops.IdeaFileLinkView.as_view(), name='hackathon-idea-file-link'),
     path('<slug:slug>/ideas/', views_ops.AdminIdeasView.as_view(), name='hackathon-admin-ideas'),
+    path('<slug:slug>/ideas/link-round/', views_ops.IdeaRoundLinkView.as_view(), name='hackathon-idea-round-link'),
     path('<slug:slug>/ideas/remind/', views_ops.IdeaRemindView.as_view(), name='hackathon-ideas-remind'),
     path('<slug:slug>/ideas/<int:pk>/review/', views_ops.IdeaReviewView.as_view(), name='hackathon-idea-review'),
     path('<slug:slug>/my-registration/', views_ops.MyRegistrationView.as_view(), name='hackathon-my-registration'),

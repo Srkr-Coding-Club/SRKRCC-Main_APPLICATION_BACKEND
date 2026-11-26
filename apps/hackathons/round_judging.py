@@ -23,6 +23,7 @@ from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied
 
 from apps.audit.utils import log_audit_event
+from apps.forms.validation.uploads import extension
 
 from . import access
 from .errors import HackathonError
@@ -36,7 +37,7 @@ from .services import _notify_users, is_member
 MAX_PANEL = 50
 MAX_PER_TEAM = 20
 MAX_REASON = 300
-REMOVED_TEAMS = (TeamStatus.DISQUALIFIED, TeamStatus.WITHDRAWN)
+from .cohorts import REMOVED_STATUSES as REMOVED_TEAMS  # noqa: E402
 SETTINGS_FIELDS = ('evaluation_mode', 'scoring_target', 'assignment_mode', 'judges_per_team', 'min_reviews_per_team', 'scoring_deadline', 'blind', 'tie_break')
 
 
@@ -726,7 +727,7 @@ def _material(round_obj: Round, entry: RoundEntry) -> dict:
     from .models import IdeaSubmission, Submission
 
     team = entry.team
-    idea = IdeaSubmission.objects.filter(team=team).first()
+    idea = IdeaSubmission.objects.filter(team=team).select_related('deck_file').first()
     project = Submission.objects.filter(team=team).first()
     problem = None
     if team.problem_statement_id:
@@ -738,7 +739,10 @@ def _material(round_obj: Round, entry: RoundEntry) -> dict:
         'problem': problem,
         'idea': None if idea is None else {
             'id': idea.id, 'title': idea.title, 'problem': idea.problem, 'solution': idea.solution, 'plan': idea.plan, 'tech_stack': idea.tech_stack,
-            'deck_url': idea.deck_url, 'has_deck_file': bool(idea.deck_file_id), 'linkedin_url': None if round_obj.blind else idea.linkedin_url,
+            'deck_url': idea.deck_url, 'has_deck_file': bool(idea.deck_file_id),
+            # Only the extension, so the judge's page knows how to open the slides; the file name could name the team.
+            'deck_file_type': extension(idea.deck_file.original_name) if idea.deck_file_id else None,
+            'linkedin_url': None if round_obj.blind else idea.linkedin_url,
         },
         'project': None if project is None else {
             'id': project.id, 'title': project.project_title, 'tagline': project.tagline, 'description': project.description,

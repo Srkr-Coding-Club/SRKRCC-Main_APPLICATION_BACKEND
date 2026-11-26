@@ -186,7 +186,7 @@ SUBMISSION_COLUMNS = [
 def submission_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
     from . import analytics
 
-    for row in analytics.submission_rows(hackathon):
+    for row in analytics.submission_rows(hackathon, include_removed=True):  # an export keeps every project, with its team status
         yield {key: value for key, value in row.items() if key not in ('id', 'team_id')}
 
 
@@ -394,6 +394,33 @@ def recruiting_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
 # The catalogue
 # ---------------------------------------------------------------------------
 
+STEP_PAYMENT_COLUMNS = [
+    _col('team', 'Team'), _col('leader', 'Leader'), _col('leader_email', 'Leader Email'), _col('leader_phone', 'Leader Phone'),
+    _col('members', 'Members', 'number'), _col('affiliates', 'Affiliates', 'number'), _col('amount_due', 'Amount Due', 'number'),
+    _col('status', 'Payment Status'), _col('amount_paid', 'Amount Paid', 'number'), _col('transaction_id', 'Transaction ID'),
+    _col('submitted_at', 'Submitted At', 'datetime'), _col('reviewed_by', 'Checked By'), _col('reason', 'Rejection Reason'),
+]
+
+
+def step_payment_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
+    """Every team a payment step asks to pay, with its latest payment (``?step=<id>``)."""
+    from . import payment_steps
+
+    step_id = params.get('step', '')
+    step = hackathon.payment_steps.filter(pk=step_id).first() if step_id.isdigit() else None
+    if step is None:
+        raise HackathonError('Choose which payment step to export.', 'STEP_REQUIRED', field='step')
+    for row in payment_steps.queue(hackathon, None, step.pk, check=False)['rows']:
+        paid = row['payment'] or {}
+        members = row['quote']['members']
+        yield {
+            'team': row['team_name'], 'leader': row['leader_name'], 'leader_email': row['leader_email'], 'leader_phone': row['leader_phone'],
+            'members': len(members), 'affiliates': sum(1 for m in members if m['affiliate']), 'amount_due': row['quote']['total'],
+            'status': paid.get('status', 'UNPAID'), 'amount_paid': paid.get('amount'), 'transaction_id': paid.get('transaction_id', ''),
+            'submitted_at': paid.get('submitted_at'), 'reviewed_by': paid.get('reviewed_by') or '', 'reason': paid.get('reason', ''),
+        }
+
+
 @dataclass(frozen=True)
 class ExportKind:
     key: str
@@ -420,6 +447,7 @@ EXPORT_KINDS: dict[str, ExportKind] = {kind.key: kind for kind in (
     ExportKind('check-in-by-team', 'check-in-by-team', ('check_in',), _fixed(CHECK_IN_BY_TEAM_COLUMNS), check_in_by_team_rows),
     ExportKind('check-in-matrix', 'check-in-all-sessions', ('check_in',), check_in_matrix_columns, check_in_matrix_rows),
     ExportKind('payments', 'payments', ('teams',), _fixed(PAYMENT_EXPORT_COLUMNS), payment_rows),
+    ExportKind('step-payments', 'step-payments', ('teams',), _fixed(STEP_PAYMENT_COLUMNS), step_payment_rows),
     ExportKind('finder-seekers', 'unmatched-people', ('teams',), _fixed(UNMATCHED_COLUMNS), unmatched_rows),
     ExportKind('finder-teams', 'recruiting-teams', ('teams',), _fixed(RECRUITING_COLUMNS), recruiting_rows),
 )}

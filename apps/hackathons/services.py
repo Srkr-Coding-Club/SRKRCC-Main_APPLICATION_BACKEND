@@ -36,7 +36,7 @@ from .models import (
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
-ACTIVE_TEAM_STATUSES = (TeamStatus.FORMING, TeamStatus.REGISTERED)
+from .cohorts import ACTIVE_STATUSES as ACTIVE_TEAM_STATUSES  # noqa: E402
 ROUND_SCOPED_AUDIENCES = (
     AnnouncementAudience.ROUND_ALL, AnnouncementAudience.ROUND_SHORTLISTED, AnnouncementAudience.ROUND_REJECTED,
 )
@@ -102,6 +102,16 @@ def _require_team_editable(team: Team, actor):
     if team.hackathon.team_edits_locked:
         raise HackathonError('Team changes are locked for this hackathon.', 'TEAM_EDITS_LOCKED')
     _require_registration_open(team.hackathon)
+
+
+def _require_roster_open(team: Team, actor):
+    """Members may not be added or removed while a payment step is waiting or verified (organizers excepted)."""
+    from . import payment_steps
+    if not _is_team_organizer(team.hackathon, actor) and payment_steps.roster_locked(team):
+        raise HackathonError(
+            'Your team has paid (or is paying) a fee for its current members, so members cannot change now. '
+            'Contact the organizers if you need to.', 'TEAM_PAID_LOCKED',
+        )
 
 
 def _require_leader(team: Team, actor):
@@ -387,6 +397,10 @@ def _admit(team: Team, user, registration_data: dict | None, *, organizer: bool 
         raise HackathonError('This team is no longer active.', 'TEAM_INACTIVE')
     if hackathon.team_edits_locked:
         raise HackathonError('Team changes are locked for this hackathon.', 'TEAM_EDITS_LOCKED')
+    if not organizer:
+        from . import payment_steps
+        if payment_steps.roster_locked(team):
+            raise HackathonError('This team has paid a fee for its current members, so nobody can join it now.', 'TEAM_PAID_LOCKED')
     _require_registration_open(hackathon)
     if TeamMember.objects.filter(hackathon=hackathon, user=user).exists():
         raise HackathonError('You are already in a team for this hackathon.', 'ALREADY_IN_TEAM')
@@ -572,6 +586,7 @@ class TeamService:
         team = _lock_team(team)
         _require_leader(team, actor)
         _require_team_editable(team, actor)
+        _require_roster_open(team, actor)
         email = (email or '').strip()
         target = User.objects.filter(email__iexact=email).first() if email else None
         if target is None:
@@ -616,6 +631,7 @@ class TeamService:
         team = _lock_team(team)
         _require_leader(team, actor)
         _require_team_editable(team, actor)
+        _require_roster_open(team, actor)
         email = (email or '').strip().lower()
         try:
             validate_email(email)
@@ -753,6 +769,7 @@ class TeamService:
         team = _lock_team(team)
         _require_leader(team, actor)
         _require_team_editable(team, actor)
+        _require_roster_open(team, actor)
         membership = team.memberships.select_related('user').filter(user_id=user_id).first()
         if membership is None:
             raise HackathonError('That user is not in this team.', 'NOT_A_MEMBER')
@@ -785,6 +802,7 @@ class TeamService:
         if membership is None:
             raise HackathonError('You are not in this team.', 'NOT_A_MEMBER')
         _require_team_editable(team, user)
+        _require_roster_open(team, user)
         others = team.memberships.exclude(user=user)
         if team.leader_id == user.id:
             if others.exists():
@@ -1240,8 +1258,10 @@ class RoundService:
         if status not in EntryStatus.values:
             raise HackathonError('Unknown entry status.', 'INVALID_STATUS', field='status')
         if status == EntryStatus.SHORTLISTED and round_obj.shortlist_limit and not confirm_over_limit:
-            already = round_obj.entries.filter(status=EntryStatus.SHORTLISTED)
-            newly = round_obj.entries.filter(team_id__in=team_ids).exclude(status=EntryStatus.SHORTLISTED).count()
+            from . import cohorts
+            counted = cohorts.not_removed(round_obj.entries.all())
+            already = counted.filter(status=EntryStatus.SHORTLISTED)
+            newly = counted.filter(team_id__in=team_ids).exclude(status=EntryStatus.SHORTLISTED).count()
             total = already.count() + newly
             if total > round_obj.shortlist_limit:
                 raise HackathonError(
@@ -1270,6 +1290,7 @@ class RoundService:
         )
         if round_obj.results_published and changed_team_ids:
             transaction.on_commit(lambda: _notify_result_changed(round_obj, changed_team_ids, actor))
+            transaction.on_commit(lambda: _email_result_newcomers(round_obj, status))
             if status == EntryStatus.SHORTLISTED:
                 celebrate.shortlisted(round_obj, changed_team_ids)
             else:
@@ -1279,38 +1300,38 @@ class RoundService:
     @staticmethod
     @transaction.atomic
     def publish_results(round_obj: Round, actor, *, announce=False, message='', email=False,
-                        announce_rejected=False, rejected_message='') -> Round:
+                        announce_rejected=False, rejected_message='', email_shortlisted=None, email_rejected=None) -> Round:
+        """Make the round's results visible. ``announce`` / ``announce_rejected`` post a "results are out" note to the
+        shortlisted / other teams, each emailed when ``email_shortlisted`` / ``email_rejected`` (``email`` sets both).
+        Publishing again after unpublishing updates those notes instead of posting and emailing them a second time."""
         if round_obj.results_published:
             raise HackathonError('Results for this round are already published.', 'ALREADY_PUBLISHED', status=409)
+        email_shortlisted = email if email_shortlisted is None else email_shortlisted
+        email_rejected = email if email_rejected is None else email_rejected
         round_obj.results_published = True
         round_obj.save(update_fields=['results_published', 'updated_at'])
         log_audit_event(
             actor=actor, action='Published Hackathon Round Results', target_model='HackathonRound',
             target_id=round_obj.pk, details={'round': round_obj.name},
         )
-        celebrate.shortlisted(round_obj, round_obj.entries.filter(status=EntryStatus.SHORTLISTED).values_list('team_id', flat=True))
-        if announce:
-            AnnouncementService.create(
-                round_obj.hackathon, actor,
-                title=f'{round_obj.name}: results are out',
-                message=message or (
-                    f'Congratulations! Your team has been shortlisted in **{round_obj.name}**. '
-                    'Check your team dashboard for next steps.'
-                ),
-                audience=AnnouncementAudience.ROUND_SHORTLISTED, round=round_obj, type='SUCCESS',
-                send_email=email,
-            )
-        if announce_rejected:
-            AnnouncementService.create(
-                round_obj.hackathon, actor,
-                title=f'{round_obj.name}: results are out',
-                message=rejected_message or (
-                    f'Thank you for taking part in **{round_obj.name}**. Your team was not shortlisted this time. '
-                    'Open your team dashboard to read any feedback from the organizers.'
-                ),
-                audience=AnnouncementAudience.ROUND_REJECTED, round=round_obj, type='INFO',
-                send_email=email,
-            )
+        shortlisted = round_obj.entries.filter(status=EntryStatus.SHORTLISTED, team__status__in=ACTIVE_TEAM_STATUSES)
+        celebrate.shortlisted(round_obj, shortlisted.values_list('team_id', flat=True))
+        from . import idea_round
+        idea_round.reveal(round_obj, actor)  # idea outcomes held back for this round reach the teams now
+        _post_round_result(
+            round_obj, actor, AnnouncementAudience.ROUND_SHORTLISTED, post=announce, send_email=email_shortlisted, type='SUCCESS',
+            message=message or (
+                f'Congratulations! Your team has been shortlisted in **{round_obj.name}**. '
+                'Check your team dashboard for next steps.'
+            ),
+        )
+        _post_round_result(
+            round_obj, actor, AnnouncementAudience.ROUND_REJECTED, post=announce_rejected, send_email=email_rejected, type='INFO',
+            message=rejected_message or (
+                f'Thank you for taking part in **{round_obj.name}**. Your team was not shortlisted this time. '
+                'Open your team dashboard to read any feedback from the organizers.'
+            ),
+        )
         return round_obj
 
     @staticmethod
@@ -1459,6 +1480,39 @@ class RoundService:
         return deleted_count > 0
 
 
+def _post_round_result(round_obj: Round, actor, audience: str, *, post: bool, send_email: bool, type: str, message: str) -> None:
+    """Post (or, on a second publish, update) a round's "results are out" note for one audience."""
+    existing = round_obj.announcements.filter(is_round_result=True, audience=audience).order_by('-id').first()
+    if existing is None:
+        if post:
+            AnnouncementService.create(
+                round_obj.hackathon, actor, title=f'{round_obj.name}: results are out', message=message,
+                audience=audience, round=round_obj, type=type, send_email=send_email, is_round_result=True,
+            )
+        return
+    existing.is_active = post
+    if post:
+        existing.title, existing.message = f'{round_obj.name}: results are out', message
+        existing.send_email = existing.send_email or send_email
+    existing.save(update_fields=['is_active', 'title', 'message', 'send_email', 'updated_at'])
+    if post and send_email:
+        transaction.on_commit(lambda: AnnouncementService.email_newcomers(existing))
+
+
+def _email_result_newcomers(round_obj: Round, status: str) -> None:
+    """A result changed after publishing: email the round's emailed "results are out" note to whoever newly belongs to it."""
+    audience = {
+        EntryStatus.SHORTLISTED: AnnouncementAudience.ROUND_SHORTLISTED, EntryStatus.REJECTED: AnnouncementAudience.ROUND_REJECTED,
+    }.get(status)
+    if audience is None:
+        return
+    try:
+        for note in round_obj.announcements.filter(is_round_result=True, audience=audience, is_active=True, send_email=True):
+            AnnouncementService.email_newcomers(note)
+    except Exception:
+        logger.exception('Could not email a changed round result')
+
+
 def _notify_result_changed(round_obj: Round, team_ids: list[int], actor) -> None:
     """Tell team members their already-published round result was changed. Never fails the caller."""
     try:
@@ -1584,6 +1638,9 @@ class AnnouncementService:
             )
         else:
             teams = announcement.target_teams.all()
+        if audience in ROUND_SCOPED_AUDIENCES:
+            # A round's notes skip teams that withdrew or were disqualified, as their dashboards do.
+            teams = teams.filter(status__in=ACTIVE_TEAM_STATUSES)
         return User.objects.filter(hackathon_memberships__team__in=teams).distinct()
 
     @staticmethod
@@ -1631,15 +1688,36 @@ class AnnouncementService:
         return sum(AnnouncementService.dispatch_email(announcement) for announcement in due)
 
     @staticmethod
-    def notify(announcement: HackathonAnnouncement) -> int:
-        """Email every recipient via the shared email-job engine (background thread)."""
+    def email_newcomers(announcement: HackathonAnnouncement) -> int:
+        """Email the people in this announcement's audience it has not reached yet: a team shortlisted after the results
+        went out, or results published again. Nobody gets it twice."""
+        with transaction.atomic():
+            locked = HackathonAnnouncement.objects.select_for_update().get(pk=announcement.pk)
+            sent = set(locked.emailed_user_ids or [])
+            users = [user for user in AnnouncementService.recipients(locked) if user.pk not in sent]
+            if not users:
+                return 0
+            locked.emailed_user_ids = sorted(sent | {user.pk for user in users})
+            locked.emailed_at = locked.emailed_at or timezone.now()
+            locked.save(update_fields=['emailed_user_ids', 'emailed_at', 'updated_at'])
+        return AnnouncementService.notify(locked, users=users)
+
+    @staticmethod
+    def notify(announcement: HackathonAnnouncement, users=None) -> int:
+        """Email every recipient (or the given ``users``) via the shared email-job engine (background thread)."""
         from django.utils.html import escape, linebreaks
         from apps.core.models import EmailTemplate
         from apps.core.services.email_service import EmailNotificationService, MemberEmailContext
         from apps.core.tasks import run_in_background, process_email_job
 
-        HackathonAnnouncement.objects.filter(pk=announcement.pk).update(emailed_at=timezone.now())
-        users = list(AnnouncementService.recipients(announcement))
+        if users is None:
+            with transaction.atomic():
+                locked = HackathonAnnouncement.objects.select_for_update().get(pk=announcement.pk)
+                sent = set(locked.emailed_user_ids or [])
+                users = [user for user in AnnouncementService.recipients(locked) if user.pk not in sent]
+                locked.emailed_at = timezone.now()
+                locked.emailed_user_ids = sorted(sent | {user.pk for user in users})
+                locked.save(update_fields=['emailed_at', 'emailed_user_ids', 'updated_at'])
         if not users:
             return 0
 

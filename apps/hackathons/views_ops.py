@@ -5,7 +5,8 @@ analytics and cloning. Rules live in the service modules; these views parse, aut
 from __future__ import annotations
 
 from django.utils import timezone
-from django.http import HttpResponse, Http404
+from django.http import HttpResponse, HttpResponseRedirect, Http404
+from django.urls import reverse
 from rest_framework import permissions, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response as DRFResponse
@@ -16,7 +17,7 @@ from apps.core.dmc.export_service import export_filename
 from apps.core.permissions import IsAdminOrClubLead
 from apps.core.throttling import ScopedRateThrottle
 
-from . import access, analytics, certificates, overview as overview_parts, idea_files, payments, registration
+from . import access, analytics, certificates, cohorts, idea_round, overview as overview_parts, idea_files, payments, registration
 from .access import can_check_in, can_judge, scoped
 from . import check_in_sessions
 from .checkin import (
@@ -760,14 +761,18 @@ class CheckInDetailView(APIView):
 # ---------------------------------------------------------------------------
 
 class AdminSubmissionsView(APIView):
-    """GET (organizer) /api/hackathons/{slug}/submissions/ - every submission plus the registered teams that have none."""
+    """GET (organizer) /api/hackathons/{slug}/submissions/?include_removed=1 - the projects (withdrawn or disqualified
+    teams' only when asked for), the competing teams that have none, and how the hackathon's teams break down."""
     permission_classes = [scoped('submissions')]
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
         missing = SubmissionService.teams_without_submission(hackathon).values('id', 'name')
+        include_removed = request.query_params.get('include_removed') == '1'
+        removed_rows = Submission.objects.filter(team__hackathon=hackathon).filter(cohorts.removed_q('team__')).count()
         return DRFResponse({
-            'state': window_state(hackathon), 'rows': analytics.submission_rows(hackathon), 'missing': list(missing),
+            'state': window_state(hackathon), 'rows': analytics.submission_rows(hackathon, include_removed=include_removed),
+            'missing': list(missing), 'teams': cohorts.breakdown(hackathon), 'removed_rows': removed_rows,
         })
 
 
@@ -920,7 +925,7 @@ class MyIdeaView(APIView):
         return {
             'state': state, 'opens_at': hackathon.idea_opens_at, 'deadline': hackathon.idea_deadline,
             'review_required': hackathon.idea_review_required, 'project_requires_idea': hackathon.project_requires_approved_idea,
-            'idea': _idea_payload(idea, payment=True) if idea else None, 'config': _idea_config(hackathon),
+            'idea': {**_idea_payload(idea, payment=True), **idea_round.team_view(idea)} if idea else None, 'config': _idea_config(hackathon),
             'can_edit': bool(team and team.leader_id == self.request.user.id and editable
                              and team.status == TeamStatus.REGISTERED and not team.is_waitlisted),
             'edit_blocked_reason': why_not if (team and team.leader_id == self.request.user.id and idea) else '',
@@ -1149,23 +1154,63 @@ class IdeaFileLinkView(APIView):
         return DRFResponse(idea_files.link(hackathon, request.user, idea, kind.upper(), inline=request.query_params.get('inline') == '1'))
 
 
+class IdeaDeckOfficeLinkView(APIView):
+    """GET /api/hackathons/{slug}/ideas/{id}/files/deck/office-link/ - a 10-minute public link to PowerPoint slides for
+    Microsoft's Office viewer. Same people as the slides' own link: organizers, judges and the team."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def get(self, request, slug, pk):
+        hackathon = _get_hackathon(request, slug)
+        idea = _idea_related(IdeaSubmission.objects).filter(pk=pk, team__hackathon=hackathon).first()
+        if idea is None:
+            raise Http404
+        token, name = idea_files.office_view_token(hackathon, request.user, idea)
+        url = request.build_absolute_uri(reverse('hackathon-idea-office-view', kwargs={'token': token, 'name': name}))
+        return DRFResponse({'url': url, 'expires_in': idea_files.OFFICE_VIEW_SECONDS})
+
+
+class IdeaDeckOfficeViewRedirect(APIView):
+    """GET /api/hackathons/office-view/{token}/{name.pptx} - fetched by Microsoft's viewer, not by people.
+
+    No session: the signed token is the permission. The path ends in the file's extension because the viewer decides
+    how to open a file from its URL, and stored files have no extension. Redirects to a short-lived storage link.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'form_upload'
+
+    def get(self, request, token, name):
+        return HttpResponseRedirect(idea_files.office_view_redirect(token))
+
+
 # ---------------------------------------------------------------------------
 # Phase 1: ideas - organizers
 # ---------------------------------------------------------------------------
 
 class AdminIdeasView(APIView):
-    """GET /api/hackathons/{slug}/ideas/ - every idea with its status, plus registered teams with none."""
+    """GET /api/hackathons/{slug}/ideas/?include_removed=1 - the ideas (withdrawn or disqualified teams' only when asked
+    for), the competing teams with none, and how the hackathon's teams break down."""
     permission_classes = [scoped('ideas')]
 
     def get(self, request, slug):
         hackathon = _get_hackathon(request, slug)
-        ideas = _idea_related(IdeaSubmission.objects).filter(team__hackathon=hackathon).order_by('status', 'team__name')
+        all_ideas = IdeaSubmission.objects.filter(team__hackathon=hackathon)
+        removed_rows = all_ideas.filter(cohorts.removed_q('team__')).count()
+        ideas = all_ideas if request.query_params.get('include_removed') == '1' else cohorts.not_removed(all_ideas)
+        ideas = _idea_related(ideas).order_by('status', 'team__name')
         rows = [{**_idea_payload(idea, payment=True), 'team_status': idea.team.status} for idea in ideas]
         missing = IdeaService.teams_without_idea(hackathon).values('id', 'name')
+        # The status counts never include withdrawn or disqualified teams, whichever rows are listed.
         counts = {value: 0 for value in IdeaStatus.values}
-        for row in rows:
-            counts[row['status']] += 1
-        return DRFResponse({'state': idea_window_state(hackathon), 'rows': rows, 'missing': list(missing), 'counts': counts, 'config': _idea_config(hackathon)})
+        for status_value in cohorts.not_removed(all_ideas).values_list('status', flat=True):
+            counts[status_value] += 1
+        return DRFResponse({
+            'state': idea_window_state(hackathon), 'rows': rows, 'missing': list(missing), 'counts': counts,
+            'teams': cohorts.breakdown(hackathon), 'removed_rows': removed_rows, 'config': _idea_config(hackathon),
+        })
 
 
 class IdeaReviewView(APIView):
@@ -1177,8 +1222,27 @@ class IdeaReviewView(APIView):
         idea = _idea_related(IdeaSubmission.objects).filter(pk=pk, team__hackathon=hackathon).first()
         if idea is None:
             raise Http404
-        IdeaService.review(idea, request.user, request.data.get('status', ''), request.data.get('feedback', ''))
-        return DRFResponse(_idea_payload(idea, payment=True))
+        IdeaService.review(
+            idea, request.user, request.data.get('status', ''), request.data.get('feedback', ''),
+            confirm_published=bool(request.data.get('confirm_published')), confirm_over_limit=bool(request.data.get('confirm_over_limit')),
+        )
+        return DRFResponse({**_idea_payload(idea, payment=True), 'result_held': idea_round.is_held(idea)})
+
+
+class IdeaRoundLinkView(APIView):
+    """POST /api/hackathons/{slug}/ideas/link-round/ {round: id|null, preview?, confirm_published?, confirm_over_limit?}
+    - link the round that idea reviews decide (copying the ideas already reviewed into it), or unlink it."""
+    permission_classes = [scoped('rounds')]
+
+    def post(self, request, slug):
+        hackathon = _get_hackathon(request, slug)
+        if not access.has_permission(hackathon, request.user, 'ideas'):
+            raise PermissionDenied('Linking idea review to a round needs the ideas permission too.')
+        data = request.data
+        return DRFResponse(idea_round.link(
+            hackathon, data.get('round'), request.user, preview=bool(data.get('preview')),
+            confirm_published=bool(data.get('confirm_published')), confirm_over_limit=bool(data.get('confirm_over_limit')),
+        ))
 
 
 class IdeaRemindView(APIView):

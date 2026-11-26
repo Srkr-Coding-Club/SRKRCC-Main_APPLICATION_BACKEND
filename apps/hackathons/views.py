@@ -36,7 +36,7 @@ from .services import (
     membership_of, missing_profile_fields, round_entry_for_details_form,
 )
 
-ACTIVE = (TeamStatus.FORMING, TeamStatus.REGISTERED)
+from .cohorts import ACTIVE_STATUSES as ACTIVE  # noqa: E402
 LOOKUP_MIN_QUERY_LENGTH = 3
 LOOKUP_MAX_RESULTS = 5
 
@@ -1045,6 +1045,8 @@ class RoundActionView(APIView):
             RoundService.publish_results(
                 round_obj, request.user, announce=bool(data.get('announce')), message=data.get('message', ''),
                 email=bool(data.get('email')),
+                email_shortlisted=bool(data['email_shortlisted']) if 'email_shortlisted' in data else None,
+                email_rejected=bool(data['email_rejected']) if 'email_rejected' in data else None,
                 announce_rejected=bool(data.get('announce_rejected')),
                 rejected_message=data.get('rejected_message', ''),
             )

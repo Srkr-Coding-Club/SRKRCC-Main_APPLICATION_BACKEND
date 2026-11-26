@@ -26,7 +26,7 @@ from .models import (
 STALE_AFTER = timedelta(hours=24)
 MAX_TRANSACTION_ID = 60
 MAX_REASON = 300
-PAYMENT_STATUSES = (TeamStatus.PAYMENT_PENDING, TeamStatus.PAYMENT_REJECTED)
+from .cohorts import PAYMENT_STATUSES  # noqa: E402
 #: Payments whose team no longer exists: kept for the money to be settled, never shown in the queue.
 CLOSED_STATUSES = (PaymentStatus.CANCELLED, PaymentStatus.REMOVED)
 #: What the queue counts and the analytics report.

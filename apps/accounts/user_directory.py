@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db.models import Count, DateTimeField, ExpressionWrapper, F, Q
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncMonth
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -22,6 +22,7 @@ ORDERINGS = {
     'email': ('email',), 'club_id': ('club_id', 'id'), 'last_login': ('-last_login', '-id'),
 }
 MEMBER = Q(club_id__isnull=False) & ~Q(club_id='')
+JOIN_TREND_MONTHS = 6
 
 
 def annotated(queryset):
@@ -128,7 +129,32 @@ def summary(queryset) -> dict:
         **totals,
         'by_role': {role: by_role.get(role, 0) for role in UserRole.values},
         'by_membership_status': {state: by_status.get(state, 0) for state in MembershipStatus.values},
+        'joined_by_month': _joined_by_month(queryset, now),
+        'by_branch': _by_branch(queryset),
     }
+
+
+def _trend_start(now):
+    """Midnight on the first day of the oldest month in the sign-up trend (local time)."""
+    first = timezone.localtime(now).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    months_back = first.year * 12 + first.month - 1 - (JOIN_TREND_MONTHS - 1)
+    return first.replace(year=months_back // 12, month=months_back % 12 + 1)
+
+
+def _joined_by_month(queryset, now) -> dict[str, int]:
+    """Sign-ups per local calendar month, keyed YYYY-MM, for the last JOIN_TREND_MONTHS months."""
+    rows = (queryset.filter(date_joined__gte=_trend_start(now))
+            .annotate(month=TruncMonth('date_joined')).values('month').annotate(n=Count('pk')))
+    return {row['month'].strftime('%Y-%m'): row['n'] for row in rows}
+
+
+def _by_branch(queryset) -> dict[str, int]:
+    """People per branch as typed (blank branches under ''); the dashboard groups them."""
+    counts: dict[str, int] = {}
+    for row in queryset.values('branch').annotate(n=Count('pk')):
+        key = (row['branch'] or '').strip()
+        counts[key] = counts.get(key, 0) + row['n']
+    return counts
 
 
 def email_state(user, now=None) -> str:

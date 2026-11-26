@@ -378,6 +378,67 @@ class WhoSeesWhat(IdeaCase):
         self.assertEqual(IdeaFile.objects.exclude(pk=stale).filter(state=UploadState.ATTACHED).count(), 2)  # saved files untouched
 
 
+class OfficeViewer(IdeaCase):
+    """PowerPoint slides open in Microsoft's Office viewer through a signed link that ends in the file's extension."""
+
+    def setUp(self):
+        super().setUp()
+        self.save(deck_file_id=self.upload("DECK", "Our Deck (final).pptx", PPTX))
+        self.idea = IdeaSubmission.objects.get()
+
+    def office_link(self, user, idea_id=None):
+        return api(user).get(f"/api/hackathons/{self.hack.slug}/ideas/{idea_id or self.idea.pk}/files/deck/office-link/")
+
+    def test_the_people_who_see_the_slides_get_a_ten_minute_link_ending_in_the_extension(self):
+        for user in (self.admin, self.staff("ORGANIZER"), self.staff("JUDGE"), self.leader, self.member):
+            reply = self.office_link(user)
+            self.assertEqual(reply.status_code, 200, user.username)
+            self.assertEqual(reply.data["expires_in"], 600)
+            self.assertTrue(reply.data["url"].startswith("http://testserver/api/hackathons/office-view/"))
+            self.assertTrue(reply.data["url"].endswith("/slides.pptx"))  # never the original name: it can name the team
+
+    def test_other_people_get_no_link(self):
+        for user in (make_user(), self.staff("VOLUNTEER")):
+            self.assertEqual(self.office_link(user).status_code, 404)
+        self.assertEqual(self.office_link(None).status_code, 401)
+        self.assertEqual(self.office_link(self.admin, idea_id=999999).status_code, 404)
+
+    def test_the_link_redirects_anyone_to_a_short_lived_download_of_that_file(self):
+        url = self.office_link(self.leader).data["url"].replace("http://testserver", "")
+        reply = api().get(url)
+        self.assertEqual(reply.status_code, 302)
+        self.assertEqual(reply["Location"], f"https://bucket.example/{self.idea.deck_file.key}?signed=1")
+        self.assertEqual({k: self.storage.links[-1][k] for k in ("filename", "inline", "expires")},
+                         {"filename": "slides.pptx", "inline": False, "expires": 600})
+
+    def test_a_forged_expired_or_removed_link_is_not_found(self):
+        url = self.office_link(self.leader).data["url"].replace("http://testserver", "")
+        token = url.split("/")[-2]
+        self.assertEqual(api().get(url.replace(token, token[:-2] + "xx")).status_code, 404)
+        with mock.patch("apps.hackathons.idea_files.OFFICE_VIEW_SECONDS", -1):
+            self.assertEqual(api().get(url).status_code, 404)
+        IdeaFile.objects.update(state=UploadState.DELETED)
+        self.assertEqual(api().get(url).status_code, 404)
+
+    def test_pdf_slides_use_the_browser_preview_instead(self):
+        self.save(deck_file_id=self.upload("DECK", "deck.pdf", b"%PDF" + b"0" * 64))
+        reply = self.office_link(self.admin)
+        self.assertEqual((reply.status_code, reply.data["code"]), (400, "NOT_OFFICE_FILE"))
+
+    @override_settings(FORM_UPLOAD_SCAN="guardduty")
+    def test_slides_still_being_scanned_are_held_back(self):
+        reply = self.office_link(self.admin)
+        self.assertEqual((reply.status_code, reply.data["code"]), (423, "SCAN_PENDING"))
+
+    def test_judges_never_get_the_original_file_name(self):
+        judge = self.staff('JUDGE')
+        self.assertTrue(self.office_link(judge).data['url'].endswith('/slides.pptx'))
+        api(judge).get(f'/api/hackathons/{self.hack.slug}/ideas/{self.idea.pk}/files/deck/link/')
+        self.assertEqual(self.storage.links[-1]['filename'], 'slides.pptx')
+        api(self.leader).get(f'/api/hackathons/{self.hack.slug}/ideas/{self.idea.pk}/files/deck/link/')
+        self.assertEqual(self.storage.links[-1]['filename'], 'Our Deck (final).pptx')
+
+
 class EditingControl(IdeaCase):
     def setUp(self):
         super().setUp()
@@ -738,4 +799,3 @@ class IdeaTemplate(IdeaCase):
     def test_only_organizers_with_the_settings_permission_may_set_the_link(self):
         reply = api(self.leader).patch(f"/api/hackathons/{self.hack.slug}/", {"idea_template_url": "https://drive.google.com/file/d/abc"}, format="json")
         self.assertIn(reply.status_code, (403, 404))
-
