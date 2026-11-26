@@ -638,7 +638,9 @@ class RoundSerializer(serializers.ModelSerializer):
 
     def get_entry_counts(self, obj):
         counts = {status_value: 0 for status_value in EntryStatus.values}
-        totals = obj.entries.aggregate(
+        from . import cohorts
+        # A withdrawn or disqualified team's entry is not counted, as round judging leaves it out too.
+        totals = cohorts.not_removed(obj.entries.all()).aggregate(
             total=Count('id'),
             details_submitted=Count('id', filter=Q(details_response__isnull=False)),
             **{status_value: Count('id', filter=Q(status=status_value)) for status_value in EntryStatus.values},

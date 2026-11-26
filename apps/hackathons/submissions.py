@@ -119,7 +119,8 @@ class SubmissionService:
 
     @staticmethod
     def teams_without_submission(hackathon: Hackathon):
-        return hackathon.teams.filter(status=TeamStatus.REGISTERED, is_waitlisted=False, submission__isnull=True)
+        from . import cohorts
+        return cohorts.competing(hackathon).filter(submission__isnull=True)
 
     @staticmethod
     def remind_missing(hackathon: Hackathon, actor) -> int:

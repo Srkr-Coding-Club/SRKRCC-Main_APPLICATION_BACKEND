@@ -36,7 +36,7 @@ from .models import (
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
-ACTIVE_TEAM_STATUSES = (TeamStatus.FORMING, TeamStatus.REGISTERED)
+from .cohorts import ACTIVE_STATUSES as ACTIVE_TEAM_STATUSES  # noqa: E402
 ROUND_SCOPED_AUDIENCES = (
     AnnouncementAudience.ROUND_ALL, AnnouncementAudience.ROUND_SHORTLISTED, AnnouncementAudience.ROUND_REJECTED,
 )

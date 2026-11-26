@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from django.db.models import Count
 
-from . import access, analytics, finder_admin, payments, withdrawals
+from . import access, analytics, cohorts, finder_admin, payments, withdrawals
 from .models import IdeaStatus, IdeaSubmission, PaymentStage
 from .ideas import IdeaService
 
@@ -18,7 +18,8 @@ PAYMENT_FIELDS = ('status', 'amount', 'team_status', 'submitted_at')
 
 def _ideas(hackathon) -> dict:
     counts = {value: 0 for value in IdeaStatus.values}
-    for row in IdeaSubmission.objects.filter(team__hackathon=hackathon).values('status').annotate(n=Count('id')):
+    ideas = cohorts.not_removed(IdeaSubmission.objects.filter(team__hackathon=hackathon))  # as the Ideas tab counts them
+    for row in ideas.values('status').annotate(n=Count('id')):
         counts[row['status']] = row['n']
     return {'counts': counts, 'missing': list(IdeaService.teams_without_idea(hackathon).values('id', 'name'))}
 

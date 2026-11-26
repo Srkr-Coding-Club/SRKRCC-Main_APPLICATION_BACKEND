@@ -7,9 +7,11 @@ The payment screenshot and the transaction id are for organizers only: judges ne
 from __future__ import annotations
 
 import logging
+import re
 from datetime import timedelta
 
 from django.conf import settings
+from django.core import signing
 from django.db import transaction
 from django.utils import timezone
 
@@ -49,6 +51,13 @@ _CONTENT_TYPE_FOR = {
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
 }
+
+
+#: Slides shown in Microsoft's Office web viewer instead of only being downloaded.
+OFFICE_VIEW_EXTENSIONS = ('.ppt', '.pptx')
+#: How long an Office viewer token, and the storage link it redirects to, stay valid.
+OFFICE_VIEW_SECONDS = 600
+_OFFICE_VIEW_SALT = 'hackathons.idea-office-view'
 
 
 def _listed(extensions) -> str:
@@ -259,11 +268,48 @@ def link(hackathon: Hackathon, user, idea: IdeaSubmission, kind: str, *, inline:
     return result
 
 
-def _signed_link(file: IdeaFile, *, inline: bool) -> dict:
-    """A 60-second link to one stored file; held back while a virus scan is still pending."""
+def office_view_token(hackathon: Hackathon, user, idea: IdeaSubmission) -> tuple[str, str]:
+    """A signed token and a URL-safe file name for showing the idea's PowerPoint slides in Microsoft's Office viewer.
+
+    The viewer fetches the file from its own servers, without the viewer's session, so the token stands in for the
+    permission check made here. It names one file and lasts OFFICE_VIEW_SECONDS.
+    """
+    file = idea.deck_file
+    if file is None or file.state != UploadState.ATTACHED or not can_see(hackathon, user, idea, IdeaFileKind.DECK):
+        raise HackathonError('That file was not found.', 'NOT_FOUND', status=404)
+    ext = extension(file.original_name)
+    if ext not in OFFICE_VIEW_EXTENSIONS:
+        raise HackathonError('Only PowerPoint slides open in the Office viewer.', 'NOT_OFFICE_FILE', status=400)
+    _ensure_scanned(file)
+    token = signing.dumps(str(file.pk), salt=_OFFICE_VIEW_SALT)
+    stem = re.sub(r'[^A-Za-z0-9_-]+', '-', file.original_name[: -len(ext)]).strip('-')[:60] or 'slides'
+    return token, f'{stem}{ext}'
+
+
+def office_view_redirect(token: str) -> str:
+    """The short-lived storage link behind an Office viewer token, or a 404 once the token or the file is gone."""
+    try:
+        file_id = signing.loads(token, salt=_OFFICE_VIEW_SALT, max_age=OFFICE_VIEW_SECONDS)
+    except signing.BadSignature:  # also covers an expired token
+        raise HackathonError('That file was not found.', 'NOT_FOUND', status=404)
+    file = IdeaFile.objects.filter(pk=file_id, kind=IdeaFileKind.DECK, state=UploadState.ATTACHED).first()
+    if file is None or extension(file.original_name) not in OFFICE_VIEW_EXTENSIONS:
+        raise HackathonError('That file was not found.', 'NOT_FOUND', status=404)
+    _ensure_scanned(file)
+    return upload_storage.get_upload_storage().presign_get(
+        key=file.key, filename=file.original_name, content_type=file.content_type, inline=False, expires=OFFICE_VIEW_SECONDS,
+    )
+
+
+def _ensure_scanned(file: IdeaFile) -> None:
     from apps.forms import upload_maintenance
     if upload_maintenance.scanning_enabled() and upload_maintenance.refresh_scan(file) != ScanStatus.CLEAN:
         raise HackathonError('This file is still being checked for viruses. Try again in a minute.', 'SCAN_PENDING', status=423)
+
+
+def _signed_link(file: IdeaFile, *, inline: bool) -> dict:
+    """A 60-second link to one stored file; held back while a virus scan is still pending."""
+    _ensure_scanned(file)
     from apps.forms.upload_admin import INLINE_TYPES
     show_here = inline and file.content_type in INLINE_TYPES
     url = upload_storage.get_upload_storage().presign_get(

@@ -186,7 +186,7 @@ SUBMISSION_COLUMNS = [
 def submission_rows(hackathon: Hackathon, params: QuerySlice) -> Iterable[Row]:
     from . import analytics
 
-    for row in analytics.submission_rows(hackathon):
+    for row in analytics.submission_rows(hackathon, include_removed=True):  # an export keeps every project, with its team status
         yield {key: value for key, value in row.items() if key not in ('id', 'team_id')}
 
 

@@ -36,7 +36,7 @@ from .services import (
     membership_of, missing_profile_fields, round_entry_for_details_form,
 )
 
-ACTIVE = (TeamStatus.FORMING, TeamStatus.REGISTERED)
+from .cohorts import ACTIVE_STATUSES as ACTIVE  # noqa: E402
 LOOKUP_MIN_QUERY_LENGTH = 3
 LOOKUP_MAX_RESULTS = 5
 

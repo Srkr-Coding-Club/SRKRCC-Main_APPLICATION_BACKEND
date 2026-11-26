@@ -76,6 +76,20 @@ Migrations `0004`–`0008`: `0008` renames `ProblemStatement.category` to `domai
 
 Only active announcements with `publish_at <= now` and not past `expires_at` are shown. `send_email=True` (or the admin "notify" action) emails the audience through the shared email-job engine. A scheduled announcement (`publish_at` in the future) is emailed only once it publishes: the first read of the hackathon's announcements after that time, or `python manage.py send_due_hackathon_emails` from cron, dispatches it; `emailed_at` records the send so it happens once; see [Email & Notifications](../features/email-notifications.md).
 
+## Which teams each count includes (`cohorts.py`)
+
+Every team is in exactly one group, and every count in the organizer screens is built from these groups, so the numbers on different tabs add up:
+
+| Group | Rule | Used for |
+|---|---|---|
+| `competing` | `REGISTERED`, not waitlisted | Ideas and projects expected ("without one"), reminders, check-in, judging, certificates, funnel from "registered" on |
+| `forming` | `FORMING`, not waitlisted | Teams tab breakdown |
+| `waitlisted` | forming or registered, `is_waitlisted` | Teams tab breakdown, Overview |
+| `awaiting_payment` | `PAYMENT_PENDING` / `PAYMENT_REJECTED` | Teams tab breakdown; hold no place |
+| `removed` | `WITHDRAWN` / `DISQUALIFIED` | Left out of every count; their ideas and projects are listed only with `?include_removed=1` |
+
+`cohorts.breakdown(hackathon)` returns the count per group plus `total`; it is sent as `teams` by `GET /{slug}/ideas/`, `GET /{slug}/submissions/` (which also send `removed_rows`) and in the Overview `analytics`. Participants (Overview and stats) are people in a forming or registered team. Round entry counts leave out removed teams, as round judging does. Exports keep every row, with the team status. New counts should use these helpers instead of their own status filter.
+
 ## API (`/api/hackathons/`)
 
 Participant / public:
@@ -318,7 +332,7 @@ On top of the written idea, organizers can ask for more (all set on the **Ideas*
 
 Accepted and rejected ideas stay locked whatever these say. Requiring a fee or a slides file needs file uploads switched on (`FORM_UPLOADS_BACKEND=s3`); the settings are refused otherwise.
 
-**Files.** The slides and the screenshot are `IdeaFile` rows uploaded straight to the bucket like form uploads (presigned POST, size/type pinned, content checked on completion, copied out of the expiring `tmp/` area when the idea is saved, removed when replaced or when the team or hackathon is deleted; covered by the Maintenance sweep and scan tasks). Endpoints: `POST /{slug}/my-idea/files/ {kind: DECK|PAYMENT, name, size, type}`, `POST /{slug}/my-idea/files/{id}/` (confirm), `DELETE /{slug}/my-idea/files/{id}/`, and `GET /{slug}/ideas/{id}/files/{deck|payment}/link/?inline=1` (a 60-second link). `PUT /my-idea/` takes `deck_file_id` / `payment_file_id`: left out keeps the saved file, `null` removes it (refused if required), an id uses that upload (it must be the team's own, of the right kind).
+**Files.** The slides and the screenshot are `IdeaFile` rows uploaded straight to the bucket like form uploads (presigned POST, size/type pinned, content checked on completion, copied out of the expiring `tmp/` area when the idea is saved, removed when replaced or when the team or hackathon is deleted; covered by the Maintenance sweep and scan tasks). Endpoints: `POST /{slug}/my-idea/files/ {kind: DECK|PAYMENT, name, size, type}`, `POST /{slug}/my-idea/files/{id}/` (confirm), `DELETE /{slug}/my-idea/files/{id}/`, and `GET /{slug}/ideas/{id}/files/{deck|payment}/link/?inline=1` (a 60-second link). PowerPoint slides (`.ppt`/`.pptx`) also open in Microsoft's Office web viewer: `GET /{slug}/ideas/{id}/files/deck/office-link/` (same people as the slides' link) returns a 10-minute signed URL `/api/hackathons/office-view/{token}/{name}.pptx`. The viewer fetches that without a session; it redirects to a 10-minute storage link. The path ends in the extension because the viewer picks the format from the URL and stored keys have none. PDF slides keep using the browser preview (`NOT_OFFICE_FILE`), and slides still being virus-scanned are held back (`SCAN_PENDING`). `PUT /my-idea/` takes `deck_file_id` / `payment_file_id`: left out keeps the saved file, `null` removes it (refused if required), an id uses that upload (it must be the team's own, of the right kind).
 
 **Payment QR code.** Organizers with the `settings` permission upload one image (png/jpg/webp, up to 5 MB) that teams scan to pay: `POST /{slug}/idea-qr/ {name, size, type}` (signed upload form), `POST /{slug}/idea-qr/{id}/` (the upload arrived: it is checked and becomes the hackathon's QR code, replacing and releasing the old one; saved at once, not with the settings Save button), `DELETE /{slug}/idea-qr/`. `GET /{slug}/idea-qr/link/` gives a 60-second link to the image to organizers and to members of a registered, non-waitlisted team of this hackathon only (judges, volunteers, outsiders and signed-out visitors get 404/401). The idea form's `config.payment_qr` says whether one exists (never its storage key). Set/remove are audit-logged; a cloned hackathon does not inherit the QR; it follows the same scanning and cleanup rules as other idea files (stored as an `IdeaFile` of kind `QR` with no team).
 

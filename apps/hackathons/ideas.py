@@ -233,7 +233,8 @@ class IdeaService:
 
     @staticmethod
     def teams_without_idea(hackathon: Hackathon):
-        return hackathon.teams.filter(status=TeamStatus.REGISTERED, is_waitlisted=False, idea__isnull=True)
+        from . import cohorts
+        return cohorts.competing(hackathon).filter(idea__isnull=True)
 
     @staticmethod
     def remind_missing(hackathon: Hackathon, actor) -> int:
