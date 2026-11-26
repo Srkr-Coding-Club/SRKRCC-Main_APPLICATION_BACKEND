@@ -20,7 +20,7 @@ from . import access, cohorts, idea_files
 from .errors import HackathonError
 from .models import (
     EntryStatus, Hackathon, IdeaFile, IdeaFileKind, PaymentStatus, PaymentStep, StepPayment, Team, TeamMember,
-    TeamPayment, payment_key,
+    TeamPayment, TeamStatus, payment_key,
 )
 
 MAX_NAME = 120
@@ -46,10 +46,11 @@ def _name(user) -> str:
     return (f'{user.first_name} {user.last_name}'.strip() or user.email) if user else ''
 
 
-def quote(step: PaymentStep, team: Team) -> dict:
-    """What the team owes for this step right now: each member with their fee, and the total."""
+def quote(step: PaymentStep, team: Team, memberships=None) -> dict:
+    """What the team owes for this step right now: each member with their fee, and the total. ``memberships`` (with
+    their users) saves the query when the caller already has them; otherwise the team's prefetch is used if any."""
     members = []
-    memberships = sorted(team.memberships.all(), key=lambda m: (m.joined_at, m.pk))
+    memberships = sorted(team.memberships.all() if memberships is None else memberships, key=lambda m: (m.joined_at, m.pk))
     for membership in memberships:
         affiliate = is_affiliate(membership.user)
         members.append({
@@ -82,17 +83,45 @@ def roster_locked(team: Team) -> bool:
     return StepPayment.objects.filter(team=team, status__in=OPEN_STATUSES).exists()
 
 
+def _owed_steps(team: Team, steps=None) -> list[tuple[PaymentStep, dict]]:
+    """The active steps this team owes, each with its quote, in a fixed handful of queries however many steps there are:
+    the steps, the rounds the team is shortlisted in, and its members. (Same rule as ``is_due``.)"""
+    if steps is None:
+        steps = team.hackathon.payment_steps.filter(is_active=True, round__results_published=True).select_related('round', 'qr')
+    steps = [s for s in steps if s.round_id and s.round.results_published]
+    if not steps or team.status != TeamStatus.REGISTERED or team.is_waitlisted:  # competing teams only, as eligible_teams
+        return []
+    shortlisted = set(
+        team.round_entries.filter(round_id__in=[s.round_id for s in steps], status=EntryStatus.SHORTLISTED).values_list('round_id', flat=True),
+    )
+    steps = [s for s in steps if s.round_id in shortlisted]
+    if not steps:
+        return []
+    members = list(team.memberships.select_related('user'))
+    owed = []
+    for step in steps:
+        owes = quote(step, team, members)
+        if owes['total'] > 0:
+            owed.append((step, owes))
+    return owed
+
+
 def project_block(team: Team | None) -> str:
     """Why this team may not submit a project yet because of a payment step, or '' when nothing is owed."""
     if team is None:
         return ''
-    for step in team.hackathon.payment_steps.filter(is_active=True, required_for_projects=True).select_related('round'):
-        if not is_due(step, team):
-            continue
-        payment = open_payment(step, team)
-        if payment is None:
+    steps = team.hackathon.payment_steps.filter(is_active=True, required_for_projects=True, round__results_published=True).select_related('round')
+    owed = _owed_steps(team, list(steps))
+    if not owed:
+        return ''
+    open_by_step = dict(
+        StepPayment.objects.filter(team=team, step__in=[s for s, _ in owed], status__in=OPEN_STATUSES).values_list('step_id', 'status'),
+    )
+    for step, _ in owed:
+        status = open_by_step.get(step.pk)
+        if status is None:
             return f'Pay the {step.name} first: your team leader pays it from the team dashboard.'
-        if payment.status == PaymentStatus.PENDING:
+        if status == PaymentStatus.PENDING:
             return f'Your {step.name} payment is waiting for the organizers to check it.'
     return ''
 
@@ -115,18 +144,20 @@ def my_steps(hackathon: Hackathon, user) -> list[dict]:
     if membership is None:
         return []
     team = membership.team
+    owed = _owed_steps(team)
+    latest_by_step: dict[int, StepPayment] = {}
+    for payment in StepPayment.objects.filter(team=team, step__in=[s for s, _ in owed]).order_by('-created_at', '-id'):
+        latest_by_step.setdefault(payment.step_id, payment)
     result = []
-    for step in hackathon.payment_steps.filter(is_active=True).select_related('round', 'qr'):
-        if not is_due(step, team):
-            continue
-        latest = step.payments.filter(team=team).first()
+    for step, owes in owed:
+        latest = latest_by_step.get(step.pk)
         open_now = latest if latest is not None and latest.status in OPEN_STATUSES else None
         result.append({
             'id': step.id, 'name': step.name, 'round_name': step.round.name, 'deadline': step.deadline,
             'payment_note': step.payment_note, 'has_qr': bool(step.qr_id and step.qr.state == UploadState.ATTACHED),
             'required_for_projects': step.required_for_projects,
             'fee_per_person': step.fee_per_person, 'affiliate_fee_per_person': step.affiliate_fee_per_person,
-            'quote': quote(step, team), 'payment': _payment_for_team(latest),
+            'quote': owes, 'payment': _payment_for_team(latest),
             'is_leader': team.leader_id == user.id, 'can_pay': team.leader_id == user.id and open_now is None,
         })
     return result

@@ -20,6 +20,7 @@ from apps.core.cache import PublicReadCacheControlMixin
 
 from . import team_emails
 from .models import (
+    PaymentStep,
     EntryStatus, Hackathon, HackathonAnnouncement, HackathonStatus, InviteStatus,
     ProblemStatement, Round, RoundEntry, Submission, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamStatus, WithdrawalStatus,
 )
@@ -154,6 +155,7 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
             team_count=Count('teams', filter=Q(teams__status__in=ACTIVE), distinct=True),
             registered_team_count=Count('teams', filter=Q(teams__status=TeamStatus.REGISTERED), distinct=True),
             waitlisted_team_count=Count('teams', filter=Q(teams__status__in=ACTIVE, teams__is_waitlisted=True), distinct=True),
+            has_payment_steps=Exists(PaymentStep.objects.filter(hackathon=OuterRef('pk'), is_active=True)),
         ).order_by('-start_date')
 
         if _is_admin_or_club_lead(self.request.user):

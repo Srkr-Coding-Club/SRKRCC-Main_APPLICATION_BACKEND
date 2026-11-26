@@ -26,6 +26,7 @@ class HackathonSerializer(serializers.ModelSerializer):
     is_registration_open = serializers.BooleanField(read_only=True)
     waitlisted_team_count = serializers.IntegerField(read_only=True, default=0)
     is_full = serializers.SerializerMethodField()
+    has_payment_steps = serializers.SerializerMethodField()
     submissions_open = serializers.SerializerMethodField()
     results_published = serializers.SerializerMethodField()
     problems_revealed = serializers.SerializerMethodField()
@@ -48,7 +49,7 @@ class HackathonSerializer(serializers.ModelSerializer):
             'payment_stage', 'payment_qr_id', 'idea_fee_amount', 'idea_payment_note', 'idea_template_url', 'idea_deck_required', 'idea_linkedin_required', 'idea_edits_enabled', 'idea_edits_until',
             'idea_round', 'project_requires_approved_idea', 'results_published_at', 'show_leaderboard',
             'certificate_config', 'mentors', 'judges', 'sponsors', 'contacts', 'community_links', 'venue_map_url',
-            'waitlisted_team_count', 'is_full', 'submissions_open', 'results_published', 'problems_revealed',
+            'waitlisted_team_count', 'is_full', 'has_payment_steps', 'submissions_open', 'results_published', 'problems_revealed',
             'created_at', 'updated_at',
         ]
         # idea_round is set through POST /{slug}/ideas/link-round/, which also copies the decisions already made.
@@ -67,6 +68,12 @@ class HackathonSerializer(serializers.ModelSerializer):
 
     def get_payment_qr_id(self, obj):
         return str(obj.idea_payment_qr_id) if obj.idea_payment_qr_id else None
+
+    def get_has_payment_steps(self, obj) -> bool:
+        """An active payment step exists: the team dashboard asks for its payments only then. Annotated in the views'
+        querysets, so a listing costs no extra query."""
+        annotated = getattr(obj, 'has_payment_steps', None)
+        return annotated if annotated is not None else obj.payment_steps.filter(is_active=True).exists()
 
     def get_is_full(self, obj) -> bool:
         if not obj.max_teams:
