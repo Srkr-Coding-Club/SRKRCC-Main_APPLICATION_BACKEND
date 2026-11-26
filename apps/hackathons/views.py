@@ -20,6 +20,7 @@ from apps.core.cache import PublicReadCacheControlMixin
 
 from . import team_emails
 from .models import (
+    PaymentStep,
     EntryStatus, Hackathon, HackathonAnnouncement, HackathonStatus, InviteStatus,
     ProblemStatement, Round, RoundEntry, Submission, Team, TeamEmailInvite, TeamInvite, TeamMember, TeamStatus, WithdrawalStatus,
 )
@@ -36,7 +37,7 @@ from .services import (
     membership_of, missing_profile_fields, round_entry_for_details_form,
 )
 
-ACTIVE = (TeamStatus.FORMING, TeamStatus.REGISTERED)
+from .cohorts import ACTIVE_STATUSES as ACTIVE  # noqa: E402
 LOOKUP_MIN_QUERY_LENGTH = 3
 LOOKUP_MAX_RESULTS = 5
 
@@ -154,6 +155,7 @@ class HackathonViewSet(PublicReadCacheControlMixin, viewsets.ModelViewSet):
             team_count=Count('teams', filter=Q(teams__status__in=ACTIVE), distinct=True),
             registered_team_count=Count('teams', filter=Q(teams__status=TeamStatus.REGISTERED), distinct=True),
             waitlisted_team_count=Count('teams', filter=Q(teams__status__in=ACTIVE, teams__is_waitlisted=True), distinct=True),
+            has_payment_steps=Exists(PaymentStep.objects.filter(hackathon=OuterRef('pk'), is_active=True)),
         ).order_by('-start_date')
 
         if _is_admin_or_club_lead(self.request.user):
@@ -1045,6 +1047,8 @@ class RoundActionView(APIView):
             RoundService.publish_results(
                 round_obj, request.user, announce=bool(data.get('announce')), message=data.get('message', ''),
                 email=bool(data.get('email')),
+                email_shortlisted=bool(data['email_shortlisted']) if 'email_shortlisted' in data else None,
+                email_rejected=bool(data['email_rejected']) if 'email_rejected' in data else None,
                 announce_rejected=bool(data.get('announce_rejected')),
                 rejected_message=data.get('rejected_message', ''),
             )

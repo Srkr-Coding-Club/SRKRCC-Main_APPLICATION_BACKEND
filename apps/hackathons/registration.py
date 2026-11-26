@@ -14,7 +14,7 @@ from apps.forms.serializers import PROFILE_FIELD_GETTERS
 from .models import Hackathon, TeamMember, TeamStatus
 from .errors import HackathonError
 
-ACTIVE_TEAM_STATUSES = (TeamStatus.FORMING, TeamStatus.REGISTERED)
+from .cohorts import ACTIVE_STATUSES as ACTIVE_TEAM_STATUSES  # noqa: E402
 MAX_ANSWER_LENGTH = 1000
 
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from django.db.models import Count
+from django.db.models import Count, Q
 
-from . import access, analytics, finder_admin, payments, withdrawals
+from . import access, analytics, cohorts, finder_admin, payments, withdrawals
 from .models import IdeaStatus, IdeaSubmission, PaymentStage
 from .ideas import IdeaService
 
@@ -18,9 +18,20 @@ PAYMENT_FIELDS = ('status', 'amount', 'team_status', 'submitted_at')
 
 def _ideas(hackathon) -> dict:
     counts = {value: 0 for value in IdeaStatus.values}
-    for row in IdeaSubmission.objects.filter(team__hackathon=hackathon).values('status').annotate(n=Count('id')):
+    ideas = cohorts.not_removed(IdeaSubmission.objects.filter(team__hackathon=hackathon))  # as the Ideas tab counts them
+    for row in ideas.values('status').annotate(n=Count('id')):
         counts[row['status']] = row['n']
     return {'counts': counts, 'missing': list(IdeaService.teams_without_idea(hackathon).values('id', 'name'))}
+
+
+def _step_payments(hackathon) -> dict:
+    """Payments for payment steps still waiting for an organizer, per step."""
+    from .models import PaymentStatus
+    steps = hackathon.payment_steps.filter(is_active=True).annotate(
+        waiting=Count('payments', filter=Q(payments__status=PaymentStatus.PENDING)),
+    )
+    rows = [{'id': step.id, 'name': step.name, 'pending': step.waiting} for step in steps]
+    return {'pending': sum(row['pending'] for row in rows), 'steps': rows}
 
 
 def _payments(hackathon, user) -> dict:
@@ -58,4 +69,11 @@ def build(hackathon, user, stats: Callable[[object], dict]) -> dict:
             logger.exception('Overview part %s failed for %s', name, hackathon.slug)
             errors[name] = 'Could not load this part.'
     result['hidden'], result['errors'] = hidden, errors
+    # An extra, not a module part: only there when the hackathon has a payment step and the person checks payments.
+    result['step_payments'] = None
+    if allowed('teams') and hackathon.payment_steps.filter(is_active=True).exists():
+        try:
+            result['step_payments'] = _step_payments(hackathon)
+        except Exception:  # noqa: BLE001 - never blanks the page
+            logger.exception('Overview step payments failed for %s', hackathon.slug)
     return result

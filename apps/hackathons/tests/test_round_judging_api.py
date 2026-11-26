@@ -8,7 +8,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from apps.accounts.models import PasswordSetupToken
 from apps.hackathons import judge_invites
-from apps.hackathons.models import HackathonStaff, IdeaSubmission, Submission
+from apps.hackathons.models import HackathonStaff, IdeaFile, IdeaSubmission, Submission
 from apps.hackathons.services import RoundService
 from .helpers import make_hackathon, make_ps, make_team, make_user
 
@@ -236,6 +236,17 @@ class WhatAJudgeSees(Base):
         self.assertNotIn(leader.first_name, text)
         self.assertEqual(data[1]['label'], f'Team {entry.id:03d}')
         self.assertIsNone(data[1]['material']['idea']['linkedin_url'])
+
+    def test_the_slides_type_is_shown_but_never_the_file_name(self):
+        self.start(blind=True)
+        entry = self.entries['Secret Team 0']
+        read = lambda: api(self.judges[0]).get(f'{self.my()}teams/{entry.id}/').data['material']['idea']  # noqa: E731
+        self.assertEqual((read()['has_deck_file'], read()['deck_file_type']), (False, None))
+        deck = IdeaFile.objects.create(hackathon=self.hack, team=self.teams[0], kind='DECK', key='k/deck', original_name='Secret Team Deck.PPTX', state='ATTACHED')
+        IdeaSubmission.objects.filter(pk=self.idea.pk).update(deck_file=deck)
+        idea = read()
+        self.assertEqual((idea['has_deck_file'], idea['deck_file_type']), (True, '.pptx'))
+        self.assertNotIn('Secret Team Deck', json.dumps(idea))
 
     def test_stepping_aside_over_the_api(self):
         self.start(assignment_mode='BALANCED', judges_per_team=2)

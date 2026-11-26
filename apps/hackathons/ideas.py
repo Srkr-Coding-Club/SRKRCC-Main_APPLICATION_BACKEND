@@ -10,7 +10,7 @@ from rest_framework.exceptions import PermissionDenied
 
 from apps.audit.utils import log_audit_event
 
-from . import access, config_validation as validate, idea_files
+from . import access, config_validation as validate, idea_files, idea_round
 from .errors import HackathonError
 from .link_rules import clean_link
 from . import celebrate
@@ -26,6 +26,7 @@ MAX_FEEDBACK = 1000
 MAX_TECH_STACK = 10
 REVIEW_OUTCOMES = (IdeaStatus.APPROVED, IdeaStatus.CHANGES_REQUESTED, IdeaStatus.REJECTED)
 LOCKED_STATUSES = (IdeaStatus.APPROVED, IdeaStatus.REJECTED)
+HELD_EDIT_REASON = 'The organizers have your idea. Every team hears its result when the round results are published.'
 
 
 def window_state(hackathon: Hackathon) -> str:
@@ -57,6 +58,8 @@ def can_team_edit(hackathon: Hackathon, existing: IdeaSubmission | None) -> tupl
     if existing is None:
         return (True, '', '') if state == 'OPEN' else (False, 'IDEAS_CLOSED', 'The idea deadline has passed.')
     if existing.status in LOCKED_STATUSES:
+        if idea_round.is_held(existing):
+            return False, 'IDEA_LOCKED', HELD_EDIT_REASON
         return False, 'IDEA_LOCKED', 'This idea has already been decided, so it can no longer be edited. Contact the organizers if something is wrong.'
     extended = bool(hackathon.idea_edits_until and now < hackathon.idea_edits_until)
     if existing.status == IdeaStatus.CHANGES_REQUESTED:
@@ -85,18 +88,23 @@ def ensure_can_edit(team: Team, actor) -> IdeaSubmission | None:
 
 def project_gate(hackathon: Hackathon, team: Team | None) -> dict:
     """Whether this team's idea lets it into the project phase. ``required`` is False when the admin did not ask for it."""
+    from . import payment_steps
+    unpaid = payment_steps.project_block(team)
+    if unpaid:
+        return {'required': True, 'satisfied': False, 'reason': unpaid}
     required = hackathon.feature('ideas') and hackathon.project_requires_approved_idea
     if not required:
         return {'required': False, 'satisfied': True, 'reason': ''}
     idea = IdeaSubmission.objects.filter(team=team).first() if team else None
     if idea is None:
         return {'required': True, 'satisfied': False, 'reason': 'Submit your idea first: the project phase opens for teams whose idea is accepted.'}
-    if hackathon.idea_review_required and idea.status != IdeaStatus.APPROVED:
+    status = idea_round.team_view(idea)['status']
+    if hackathon.idea_review_required and status != IdeaStatus.APPROVED:
         reason = {
             IdeaStatus.SUBMITTED: 'Your idea is waiting for the organizers to review it.',
             IdeaStatus.CHANGES_REQUESTED: 'The organizers asked for changes to your idea. Update it and resubmit.',
             IdeaStatus.REJECTED: 'Your idea was not accepted, so this team cannot submit a project.',
-        }.get(idea.status, 'Your idea has not been approved yet.')
+        }.get(status, 'Your idea has not been approved yet.')
         return {'required': True, 'satisfied': False, 'reason': reason}
     return {'required': True, 'satisfied': True, 'reason': ''}
 
@@ -181,10 +189,19 @@ class IdeaService:
         deck, payment = _chosen_files(team, hackathon, data, existing, by_organizer)
         status = IdeaStatus.SUBMITTED if hackathon.idea_review_required else IdeaStatus.APPROVED
         idea, created = IdeaSubmission.objects.update_or_create(
-            team=team, defaults={**cleaned, 'submitted_by': actor, 'status': status, 'deck_file': deck, 'payment_proof': payment},
+            team=team, defaults={**cleaned, 'submitted_by': actor, 'status': status, 'deck_file': deck, 'payment_proof': payment,
+                                 'result_held': False},
         )
+        if idea_round.should_hold(idea):
+            idea.result_held = True
+            idea.save(update_fields=['result_held'])
         idea_files.attach(deck, existing.deck_file if existing else None)
         idea_files.attach(payment, existing.payment_proof if existing else None)
+        # Only a change of status moves the team in the linked round: editing an idea that is still waiting for review
+        # must not undo a decision an organizer made by hand in the Rounds tab. A team cannot answer the round's
+        # confirmations (the organizers chose this when they linked it); an organizer editing the idea gets them.
+        if created or existing.status != idea.status:
+            idea_round.sync(idea, actor, confirm_published=not by_organizer, confirm_over_limit=not by_organizer)
         log_audit_event(
             actor=actor, action='Submitted Hackathon Idea' if created else 'Updated Hackathon Idea',
             target_model='IdeaSubmission', target_id=idea.pk, details={'hackathon': hackathon.slug, 'team': team.name, 'title': idea.title},
@@ -200,7 +217,8 @@ class IdeaService:
 
     @staticmethod
     @transaction.atomic
-    def review(idea: IdeaSubmission, reviewer, outcome: str, feedback: str = '') -> IdeaSubmission:
+    def review(idea: IdeaSubmission, reviewer, outcome: str, feedback: str = '', *, confirm_published=False,
+               confirm_over_limit=False) -> IdeaSubmission:
         hackathon = idea.team.hackathon
         if not access.has_permission(hackathon, reviewer, 'ideas'):
             raise PermissionDenied('You are not allowed to review ideas for this hackathon.')
@@ -213,16 +231,16 @@ class IdeaService:
             raise HackathonError('Tell the team why, so they know what to do next.', 'FEEDBACK_REQUIRED', field='feedback')
         idea.status, idea.feedback = outcome, feedback
         idea.reviewed_by, idea.reviewed_at = reviewer, timezone.now()
-        idea.save(update_fields=['status', 'feedback', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        idea.result_held = idea_round.should_hold(idea)
+        idea.save(update_fields=['status', 'feedback', 'reviewed_by', 'reviewed_at', 'result_held', 'updated_at'])
+        idea_round.sync(idea, reviewer, confirm_published=confirm_published, confirm_over_limit=confirm_over_limit)
         log_audit_event(
             actor=reviewer, action='Reviewed Hackathon Idea', target_model='IdeaSubmission', target_id=idea.pk,
             details={'hackathon': hackathon.slug, 'team': idea.team.name, 'outcome': outcome},
         )
-        wording = {
-            IdeaStatus.APPROVED: 'was approved. You can move on to the project phase.',
-            IdeaStatus.CHANGES_REQUESTED: 'needs changes. Update it and resubmit before the deadline.',
-            IdeaStatus.REJECTED: 'was not accepted.',
-        }[outcome]
+        wording = idea_round.REVIEW_WORDING[outcome]
+        if idea_round.is_held(idea):
+            return idea  # the team hears about it when the linked round's results are published
         if outcome == IdeaStatus.APPROVED:
             celebrate.idea_approved(idea)
         transaction.on_commit(lambda: _notify_users(
@@ -233,7 +251,8 @@ class IdeaService:
 
     @staticmethod
     def teams_without_idea(hackathon: Hackathon):
-        return hackathon.teams.filter(status=TeamStatus.REGISTERED, is_waitlisted=False, idea__isnull=True)
+        from . import cohorts
+        return cohorts.competing(hackathon).filter(idea__isnull=True)
 
     @staticmethod
     def remind_missing(hackathon: Hackathon, actor) -> int:

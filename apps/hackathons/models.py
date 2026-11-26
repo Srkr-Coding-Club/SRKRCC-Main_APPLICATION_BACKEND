@@ -138,6 +138,11 @@ class Hackathon(TimeStampedModel):
     check_in_days = models.PositiveSmallIntegerField(default=1, help_text='Days people are checked in on; with the slots below this generates the check-in sessions.')
     check_in_slots_per_day = models.PositiveSmallIntegerField(default=1, help_text='Check-in slots per day (1 to 3: morning, afternoon, evening).')
     idea_review_required = models.BooleanField(default=True, help_text='Organizers must approve an idea before it counts as accepted.')
+    idea_round = models.ForeignKey(
+        'Round', on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+        help_text="Idea reviews set this round's results (approved = shortlisted, rejected = not shortlisted); a final "
+                  'outcome reaches the team when the round is published.',
+    )
     payment_stage = models.CharField(max_length=12, choices=PaymentStage.choices, default=PaymentStage.NONE, help_text='When teams pay the fee below: with their registration, with their idea, or never.')
     idea_fee_amount = models.PositiveIntegerField(default=0, help_text='Rupees a team pays (0 = no payment), at the stage above. The payment screenshot is then required.')
     idea_payment_qr = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+', help_text='QR code teams scan to pay (image uploaded by the organizers).')
@@ -639,6 +644,13 @@ class HackathonAnnouncement(TimeStampedModel):
     emailed_at = models.DateTimeField(
         blank=True, null=True, help_text='When the audience email was dispatched; empty = not sent yet.',
     )
+    emailed_user_ids = models.JSONField(
+        default=list, blank=True,
+        help_text='Who this announcement was emailed to, so people who join its audience later get it once and nobody twice.',
+    )
+    is_round_result = models.BooleanField(
+        default=False, help_text="Posted by publishing a round's results; publishing again updates it instead of adding another.",
+    )
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
 
     class Meta:
@@ -870,6 +882,8 @@ class IdeaFileKind(models.TextChoices):
     PAYMENT = 'PAYMENT', 'Payment screenshot'
     QR = 'QR', 'Payment QR code (set by the organizers)'
     TEMPLATE = 'TEMPLATE', 'Idea template (set by the organizers)'
+    STEP_PAYMENT = 'STEP_PAY', 'Payment screenshot for a payment step'
+    STEP_QR = 'STEP_QR', "Payment step's QR code (set by the organizers)"
 
 
 class IdeaFile(TimeStampedModel):
@@ -916,6 +930,9 @@ class IdeaSubmission(TimeStampedModel):
     feedback = models.CharField(max_length=1000, blank=True, help_text="Reviewer's note shown to the team.")
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     reviewed_at = models.DateTimeField(blank=True, null=True)
+    result_held = models.BooleanField(
+        default=False, help_text="Approved or rejected while linked to an unpublished round: the team is told when that round is published.",
+    )
 
     def __str__(self):
         return f"Idea for {self.team.name}: {self.title} ({self.status})"
@@ -1069,3 +1086,65 @@ class JudgeInvite(TimeStampedModel):
             return JudgeInviteState.EXPIRED
         return JudgeInviteState.INVITED
 
+
+
+class PaymentStep(TimeStampedModel):
+    """A fee the teams shortlisted in a round pay once its results are published (e.g. phase 2): per person, cheaper for
+    club affiliates. The leader pays outside the platform and uploads a screenshot; an organizer checks it."""
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='payment_steps')
+    round = models.ForeignKey(
+        Round, on_delete=models.SET_NULL, null=True, blank=True, related_name='payment_steps',
+        help_text='Teams shortlisted in this round pay, once its results are published. Without a round nobody is asked.',
+    )
+    name = models.CharField(max_length=120)
+    fee_per_person = models.PositiveIntegerField(help_text='Rupees per member.')
+    affiliate_fee_per_person = models.PositiveIntegerField(help_text='Rupees per member who is a club affiliate (Club ID, active membership).')
+    deadline = models.DateTimeField(blank=True, null=True, help_text='Shown to teams; nothing happens automatically when it passes.')
+    payment_note = models.TextField(blank=True, help_text='How to pay (UPI id, instructions...), shown to the teams that pay.')
+    qr = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    required_for_projects = models.BooleanField(default=True, help_text='Project submission stays locked until this payment is verified.')
+    is_active = models.BooleanField(default=True)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return f"{self.name} ({self.hackathon.slug})"
+
+
+class StepPayment(TimeStampedModel):
+    """One payment a team's leader submitted for a payment step. A rejected one stays as history; the leader pays again."""
+    step = models.ForeignKey(PaymentStep, on_delete=models.CASCADE, related_name='payments')
+    hackathon = models.ForeignKey(Hackathon, on_delete=models.CASCADE, related_name='step_payments')
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='step_payments')
+    submitted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    amount = models.PositiveIntegerField(help_text='Rupees, as calculated when the leader paid (later fee changes do not touch it).')
+    breakdown = models.JSONField(default=list, help_text='Each member with whether they were an affiliate and their fee, at the time of paying.')
+    transaction_id = models.CharField(max_length=60)
+    transaction_key = models.CharField(max_length=60)
+    screenshot = models.ForeignKey('IdeaFile', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    status = models.CharField(max_length=10, choices=PaymentStatus.choices, default=PaymentStatus.PENDING)
+    reason = models.CharField(max_length=300, blank=True, help_text='Why it was rejected; shown to the leader so they can pay again.')
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['step', 'team'], condition=Q(status__in=['PENDING', 'VERIFIED']), name='uniq_open_step_payment_per_team',
+            ),
+            models.UniqueConstraint(
+                fields=['hackathon', 'transaction_key'], condition=Q(status__in=['PENDING', 'VERIFIED']),
+                name='uniq_step_payment_reference_per_hackathon',
+            ),
+        ]
+        indexes = [models.Index(fields=['step', 'status'])]
+
+    def save(self, *args, **kwargs):
+        self.transaction_key = payment_key(self.transaction_id)
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None and 'transaction_id' in update_fields:
+            kwargs['update_fields'] = {*update_fields, 'transaction_key'}
+        super().save(*args, **kwargs)
